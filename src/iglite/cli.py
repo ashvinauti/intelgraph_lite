@@ -12,7 +12,7 @@ from typing import Any
 from . import __version__, config, export
 from .engine import Engine
 from .extract import classify, extract
-from .model import Indicator
+from .model import KINDS, Indicator
 from .sources import describe
 
 _COLOUR = {"malicious": "\033[31m", "suspicious": "\033[33m", "benign": "\033[32m", "unknown": "\033[2m"}
@@ -35,12 +35,7 @@ def _parse_indicators(values: list[str]) -> list[Indicator]:
 
 
 def _resolve_key(value: str) -> str:
-    if (
-        ":" in value
-        and value.split(":", 1)[0]
-        in {"ip", "domain", "url", "hash", "cve", "email", "asn", "org", "tag", "report"}
-        and not value.startswith(("http:", "https:", "ftp:"))
-    ):
+    if ":" in value and value.split(":", 1)[0] in KINDS and not value.startswith(("http:", "https:", "ftp:")):
         return value
     ind = classify(value)
     if ind is None:
@@ -174,8 +169,58 @@ def cmd_prune(engine: Engine, args: argparse.Namespace) -> int:
 def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
     from .api import serve
 
+    if args.watch:
+        engine.watcher(args.interval).start()
+        print(f"Watching live connections every {engine.watcher().interval:.0f}s")
     serve(engine, args.host, args.port)
     return 0
+
+
+def _print_connections(rows: list[dict[str, Any]], show_all: bool) -> None:
+    shown = [r for r in rows if show_all or r["verdict"] not in ("private",)]
+    print(f"{'VERDICT':<11}{'SCORE':>5}  {'PROCESS':<22}{'REMOTE':<42}{'CONN':>4}  NAMES")
+    for r in shown:
+        remote = f"{r['remote_ip']}:{r['remote_port']}"
+        proc = f"{r['process'] or '?'} ({r['pid']})" if r["pid"] else (r["process"] or "?")
+        score = "" if r["score"] is None else r["score"]
+        line = f"{r['verdict']:<11}{score!s:>5}  {proc[:21]:<22}{remote[:41]:<42}{r['count']:>4}  {', '.join(r['names'])}"
+        print(_paint(r["verdict"], line))
+
+
+def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
+    import time
+
+    watch = engine.watcher(args.interval)
+    since = max((a["id"] for a in engine.store.alerts(limit=1)), default=0)
+    if not args.once:
+        print(f"Watching live connections every {watch.interval:.0f}s. Ctrl+C to stop.\n")
+    while True:
+        result = watch.scan()
+        if args.once:
+            _print_connections(watch.rows, args.all)
+            print(
+                f"\n{result['connections']} connection(s), {result['public_ips']} public IP(s), "
+                f"{result['investigated']} looked up"
+            )
+            return 0
+        for alert in reversed(engine.store.alerts(since)):
+            since = max(since, alert["id"])
+            ctx = alert["context"]
+            names = f" ({', '.join(ctx.get('names') or [])})" if ctx.get("names") else ""
+            print(
+                _paint(
+                    alert["verdict"],
+                    f"ALERT {alert['verdict'].upper()} {alert['score']:>3}  "
+                    f"{alert['key']}:{ctx.get('remote_port')}{names}  <- {ctx.get('process') or '?'}",
+                )
+            )
+        stamp = time.strftime("%H:%M:%S")
+        print(
+            f"[{stamp}] {result['connections']} connections, {result['public_ips']} public IPs, "
+            f"{result['investigated']} looked up, {watch.status()['flagged']} flagged",
+            flush=True,
+        )
+        time.sleep(watch.interval)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -241,7 +286,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("serve", help="run the JSON API and dashboard")
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8765)
+    sp.add_argument("--watch", action="store_true", help="also monitor live network connections")
+    sp.add_argument("--interval", type=float, help="seconds between network snapshots (default 30)")
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser("watch", help="monitor this machine's live network connections")
+    sp.add_argument("--interval", type=float, help="seconds between snapshots (default 30, min 5)")
+    sp.add_argument("--once", action="store_true", help="take one snapshot, print it and exit")
+    sp.add_argument("--all", action="store_true", help="with --once, include private/local peers")
+    sp.set_defaults(func=cmd_watch)
     return p
 
 
