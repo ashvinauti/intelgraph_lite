@@ -90,7 +90,11 @@ class Config:
     evidence_half_life_days: float = 180.0  # bad evidence halves in weight this often
     alert_min_score: int = 60  # live-monitoring alerts need at least this score
     shared_infra: list[str] = field(default_factory=lambda: list(SHARED_INFRA))
-    ai_model: str = "claude-opus-5-5"  # AI analyst model
+    ai_provider: str = "anthropic"  # anthropic (Claude) | ollama (local model)
+    ai_model: str | None = None  # None = the provider's default model
+    ollama_url: str = "http://localhost:11434"
+    ai_triage: str = "auto"  # auto: triage new alerts in the background | manual | off
+    ai_triage_per_hour: int = 20  # cap on automatic triage runs
     ai_base_url: str | None = None  # None = Anthropic's API; set for a compatible gateway
     ai_effort: str = "high"  # low | medium | high | xhigh | max: depth vs. token cost
     ai_max_steps: int = 10  # model turns per question
@@ -135,6 +139,12 @@ def load(path: str | Path | None = None, env: dict[str, str] | None = None) -> C
         cfg.ai_base_url = base
     if model := (env.get("IGLITE_AI_MODEL") or "").strip():
         cfg.ai_model = model
+    if provider := (env.get("IGLITE_AI_PROVIDER") or "").strip().lower():
+        cfg.ai_provider = provider
+    if host := (env.get("OLLAMA_HOST") or "").strip():
+        cfg.ollama_url = host
+    if triage := (env.get("IGLITE_AI_TRIAGE") or "").strip().lower():
+        cfg.ai_triage = triage
     cfg.keys = {}
     for src, names in ENV_KEYS.items():
         for name in names:

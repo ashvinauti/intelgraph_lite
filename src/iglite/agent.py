@@ -22,24 +22,19 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from .extract import classify, extract
+from .llm import AgentUnavailable, Call, make_backend
 from .model import KINDS
 
 if TYPE_CHECKING:
     from .engine import Engine
 
-DEFAULT_MODEL = "claude-opus-5-5"
-# Models that accept server-side refusal fallback (`fallbacks: "default"`).
-FALLBACK_MODELS = frozenset({"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"})
 MAX_RESULT_CHARS = 12_000
 
 SYSTEM_PROMPT = """\
@@ -72,10 +67,6 @@ Answer format: start with a one-or-two sentence bottom line. Then the key eviden
 bullets, naming indicators in kind:value form (for example ip:203.0.113.5) so the user can \
 click them. End with concrete recommended actions (block, monitor, investigate further, or \
 likely false positive). Be concise; no preamble."""
-
-
-class AgentUnavailable(RuntimeError):
-    pass
 
 
 # -- tools -----------------------------------------------------------------------
@@ -216,7 +207,142 @@ def _key(raw: str) -> str:
     return ind.key
 
 
-class Toolbox:
+# -- false-positive investigation tools (read-only) --------------------------------
+
+
+def _same_network(a: str, b: str) -> bool:
+    """Same /24 (IPv4) or /48 (IPv6) network."""
+    import ipaddress
+
+    try:
+        x, y = ipaddress.ip_address(a), ipaddress.ip_address(b)
+    except ValueError:
+        return False
+    if x.version != y.version:
+        return False
+    prefix = 24 if x.version == 4 else 48
+    return ipaddress.ip_network(f"{x}/{prefix}", strict=False) == ipaddress.ip_network(
+        f"{y}/{prefix}", strict=False
+    )
+
+
+def _registrable(domain: str) -> str:
+    return ".".join(domain.split(".")[-2:])
+
+
+class TriageTools:
+    """Extra read-only tools for false-positive triage, mixed into Toolbox."""
+
+    engine: Engine
+
+    def t_alert_context(self, alert_id: int) -> Any:
+        rows = [a for a in self.engine.store.alerts(limit=1000) if a["id"] == int(alert_id)]
+        if not rows:
+            raise ToolError(f"no alert #{alert_id}")
+        alert = rows[0]
+        key = alert["key"]
+        node = self.engine.store.node(key) or {"attrs": {}, "kind": key.split(":", 1)[0]}
+        now = time.time()
+        evidence = []
+        for e in self.engine.store.evidence(key):
+            item = asdict(e)
+            item["age_days"] = None if e.last_seen is None else round((now - e.last_seen) / 86400)
+            evidence.append(item)
+        process = (alert["context"] or {}).get("process")
+        same_process = [
+            a for a in self.engine.store.alerts(limit=500) if (a["context"] or {}).get("process") == process
+        ]
+        return {
+            "alert": alert,
+            "assessment": self.engine.assess(key).as_dict(),
+            "evidence": evidence[:30],
+            "network_owner": {
+                k: v
+                for k, v in node["attrs"].items()
+                if k
+                in (
+                    "rdap.net_name",
+                    "rdap.net_country",
+                    "shodan.org",
+                    "shodan.isp",
+                    "shodan.asn",
+                    "internetdb.tags",
+                    "shodan.tags",
+                    "dns.resolves",
+                )
+            },
+            "shared_infrastructure": self.engine.shared_infra(node) if "key" in node else None,
+            "names_seen_for_this_ip": [
+                e["src"] for e in self.engine.store.edges_of(key) if e["rel"] == "resolves_to"
+            ][:10],
+            "process_alert_history": {
+                "process": process,
+                "alerts": len(same_process),
+                "marked_false_positive": sum(a["status"] == "false_positive" for a in same_process),
+                "confirmed": sum(a["status"] == "confirmed" for a in same_process),
+            },
+            "suppression_rules": self.engine.store.suppressions(),
+        }
+
+    def t_similar_marked(self, indicator: str) -> Any:
+        """The user's past decisions about related indicators: same network, domain or owner."""
+        key = _key(indicator)
+        kind, _, value = key.partition(":")
+        node = self.engine.store.node(key)
+        owner = ""
+        if node:
+            owner = str(node["attrs"].get("rdap.net_name") or node["attrs"].get("shodan.org") or "").lower()
+        related = []
+        for fb in self.engine.store.all_feedback():
+            other_kind, _, other = fb["key"].partition(":")
+            why = None
+            if fb["key"] == key:
+                why = "same indicator"
+            elif kind == "ip" and other_kind == "ip" and _same_network(value, other):
+                why = "same /24 network"
+            elif (
+                kind in ("domain", "url", "email")
+                and other_kind in ("domain", "url", "email")
+                and _registrable(value.split("/")[2] if kind == "url" else value.rpartition("@")[2])
+                == _registrable(other.split("/")[2] if other_kind == "url" else other.rpartition("@")[2])
+            ):
+                why = "same registered domain"
+            elif owner:
+                other_node = self.engine.store.node(fb["key"])
+                other_owner = str((other_node or {}).get("attrs", {}).get("rdap.net_name") or "").lower()
+                if other_owner and other_owner == owner:
+                    why = f"same network owner ({owner})"
+            if why:
+                related.append(
+                    {
+                        "key": fb["key"],
+                        "user_verdict": fb["verdict"],
+                        "note": fb["note"],
+                        "why": why,
+                        "sources_that_flagged_it": fb["sources"],
+                    }
+                )
+        return {"indicator": key, "related_user_decisions": related[:20]}
+
+    def t_feedback_history(self) -> Any:
+        """How often each source's flags were marked false positive vs confirmed by the user."""
+        stats = self.engine.store.source_feedback_stats()
+        return {
+            "per_source": {
+                name: {
+                    **st,
+                    "false_positive_rate": round(st["false_positives"] / max(1, sum(st.values())), 2),
+                }
+                for name, st in stats.items()
+            },
+            "recent_marks": [
+                {k: f[k] for k in ("key", "verdict", "note", "sources")}
+                for f in self.engine.store.all_feedback(limit=15)
+            ],
+        }
+
+
+class Toolbox(TriageTools):
     """Executes tool calls against the engine. Every method validates its own input."""
 
     def __init__(self, engine: Engine) -> None:
@@ -340,7 +466,8 @@ class Answer:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
-    model: str = DEFAULT_MODEL
+    model: str = ""
+    final: dict[str, Any] | None = None  # the finish tool's input, for structured agents
 
 
 def _summarise(name: str, result: Any) -> str:
@@ -364,178 +491,112 @@ def _summarise(name: str, result: Any) -> str:
     return "done"
 
 
+def run_agent(
+    backend: Any,
+    system: str,
+    tools: list[dict[str, Any]],
+    toolbox: Toolbox,
+    question: str,
+    history: list[Any],
+    *,
+    max_steps: int,
+    on_step: Callable[[Step], None] | None = None,
+    finish_tool: str | None = None,
+) -> Answer:
+    """The tool loop shared by every agent, on any backend.
+
+    With ``finish_tool``, the agent ends by calling that tool; its input is
+    returned as ``Answer.final`` instead of being executed.
+    """
+    backend.user(history, question)
+    answer = Answer(text="", model=backend.model)
+    for _ in range(max_steps):
+        turn = backend.step(history, system, tools)
+        answer.input_tokens += turn.input_tokens
+        answer.output_tokens += turn.output_tokens
+        answer.cache_read_tokens += turn.cache_read_tokens
+        answer.stop_reason = turn.stop
+        if turn.stop == "refusal":
+            answer.text = (turn.text + "\n\n" if turn.text else "") + (
+                "The model declined to continue with this request. Try rephrasing the question."
+            )
+            return answer
+        if turn.stop == "pause":
+            continue
+        if turn.stop == "max_tokens" or not turn.calls:  # never run a truncated tool call
+            answer.text = turn.text or "(no answer)"
+            if turn.stop == "max_tokens":
+                answer.text += "\n\n(The answer was cut off at the length limit.)"
+            return answer
+
+        results: list[tuple[Call, str, bool]] = []
+        for call in turn.calls:
+            if finish_tool and call.name == finish_tool:
+                answer.final, answer.text = call.input, turn.text
+                return answer
+            started = time.monotonic()
+            step = Step(call.name, dict(call.input))
+            try:
+                result = toolbox.run(call.name, call.input)
+                content, step.summary = _dump(result), _summarise(call.name, result)
+                results.append((call, content, False))
+            except (ToolError, TypeError, ValueError, KeyError) as exc:
+                step.ok, step.summary = False, str(exc)
+                results.append((call, f"Error: {exc}", True))
+            step.seconds = round(time.monotonic() - started, 2)
+            answer.steps.append(step)
+            if on_step:
+                on_step(step)
+        backend.results(history, results)
+
+    answer.text = (
+        "I reached the step limit for one question before finishing. Here is what I found so far:\n\n"
+        + "\n".join(f"- {s.tool}: {s.summary}" for s in answer.steps)
+    )
+    answer.stop_reason = "step_limit"
+    return answer
+
+
 class Analyst:
+    """Answers free-form questions with the full tool set."""
+
     def __init__(
         self,
         engine: Engine,
         *,
         client: Any = None,
+        backend: Any = None,
         model: str | None = None,
         effort: str | None = None,
         max_steps: int | None = None,
     ) -> None:
         self.engine = engine
-        cfg = engine.config
-        self.model = model or cfg.ai_model or DEFAULT_MODEL
-        self.effort = effort or cfg.ai_effort
-        self.max_steps = max_steps or cfg.ai_max_steps
-        self.base_url = (cfg.ai_base_url or "").rstrip("/") or None
-        # Anthropic-only features (beta endpoint, server-side fallback) are used only on
-        # Anthropic's own API; a third-party gateway gets a plain, standard request.
-        self.official = self.base_url is None or urlsplit(self.base_url).hostname == "api.anthropic.com"
+        self.backend = backend or make_backend(engine.config, client=client, model=model, effort=effort)
+        self.max_steps = max_steps or engine.config.ai_max_steps
         self.tools = Toolbox(engine)
-        self.client = client if client is not None else self._make_client()
 
-    @property
-    def endpoint(self) -> str:
-        return urlsplit(self.base_url).hostname or self.base_url if self.base_url else "api.anthropic.com"
-
-    def _make_client(self) -> Any:
-        try:
-            import anthropic
-        except ImportError:
-            raise AgentUnavailable("the AI analyst needs the 'anthropic' package: pip install .[ai]")
-        key = self.engine.config.keys.get("anthropic")
-        if self.base_url and not key:
-            raise AgentUnavailable(
-                f"ANTHROPIC_BASE_URL is set to {self.base_url} but no ANTHROPIC_API_KEY was found"
-            )
-        if key:
-            return (
-                anthropic.Anthropic(api_key=key, base_url=self.base_url)
-                if self.base_url
-                else anthropic.Anthropic(api_key=key)
-            )
-        # No key in .env: the SDK can still use its own credential chain
-        # (ANTHROPIC_AUTH_TOKEN, or a profile from `ant auth login`). If none of
-        # those exist either, say so now rather than failing on the first question.
-        profile = Path.home() / ".config" / "anthropic"
-        if not (
-            os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_PROFILE") or profile.is_dir()
-        ):
-            raise AgentUnavailable("no Anthropic API key found: add ANTHROPIC_API_KEY=... to your .env file")
-        return anthropic.Anthropic()
+    model = property(lambda self: self.backend.model)
+    endpoint = property(lambda self: self.backend.endpoint)
+    official = property(lambda self: self.backend.official)
+    provider = property(lambda self: self.backend.provider)
 
     def ask(
         self,
         question: str,
-        history: list[dict[str, Any]] | None = None,
+        history: list[Any] | None = None,
         on_step: Callable[[Step], None] | None = None,
     ) -> Answer:
         """Answer one question. ``history`` (a previous conversation) is extended in place."""
-        messages = history if history is not None else []
-        messages.append({"role": "user", "content": question})
-        answer = Answer(text="", model=self.model)
-
-        for _ in range(self.max_steps):
-            response = self._call(messages)
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                answer.input_tokens += getattr(usage, "input_tokens", 0) or 0
-                answer.output_tokens += getattr(usage, "output_tokens", 0) or 0
-                answer.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
-            # Keep the full content (thinking blocks included) so the next turn is valid.
-            messages.append({"role": "assistant", "content": response.content})
-            answer.stop_reason = response.stop_reason or ""
-            text = "\n\n".join(b.text for b in response.content if b.type == "text" and b.text.strip())
-
-            if response.stop_reason == "refusal":
-                answer.text = (text + "\n\n" if text else "") + (
-                    "The model declined to continue with this request. Try rephrasing the question."
-                )
-                return answer
-            if response.stop_reason == "pause_turn":
-                continue
-            tool_calls = [b for b in response.content if b.type == "tool_use"]
-            if response.stop_reason == "max_tokens" or not tool_calls:
-                answer.text = text or "(no answer)"
-                if response.stop_reason == "max_tokens":
-                    answer.text += "\n\n(The answer was cut off at the length limit.)"
-                return answer
-
-            results = []
-            for call in tool_calls:
-                started = time.monotonic()
-                step = Step(call.name, dict(call.input) if isinstance(call.input, dict) else {})
-                try:
-                    result = self.tools.run(call.name, call.input)
-                    content, step.summary = _dump(result), _summarise(call.name, result)
-                    results.append({"type": "tool_result", "tool_use_id": call.id, "content": content})
-                except (ToolError, TypeError, ValueError) as exc:
-                    step.ok, step.summary = False, str(exc)
-                    results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": call.id,
-                            "content": f"Error: {exc}",
-                            "is_error": True,
-                        }
-                    )
-                step.seconds = round(time.monotonic() - started, 2)
-                answer.steps.append(step)
-                if on_step:
-                    on_step(step)
-            # All results for this turn go back in one user message.
-            messages.append({"role": "user", "content": results})
-
-        answer.text = (
-            "I reached the step limit for one question before finishing. Here is what I found so far:\n\n"
-            + "\n".join(f"- {s.tool}: {s.summary}" for s in answer.steps)
+        return run_agent(
+            self.backend,
+            SYSTEM_PROMPT,
+            TOOLS,
+            self.tools,
+            question,
+            history if history is not None else [],
+            max_steps=self.max_steps,
+            on_step=on_step,
         )
-        answer.stop_reason = "step_limit"
-        return answer
-
-    def request(self, messages: list[dict[str, Any]]) -> tuple[Any, dict[str, Any]]:
-        """The create() function and keyword arguments for one model turn."""
-        kw: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": 16000,
-            "tools": TOOLS,
-            "messages": messages,
-            "output_config": {"effort": self.effort},
-        }
-        if "haiku" not in self.model:
-            # Opus 4.x runs without reasoning unless asked; newer models accept this too.
-            kw["thinking"] = {"type": "adaptive"}
-        if self.official:
-            kw["system"] = SYSTEM_PROMPT
-            kw["cache_control"] = {"type": "ephemeral"}  # tools + system + history are a stable prefix
-            if self.model in FALLBACK_MODELS:
-                # If a safety classifier declines, retry on Anthropic's recommended model.
-                kw["betas"] = ["server-side-fallback-2026-07-01"]
-                kw["fallbacks"] = "default"
-                return self.client.beta.messages.create, kw
-            return self.client.messages.create, kw
-        # Gateway: only long-standing fields. Caching via a block-level marker on the system prompt.
-        kw["system"] = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
-        return self.client.messages.create, kw
-
-    def _call(self, messages: list[dict[str, Any]]) -> Any:
-        create, kw = self.request(messages)
-        try:
-            return create(**kw)
-        except Exception as exc:  # map SDK errors to a message the user can act on
-            raise AgentUnavailable(_explain_error(exc, self.endpoint)) from exc
-
-
-def _explain_error(exc: Exception, endpoint: str = "api.anthropic.com") -> str:
-    try:
-        import anthropic
-    except ImportError:  # pragma: no cover - client was injected
-        return str(exc)
-    if isinstance(exc, anthropic.AuthenticationError):
-        return f"{endpoint} rejected the API key. Check ANTHROPIC_API_KEY in your .env file."
-    if isinstance(exc, anthropic.PermissionDeniedError):
-        return "This API key is not allowed to use the model. Check your Anthropic account."
-    if isinstance(exc, anthropic.RateLimitError):
-        return f"Rate limited by {endpoint}. Wait a minute and try again."
-    if isinstance(exc, anthropic.BadRequestError):
-        return f"{endpoint} rejected the request: {exc.message}"
-    if isinstance(exc, anthropic.APIStatusError):
-        return f"{endpoint} returned an error ({exc.status_code}). Try again shortly."
-    if isinstance(exc, anthropic.APIConnectionError):
-        return f"Could not reach {endpoint}. Check your internet connection, proxy or ANTHROPIC_BASE_URL."
-    return f"{type(exc).__name__}: {exc}"
 
 
 # -- background jobs for the dashboard -----------------------------------------------
@@ -573,7 +634,13 @@ class AgentDesk:
         try:
             self._get()
             a = self._analyst
-            return {"available": True, "model": a.model, "endpoint": a.endpoint, "official": a.official}
+            return {
+                "available": True,
+                "model": a.model,
+                "endpoint": a.endpoint,
+                "official": a.official,
+                "provider": a.provider,
+            }
         except AgentUnavailable as exc:
             return {"available": False, "reason": str(exc)}
 
