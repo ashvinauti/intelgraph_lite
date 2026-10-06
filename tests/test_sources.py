@@ -86,25 +86,30 @@ def test_otx_pulses_and_tags(transport):
 
 
 def test_virustotal_thresholds(transport):
-    def vt(stats, reputation=0):
-        return {"data": {"attributes": {"last_analysis_stats": stats, "reputation": reputation}}}
+    def vt(bad, sus=0):
+        stats = {"malicious": bad, "suspicious": sus, "harmless": 60, "undetected": 10}
+        return {
+            "data": {
+                "attributes": {
+                    "last_analysis_stats": stats,
+                    "reputation": 0,
+                    "last_analysis_date": 1790000000,
+                }
+            }
+        }
 
-    transport.add(
-        "https://www.virustotal.com/api/v3/domains/bad.example",
-        body=vt({"malicious": 12, "suspicious": 1, "harmless": 50, "undetected": 10}),
-    )
-    transport.add(
-        "https://www.virustotal.com/api/v3/domains/meh.example",
-        body=vt({"malicious": 1, "suspicious": 0, "harmless": 60, "undetected": 10}),
-    )
-    transport.add(
-        "https://www.virustotal.com/api/v3/domains/ok.example",
-        body=vt({"malicious": 0, "suspicious": 0, "harmless": 60, "undetected": 10}),
-    )
+    for name, body in {"bad": vt(12, 1), "few": vt(3), "one": vt(1), "ok": vt(0)}.items():
+        transport.add(f"https://www.virustotal.com/api/v3/domains/{name}.example", body=body)
     c, src = ctx(transport, virustotal="k"), VirusTotal()
-    assert src.lookup(classify("bad.example"), c).evidence[0].verdict is Verdict.MALICIOUS
-    assert src.lookup(classify("meh.example"), c).evidence[0].verdict is Verdict.SUSPICIOUS
-    assert src.lookup(classify("ok.example"), c).evidence[0].verdict is Verdict.BENIGN
+
+    def verdicts(name):
+        return [e.verdict for e in src.lookup(classify(f"{name}.example"), c).evidence]
+
+    assert verdicts("bad") == [Verdict.MALICIOUS]
+    assert verdicts("few") == [Verdict.SUSPICIOUS]  # 2-4 engines: weak signal
+    assert verdicts("one") == []  # a lone engine is noise, and not "clean" either
+    assert verdicts("ok") == [Verdict.BENIGN]
+    assert src.lookup(classify("bad.example"), c).evidence[0].last_seen == 1790000000
 
 
 def test_urlhaus_host_and_url(transport):

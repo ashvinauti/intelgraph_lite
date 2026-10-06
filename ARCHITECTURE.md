@@ -130,6 +130,10 @@ score = 100 / (1 + e^-z)
 
 malicious ≥ 70 · suspicious ≥ 30 · else benign (if any benign evidence) or unknown
 contradiction = a trusted source says malicious AND a trusted source says benign
+
+accusing evidence × 0.5^(age / 180 days)       (freshness, floor 0.1)
+                  × 0.5 on shared CDN/cloud IPs (one IP, many tenants)
+analyst mark      → false_positive: benign, score ≤ 5 · confirmed: malicious, score ≥ 95
 ```
 
 * **Corroboration is required for "malicious".** One trusted source alone
@@ -141,6 +145,16 @@ contradiction = a trusted source says malicious AND a trusted source says benign
   loops.
 * **Allowlists fight false positives.** They add strong benign evidence, and
   any disagreement is flagged instead of averaged away.
+* **Old and shared evidence counts for less.** Sources report when they last
+  saw an indicator misbehave; accusations fade with a 180-day half-life, and
+  IP reputation on shared CDN/cloud ranges is halved. Exonerations don't fade.
+* **The analyst has the last word.** A false-positive or confirmed mark
+  overrides the verdict, is listed first among the reasons, resolves open
+  alerts, and is honoured by the guilt-by-association rule. Marks are tallied
+  per source, so a noisy feed shows up in the numbers.
+* **Alerting is stricter than scoring.** Live monitoring alerts only at
+  `alert_min_score` (default 60), never for suppressed indicators or
+  processes, and at most once a day per indicator unless it escalates.
 * Trust weights are in `iglite.toml`. Rescoring is cheap, so tuning is safe.
 
 ## Storage
@@ -172,7 +186,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (71 tests, offline) | ~6 s |
+| Full test suite (92 tests, offline) | ~7 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 

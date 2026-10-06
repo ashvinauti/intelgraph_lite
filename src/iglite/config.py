@@ -45,6 +45,31 @@ def read_dotenv(path: str | Path) -> dict[str, str]:
     return out
 
 
+# Operators whose IPs serve many unrelated customers (CDNs, big platforms).
+# Matched case-insensitively against the network owner from RDAP/Shodan.
+SHARED_INFRA = (
+    "cloudflare",
+    "akamai",
+    "fastly",
+    "cloudfront",
+    "google",
+    "microsoft",
+    "apple",
+    "facebook",
+    "meta platforms",
+    "edgecast",
+    "limelight",
+    "stackpath",
+    "imperva",
+    "incapsula",
+    "sucuri",
+    "bunny",
+    "github",
+    "level 3",
+    "lumen",
+)
+
+
 @dataclass
 class Config:
     db: str = "~/.iglite/iglite.db"
@@ -61,6 +86,10 @@ class Config:
     blocklists: dict[str, str] = field(default_factory=dict)  # name -> path or URL
     allowlists: dict[str, str] = field(default_factory=dict)
     watch_interval: float = 30.0  # seconds between live network snapshots
+    # False-positive controls
+    evidence_half_life_days: float = 180.0  # bad evidence halves in weight this often
+    alert_min_score: int = 60  # live-monitoring alerts need at least this score
+    shared_infra: list[str] = field(default_factory=lambda: list(SHARED_INFRA))
     ai_model: str = "claude-opus-5-5"  # AI analyst model
     ai_base_url: str | None = None  # None = Anthropic's API; set for a compatible gateway
     ai_effort: str = "high"  # low | medium | high | xhigh | max: depth vs. token cost

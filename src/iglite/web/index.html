@@ -208,6 +208,10 @@
   .big-score { font-size: 32px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
   .meter { height: 6px; border-radius: 3px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
   .meter div { height: 100%; background: var(--c); border-radius: 3px; transition: width .4s; }
+  .warn-text { color: color-mix(in srgb, var(--st-warning) 55%, var(--text-primary)); }
+  .ok { border: 1px solid var(--st-good); border-left-width: 4px; border-radius: 6px; padding: 8px 10px; margin: 10px 0; }
+  ul.feed li.resolved { opacity: .6; }
+  ul.feed .acts { grid-column: 2 / 4; display: flex; gap: 6px; }
   .warn { border: 1px solid var(--st-warning); border-left-width: 4px; border-radius: 6px; padding: 8px 10px; margin: 10px 0; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
   .kv { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 4px 12px; font-size: 13px; }
@@ -301,6 +305,9 @@
         <div class="card">
           <h2>Sources</h2>
           <ul class="links" id="sources"></ul>
+          <p class="warn-text" id="tuning-hint" style="font-size:12px;margin:8px 0 0"></p>
+          <h3 id="suppress-head" hidden>Alert suppression rules</h3>
+          <ul class="links" id="suppressions"></ul>
           <p class="muted" style="font-size:12px;margin:8px 0 0">Add API keys to a <span class="mono">.env</span> file and restart to switch more sources on.</p>
         </div>
       </div>
@@ -542,10 +549,49 @@ async function refreshStats() {
 async function refreshSources() {
   const list = await api("/api/sources");
   const STATUS = { enabled: "benign", "missing key": "unknown", disabled: "none" };
-  fill($("sources"), list.map(s => el("li", { style: "cursor:default", title: s.description },
-    el("span", { class: "badge v-" + STATUS[s.status] }, el("i", { "aria-hidden": "true" }, s.status === "enabled" ? "✓" : s.status === "missing key" ? "?" : "·"), s.status),
-    el("span", { class: "mono" }, s.name), el("span", { class: "muted", style: "margin-left:auto;font-size:12px" }, `trust ${s.trust}`))));
+  fill($("sources"), list.map(s => {
+    const marked = s.false_positives + s.confirmed, rate = marked ? s.false_positives / marked : 0;
+    return el("li", { style: "cursor:default", title: s.description },
+      el("span", { class: "badge v-" + STATUS[s.status] }, el("i", { "aria-hidden": "true" }, s.status === "enabled" ? "✓" : s.status === "missing key" ? "?" : "·"), s.status),
+      el("span", { class: "mono" }, s.name),
+      marked ? el("span", { class: rate > 0.5 && marked >= 3 ? "warn-text" : "muted", style: "font-size:12px",
+        title: "From your false-positive / confirmed marks" }, `${s.false_positives} FP · ${s.confirmed} confirmed`) : null,
+      el("span", { class: "muted", style: "margin-left:auto;font-size:12px" }, `trust ${s.trust}`));
+  }));
+  const noisy = list.filter(s => s.false_positives + s.confirmed >= 3 && s.false_positives / (s.false_positives + s.confirmed) > 0.5);
+  fill($("tuning-hint"), noisy.length ? `Noisy: ${noisy.map(s => s.name).join(", ")}. Most of their flags were false positives; consider lowering their trust in iglite.toml.` : "");
+  const rules = await api("/api/suppressions");
+  fill($("suppressions"), rules.map(r => el("li", { style: "cursor:default" },
+    el("span", { class: "muted" }, r.kind), el("span", { class: "mono" }, r.value),
+    r.note ? el("span", { class: "muted", style: "font-size:12px" }, r.note) : null,
+    el("button", { class: "ghost small", style: "margin-left:auto", onclick: () => Feedback.unsuppress(r.id) }, "Remove"))));
+  $("suppress-head").hidden = !rules.length;
 }
+
+/* ---------- false-positive feedback ---------- */
+const Feedback = {
+  async mark(key, verdict, askNote = true) {
+    let note = "";
+    if (askNote && verdict !== "clear") {
+      note = prompt(verdict === "false_positive" ? "Why is this a false positive? (optional)" : "Why is this confirmed malicious? (optional)");
+      if (note === null) return null;  // cancelled
+    }
+    const r = await api("/api/feedback", { key, verdict, note });
+    recentAlerts = recentAlerts.map(a => a.key === key ? { ...a, status: verdict === "clear" ? "open" : verdict } : a);
+    fetchAlerts(); refreshStats(); refreshSources();
+    if (Drawer.key === key) Drawer.open(key);
+    if (view === "live") Live.refresh();
+    return r;
+  },
+  async suppress(kind, value) {
+    const note = prompt(`Never alert for ${kind} "${value}"? Optional note:`);
+    if (note === null) return;
+    await api("/api/suppressions", { kind, value, note });
+    refreshSources();
+    if (view === "live") Live.refresh();
+  },
+  async unsuppress(id) { await api("/api/suppressions/delete", { id }); refreshSources(); },
+};
 
 /* activity line chart: connections + flagged per scan, crosshair tooltip */
 const Activity = {
@@ -606,9 +652,19 @@ async function fetchAlerts() {
     recentAlerts = [...fresh, ...recentAlerts].slice(0, 30);
   }
   alertsPrimed = true;
-  fill($("alert-feed"), recentAlerts.map(a => el("li", { onclick: () => Drawer.open(a.key) },
-    badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted" }, timeAgo(a.at)),
-    el("span", { class: "sub" }, describeAlert(a)))));
+  const STATUS_LABEL = { false_positive: "marked false positive", confirmed: "confirmed" };
+  fill($("alert-feed"), recentAlerts.map(a => {
+    const stop = fn => ev => { ev.stopPropagation(); fn(); };
+    return el("li", { class: a.status && a.status !== "open" ? "resolved" : null, onclick: () => Drawer.open(a.key) },
+      badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted" }, timeAgo(a.at)),
+      el("span", { class: "sub" }, describeAlert(a)),
+      a.status && a.status !== "open"
+        ? el("span", { class: "acts" }, el("span", { class: "muted", style: "font-size:12px" }, STATUS_LABEL[a.status] || a.status),
+            el("button", { class: "ghost small", onclick: stop(() => Feedback.mark(a.key, "clear", false)) }, "Undo"))
+        : el("span", { class: "acts" },
+            el("button", { class: "ghost small", title: "Mark this indicator as a false positive", onclick: stop(() => Feedback.mark(a.key, "false_positive")) }, "False positive"),
+            el("button", { class: "ghost small", title: "Confirm this is a real threat", onclick: stop(() => Feedback.mark(a.key, "confirmed")) }, "Confirm")));
+  }));
   if (!recentAlerts.length) $("alert-feed").append(el("li", { class: "muted", style: "display:block;cursor:default" },
     "No alerts yet. Start monitoring to check this machine's connections against your sources."));
 }
@@ -683,7 +739,9 @@ const Live = {
     { key: "count", label: "Conns", num: true },
     { key: "act", label: "", static: true, render: r => r.verdict === "private" ? null : el("span", { class: "nowrap" },
         el("button", { class: "ghost small", title: "Traceroute to this address", onclick: ev => { ev.stopPropagation(); Routes.start(r.remote_ip); } }, "Trace"), " ",
-        el("button", { class: "ghost small", title: "Show in graph", onclick: ev => { ev.stopPropagation(); Graph.focus(r.key); } }, "Graph")) },
+        el("button", { class: "ghost small", title: "Show in graph", onclick: ev => { ev.stopPropagation(); Graph.focus(r.key); } }, "Graph"), " ",
+        r.process && !r.suppressed ? el("button", { class: "ghost small", title: `Never alert for connections made by ${r.process}`, onclick: ev => { ev.stopPropagation(); Feedback.suppress("process", r.process); } }, "Mute") : null,
+        r.suppressed ? el("span", { class: "muted", title: "A suppression rule matches: no alerts" }, "muted") : null) },
   ],
   async refresh() {
     const data = await api("/api/connections");
@@ -898,10 +956,18 @@ const Drawer = {
       el("div", { style: "display:flex;gap:14px;align-items:center;margin-top:10px" },
         el("div", { class: "big-score", title: "Score 0–100" }, a.score), el("div", {}, badge(a.verdict), el("div", { class: "mono", style: "margin-top:4px" }, n.value))),
       el("div", { class: "meter", title: `score ${a.score} of 100` }, el("div", { style: `width:${a.score}%;--c:var(${VCOLOR[a.verdict] || "--st-neutral"})` })),
-      a.contradiction ? el("div", { class: "warn", role: "note" }, el("b", {}, "Sources disagree. "), "Trusted sources call this both malicious and benign. Check the evidence before acting.") : null,
+      a.override ? el("div", { class: a.override === "false_positive" ? "ok" : "warn", role: "note" },
+        el("b", {}, a.override === "false_positive" ? "You marked this a false positive. " : "You confirmed this is malicious. "),
+        "Your mark overrides the computed verdict; the evidence below is kept for reference. ",
+        el("button", { class: "ghost small", onclick: () => Feedback.mark(key, "clear", false) }, "Undo")) : null,
+      a.contradiction && !a.override ? el("div", { class: "warn", role: "note" }, el("b", {}, "Sources disagree. "), "Trusted sources call this both malicious and benign. Check the evidence before acting.") : null,
       el("div", { class: "actions" },
         LOOKUP_KINDS.has(n.kind) ? el("button", { class: "primary", onclick: ev => reInvestigate(ev.currentTarget) }, "Investigate again") : null,
         TRACEABLE.has(n.kind) ? el("button", { class: "ghost", onclick: () => Routes.start(n.value) }, "Trace route") : null,
+        LOOKUP_KINDS.has(n.kind) && a.override !== "false_positive" ? el("button", { class: "ghost", title: "The sources are wrong about this one", onclick: () => Feedback.mark(key, "false_positive") }, "False positive") : null,
+        LOOKUP_KINDS.has(n.kind) && a.override !== "confirmed" ? el("button", { class: "ghost", title: "This is a real threat", onclick: () => Feedback.mark(key, "confirmed") }, "Confirm malicious") : null,
+        LOOKUP_KINDS.has(n.kind) ? el("button", { class: "ghost", title: "Keep scoring it, but never raise live alerts for it", onclick: () => Feedback.suppress("indicator", key) }, "Never alert") : null,
+        n.kind === "process" ? el("button", { class: "ghost", title: "Never raise live alerts for this program", onclick: () => Feedback.suppress("process", n.value) }, "Mute this program") : null,
         el("button", { class: "ghost", onclick: () => Analyst.send(`Explain ${key}: is it dangerous, what is it connected to, and what should I do about it?`) }, "Ask analyst"),
         el("button", { class: "ghost", onclick: () => Graph.focus(key) }, "Show in graph"),
         el("button", { class: "ghost", onclick: () => { Graph.setRoot(key); Graph.focus(key, false); } }, "Make graph root"),
