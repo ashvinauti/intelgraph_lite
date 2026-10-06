@@ -14,7 +14,7 @@ from iglite.extract import classify
 from iglite.model import Evidence, Relation, Verdict
 from iglite.netwatch import Connection, NetWatch, Snapshot
 from iglite.scoring import assess, freshness
-from iglite.store import Store
+from iglite.store import SCHEMA_VERSION, Store
 
 TRUST = {"a": 0.8, "b": 0.8}
 NOW = 1_800_000_000.0
@@ -230,7 +230,7 @@ def test_old_database_is_upgraded_in_place(tmp_path):
     store = Store(path)
     assert store.evidence("ip:1.2.3.4")[0].last_seen is None
     assert store.alerts()[0]["status"] == "open"
-    assert store._query("SELECT v FROM meta WHERE k='schema_version'")[0][0] == "4"
+    assert store._query("SELECT v FROM meta WHERE k='schema_version'")[0][0] == str(SCHEMA_VERSION)
 
 
 # -- API and CLI -------------------------------------------------------------------------------

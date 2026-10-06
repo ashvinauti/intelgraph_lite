@@ -415,7 +415,7 @@ class NetWatch:
                 and self._should_alert(key, verdict, now)
             ):
                 self._alerted[key] = (verdict, now)
-                store.add_alert(
+                alert_id = store.add_alert(
                     key,
                     verdict,
                     node.get("score") or 0,
@@ -429,6 +429,7 @@ class NetWatch:
                         }
                     ),
                 )
+                self.engine.on_alert(alert_id)
                 new_alerts += 1
 
         for row in grouped.values():  # analyst marks are shown in the table
