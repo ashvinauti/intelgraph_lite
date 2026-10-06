@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS alerts (
     verdict     TEXT NOT NULL,
     score       INTEGER NOT NULL,
     context     TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS routes (
+    id          INTEGER PRIMARY KEY,
+    at          REAL NOT NULL,
+    target      TEXT NOT NULL,
+    ip          TEXT NOT NULL,
+    hops        TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS cache (
@@ -306,6 +314,18 @@ class Store:
         rows = self._query("SELECT * FROM alerts WHERE id > ? ORDER BY id DESC LIMIT ?", (since_id, limit))
         return [{**dict(r), "context": json.loads(r["context"])} for r in rows]
 
+    # -- routes ------------------------------------------------------------
+
+    def add_route(self, target: str, ip: str, hops: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO routes (at, target, ip, hops) VALUES (?,?,?,?)", (time.time(), target, ip, hops)
+            )
+
+    def routes(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._query("SELECT * FROM routes ORDER BY id DESC LIMIT ?", (limit,))
+        return [{**dict(r), "hops": json.loads(r["hops"])} for r in rows]
+
     # -- cache -------------------------------------------------------------
 
     def cache_get(self, key: str, max_age: float) -> tuple[int, bytes] | None:
@@ -329,6 +349,7 @@ class Store:
         with self.transaction() as db:
             cache = db.execute("DELETE FROM cache WHERE fetched_at < ?", (cutoff,)).rowcount
             alerts = db.execute("DELETE FROM alerts WHERE at < ?", (cutoff,)).rowcount
+            db.execute("DELETE FROM routes WHERE at < ?", (cutoff,))
             ev = db.execute("DELETE FROM evidence WHERE observed_at < ?", (cutoff,)).rowcount
             edges = db.execute("DELETE FROM edges WHERE last_seen < ?", (cutoff,)).rowcount
             nodes = db.execute(

@@ -12,7 +12,7 @@ stays cheap to run and easy to maintain.
 |------|-----|
 | Low CPU / memory | The graph lives in SQLite and is traversed with indexed recursive SQL, so nothing is loaded wholesale into RAM. Lookups are I/O bound and run in a small thread pool. |
 | Fast and predictable | Every investigation has three hard limits: **depth**, **budget** (max indicators) and **deadline** (seconds). Every HTTP answer is cached with a per-source TTL, so a repeated investigation makes zero network calls. |
-| Sustainable | **Zero runtime dependencies.** Standard library only: `sqlite3`, `urllib`, `concurrent.futures`, `http.server`, `tomllib`. No dependency churn, nothing to patch but Python itself. About 2.9k lines of code. |
+| Sustainable | **Zero runtime dependencies.** Standard library only: `sqlite3`, `urllib`, `concurrent.futures`, `http.server`, `tomllib`. No dependency churn, nothing to patch but Python itself. About 3.2k lines of code. |
 | Logical | One direction of data flow and one contract per layer (below). Sources never touch the database, and scoring is a pure function. |
 | Explainable | Every score is a sum of named contributions, and each one is shown to the user. |
 | Safe by default | Private IPs and internal names are never sent to third parties. The API binds to localhost and needs a token to listen publicly. API keys come from the environment only. |
@@ -42,6 +42,7 @@ stays cheap to run and easy to maintain.
                 │ OSINT (free, keyless)   │   │ store.py (SQLite, WAL)  │
                 │  dns  rdap  crtsh       │   │  nodes   edges          │
                 │  internetdb             │   │  evidence  cache        │
+                │ shodan (API key)        │
                 │ CTI (API key)           │   └──────┬─────────────────┘
                 │  otx virustotal urlhaus │          │ evidence per node
                 │ Lists (local / feed)    │   ┌──────▼─────────────────┐
@@ -63,7 +64,7 @@ stays cheap to run and easy to maintain.
 | `model.py` | none | `Indicator`, `Evidence`, `Relation`, `Finding`, `Assessment` (immutable) | contain logic |
 | `extract.py` | text / raw value | `Indicator`s, derived `Relation`s | do I/O |
 | `sources/*` | `Indicator`, `Context` | `Finding` or `None` | write to the store |
-| `fetch.py` | URL, TTL | `(status, body)` from cache or network | cache transient errors (429/5xx) |
+| `fetch.py` | URL, TTL | `(status, body)` from cache or network | cache transient errors (429/5xx) or auth failures (401/403), or put credentials in cache keys |
 | `store.py` | model objects | rows | know about sources or scoring |
 | `scoring.py` | evidence and trust weights | `Assessment` | do I/O |
 | `engine.py` | seeds and limits | `Report` | parse source responses |
@@ -86,6 +87,20 @@ foreground with `iglite watch`. Reading the connection table instead of
 sniffing packets means no capture driver, no admin rights and process
 attribution for free. The cost is that very short-lived connections between
 snapshots are missed.
+
+## Traceroute
+
+```
+Tracer.start(target) ──thread──▶ tracert -d | traceroute -n | tracepath -n
+                                   │  lines parsed as they arrive (dashboard polls the job)
+                                   ▼
+                        this computer ─next_hop→ hop1 ─next_hop→ … → target   (stored edges)
+                        engine.investigate(hops, depth=0)   (private hops: local lists only)
+```
+
+At most 3 traces run at once, and each is killed after 120 s. Targets are
+validated as an IP, domain or URL before they reach the command line, and they
+are passed as an argument list, never through a shell.
 
 ## Scoring
 
@@ -139,13 +154,13 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (47 tests, offline) | ~3 s |
+| Full test suite (60 tests, offline) | ~4 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 
 | | IntelGraph | IntelGraph Lite |
 |---|---|---|
-| Code size | ~43k lines, 285 modules | ~2.9k lines, 18 modules |
+| Code size | ~43k lines, 285 modules | ~3.2k lines, 19 modules |
 | Runtime dependencies | 15 (FastAPI, uvicorn, strawberry, stix2, pydantic, …) | 0 |
 | Graph | In-memory adjacency list, loaded from storage | SQLite tables and recursive SQL |
 | Concurrency | Async framework | Thread pool for I/O, single DB writer |
