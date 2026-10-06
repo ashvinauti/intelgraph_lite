@@ -20,6 +20,7 @@ ENV_KEYS = {
     "virustotal": ("VT_API_KEY", "VIRUSTOTAL_API_KEY"),
     "shodan": ("SHODAN_API_KEY",),
     "urlhaus": ("ABUSECH_AUTH_KEY", "URLHAUS_AUTH_KEY"),
+    "anthropic": ("ANTHROPIC_API_KEY",),  # the optional AI analyst
 }
 
 
@@ -60,6 +61,9 @@ class Config:
     blocklists: dict[str, str] = field(default_factory=dict)  # name -> path or URL
     allowlists: dict[str, str] = field(default_factory=dict)
     watch_interval: float = 30.0  # seconds between live network snapshots
+    ai_model: str = "claude-opus-5-5"  # AI analyst model
+    ai_effort: str = "high"  # low | medium | high | xhigh | max: depth vs. token cost
+    ai_max_steps: int = 10  # model turns per question
     api_token: str | None = None
     keys: dict[str, str] = field(default_factory=dict)
 

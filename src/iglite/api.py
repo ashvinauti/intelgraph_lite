@@ -256,6 +256,39 @@ def _traces(engine: Engine, q: dict, body: dict) -> Any:
     return {"jobs": running, "saved": engine.store.routes(20)}
 
 
+def _agent_status(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.agent_desk().status()
+
+
+def _agent_ask(engine: Engine, q: dict, body: dict) -> Any:
+    from .agent import AgentUnavailable
+
+    desk = engine.agent_desk()
+    session = str(body.get("session") or "default")[:64]
+    try:
+        job = desk.ask(str(body.get("question", "")), session)
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+    except AgentUnavailable as exc:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
+    except RuntimeError as exc:
+        raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+    return desk.describe(job)
+
+
+def _agent_get(engine: Engine, q: dict, body: dict) -> Any:
+    desk = engine.agent_desk()
+    job = desk.jobs.get(_int(q, "id", 0, 2**62))
+    if job is None:
+        raise ApiError(HTTPStatus.NOT_FOUND, "no such question")
+    return desk.describe(job)
+
+
+def _agent_reset(engine: Engine, q: dict, body: dict) -> Any:
+    engine.agent_desk().reset(str(body.get("session") or "default")[:64])
+    return {"ok": True}
+
+
 def _extract(engine: Engine, q: dict, body: dict) -> Any:
     return [i.key for i in extract(str(body.get("text", ""))[:MAX_BODY])]
 
@@ -300,6 +333,10 @@ ROUTES = {
     ("POST", "/api/trace"): _trace_start,
     ("GET", "/api/trace"): _trace_get,
     ("GET", "/api/traces"): _traces,
+    ("GET", "/api/agent/status"): _agent_status,
+    ("POST", "/api/agent"): _agent_ask,
+    ("GET", "/api/agent"): _agent_get,
+    ("POST", "/api/agent/reset"): _agent_reset,
 }
 
 
