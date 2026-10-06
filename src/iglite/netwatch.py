@@ -329,6 +329,10 @@ class NetWatch:
             "flagged": sum(1 for r in self.rows if r["verdict"] in _FLAGGED),
         }
 
+    @staticmethod
+    def _suppressed(key: str, process: str | None, rules: dict[str, set[str]]) -> bool:
+        return key in rules.get("indicator", ()) or (process or "").lower() in rules.get("process", ())
+
     def _should_alert(self, key: str, verdict: str, now: float) -> bool:
         previous = self._alerted.get(key)
         if previous is None or now - previous[1] > self.REALERT_AFTER:
@@ -381,6 +385,11 @@ class NetWatch:
             report = self.engine.investigate(seeds, depth=0, budget=len(seeds))
 
         nodes = {n["key"]: n for n in store.nodes(public)}
+        suppressed: dict[str, set[str]] = {}
+        for rule in store.suppressions():
+            suppressed.setdefault(rule["kind"], set()).add(
+                rule["value"].lower() if rule["kind"] == "process" else rule["value"]
+            )
         grouped: dict[tuple, dict[str, Any]] = {}
         new_alerts = 0
         for c in live:
@@ -399,7 +408,12 @@ class NetWatch:
                 "verdict": verdict,
                 "score": node.get("score"),
             }
-            if verdict in _FLAGGED and self._should_alert(key, verdict, now):
+            if (
+                verdict in _FLAGGED
+                and (node.get("score") or 0) >= self.engine.config.alert_min_score
+                and not self._suppressed(key, c.process, suppressed)
+                and self._should_alert(key, verdict, now)
+            ):
                 self._alerted[key] = (verdict, now)
                 store.add_alert(
                     key,
@@ -417,6 +431,8 @@ class NetWatch:
                 )
                 new_alerts += 1
 
+        for row in grouped.values():  # analyst marks are shown in the table
+            row["suppressed"] = self._suppressed(row["key"], row["process"], suppressed)
         rows = list(grouped.values())
         rank = {"malicious": 0, "suspicious": 1, "pending": 2, "unknown": 3, "benign": 4, "private": 5}
         rows.sort(key=lambda r: (rank.get(r["verdict"], 3), -(r["score"] or 0), r["remote_ip"]))

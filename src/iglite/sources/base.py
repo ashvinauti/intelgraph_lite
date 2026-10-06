@@ -9,6 +9,7 @@ to write and to test with a fake transport.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import ClassVar
 
 from ..config import Config
@@ -44,3 +45,22 @@ class Source:
         """Return what this source knows. ``None`` means "no answer" and leaves
         previously stored evidence untouched; an empty ``Finding`` clears it."""
         raise NotImplementedError
+
+
+def parse_time(value: object) -> float | None:
+    """Epoch seconds from an API timestamp (epoch number or ISO-ish string), else None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, int | float):
+        return float(value) if value > 0 else None
+    text = str(value).strip().replace(" UTC", "+00:00").replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).timestamp()
+
+
+def latest(values: object) -> float | None:
+    times = [t for t in map(parse_time, values or []) if t is not None]  # type: ignore[arg-type]
+    return max(times) if times else None

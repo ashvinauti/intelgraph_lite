@@ -215,7 +215,51 @@ class Engine:
         return indicators
 
     def assess(self, key: str) -> Assessment:
-        return scoring.assess(self.store.evidence(key), self.trust, self._bad_neighbours(key))
+        return self._assess(key, neighbours=self._bad_neighbours(key))
+
+    def _assess(self, key: str, neighbours: list[tuple[str, str]] | None = None) -> Assessment:
+        node = self.store.node(key)
+        return scoring.assess(
+            self.store.evidence(key),
+            self.trust,
+            neighbours or (),
+            shared_infra=self.shared_infra(node) if node else None,
+            feedback=self.store.feedback(key),
+            half_life_days=self.config.evidence_half_life_days,
+        )
+
+    def shared_infra(self, node: dict[str, Any]) -> str | None:
+        """Name of the CDN/cloud operator if this IP is shared infrastructure."""
+        if node["kind"] != Kind.IP.value:
+            return None
+        attrs = node["attrs"]
+        owners = " | ".join(
+            str(attrs.get(k) or "") for k in ("shodan.org", "shodan.isp", "rdap.net_name", "rdap.net_handle")
+        ).lower()
+        for name in self.config.shared_infra:
+            if name.lower() in owners:
+                return name.title()
+        tags = {str(t).lower() for k in ("internetdb.tags", "shodan.tags") for t in attrs.get(k) or []}
+        return "CDN" if "cdn" in tags else None
+
+    def set_feedback(self, key: str, verdict: str | None, note: str = "") -> Assessment:
+        """Record an analyst verdict (false_positive / confirmed) or clear it (None)."""
+        if self.store.node(key) is None:
+            raise KeyError(key)
+        if verdict is None:
+            self.store.clear_feedback(key)
+            self.store.set_alert_status(key, "open")
+        else:
+            if verdict not in ("false_positive", "confirmed"):
+                raise ValueError("verdict must be false_positive or confirmed")
+            flagging = [
+                e.source
+                for e in self.store.evidence(key)
+                if e.verdict in (Verdict.MALICIOUS, Verdict.SUSPICIOUS)
+            ]
+            self.store.set_feedback(key, verdict, note.strip()[:500], flagging)
+            self.store.set_alert_status(key, verdict)
+        return self.rescore({key})[key]
 
     def rescore(self, keys: set[str]) -> dict[str, Assessment]:
         """Rescore ``keys`` and their direct neighbours (whose association hint may change)."""
@@ -246,8 +290,9 @@ class Engine:
             if e["rel"] not in scoring.PROPAGATING:
                 continue
             other = e["dst"] if e["src"] == key else e["src"]
-            # Judge the neighbour on its own evidence only, to avoid loops.
-            direct = scoring.assess(self.store.evidence(other), self.trust)
+            # Judge the neighbour on its own evidence only, to avoid loops
+            # (analyst feedback and shared-infrastructure discounts included).
+            direct = self._assess(other)
             if direct.verdict is Verdict.MALICIOUS:
                 out.append((other, e["rel"]))
         return out

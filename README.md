@@ -73,6 +73,31 @@ fires when one comes back suspicious or malicious.
 Run it as a normal user. On Linux, root is needed to see other users'
 processes. Only monitor machines and networks you're responsible for.
 
+## Reducing false positives
+
+Most false alerts come from old evidence, shared infrastructure, noisy feeds,
+or things only you know about (your VPN, your lab). IntelGraph Lite handles
+each one, and every adjustment appears in the indicator's "why this score"
+list.
+
+| Cause | What IntelGraph Lite does |
+|-------|---------------------------|
+| **Stale evidence**: an IP flagged years ago, since reassigned | Bad evidence carries the date the source last saw it, and its weight halves every 180 days (`evidence_half_life_days`), down to 10%. The reason says e.g. *"last seen 2 years ago, weight 6%"*. |
+| **Shared infrastructure**: one Cloudflare/Google/Akamai IP serves thousands of sites | IP reputation on known CDN and big-platform networks counts at half weight (`shared_infra` list in `iglite.toml`). |
+| **Noisy signals** | VirusTotal: 1 engine = ignored, 2–4 = suspicious, 5+ = malicious. Shodan/InternetDB `vpn`, `proxy` and `honeypot` tags are recorded but aren't evidence. OTX's own "whitelisted" and "reported false positive" data counts *against* a flag. |
+| **Weak single-source hits** | Shown in the Live network table but not alerted. Alerts need a score of at least 60 (`alert_min_score`). |
+| **Things only you know** | **Mark false positive** or **Confirm malicious** from an alert, the details panel, or `iglite fp` / `iglite confirm`. Your mark overrides the verdict, resolves its alerts, and stops it spreading suspicion to related indicators. `iglite unmark` undoes it. |
+| **Programs you trust** | **Mute** a program in the Live network table, or "Never alert" on an indicator (`iglite suppress process Teams.exe`). It's still scored and shown, just never alerted. |
+| **A feed that's usually wrong** | Your marks are tallied per source (`iglite feedback`, and the dashboard's Sources card). A source whose flags you mostly mark as false positives is called out, so you can lower its `trust`. |
+
+```bash
+iglite fp 203.0.113.66 --note "office VPN gateway"
+iglite confirm evil.example
+iglite suppress process "VPNClient.exe" --note "company VPN"
+iglite suppress list
+iglite feedback          # your marks + false-positive rate per source
+```
+
 ## AI analyst
 
 An optional Claude-powered agent that investigates for you. Ask in plain
@@ -219,7 +244,7 @@ docker run -p 8765:8765 -e IGLITE_API_TOKEN=change-me -v iglite:/data iglite
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 71 offline tests, ~3 s
+.venv/bin/pytest            # 92 offline tests, ~3 s
 .venv/bin/ruff check src tests
 ```
 
