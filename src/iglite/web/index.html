@@ -46,6 +46,7 @@
   nav a[aria-current="page"] { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
   nav a .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; font-size: 11px;
                  background: var(--st-critical); color: #fff; text-align: center; }
+  nav a .count[hidden] { display: none; }
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
           border: 1px solid var(--line); background: var(--surface-1); cursor: pointer; white-space: nowrap; }
   .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-neutral); }
@@ -218,6 +219,30 @@
   ul.links li { padding: 5px 0; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
   ul.links li:hover { color: var(--accent); }
 
+  /* analyst chat */
+  .chat { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; height: calc(100vh - 100px); min-height: 420px; }
+  .chat-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .chat-head h2 { font-size: 15px; }
+  .chat-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 4px 2px 12px; }
+  .msg { max-width: 88%; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-1); animation: fade .2s ease-out; }
+  .msg.user { align-self: flex-end; background: color-mix(in srgb, var(--accent) 10%, var(--surface-1)); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.bot { align-self: flex-start; }
+  .msg.bot p { margin: 0 0 8px; } .msg.bot p:last-child { margin-bottom: 0; }
+  .msg.bot ul, .msg.bot ol { margin: 4px 0 8px; padding-left: 22px; }
+  .msg.bot h4 { margin: 10px 0 4px; font-size: 13px; }
+  .msg.bot code { font-family: ui-monospace, monospace; font-size: 12.5px; background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
+  .msg.bot a.ind { font-family: ui-monospace, monospace; font-size: 12.5px; color: var(--accent); cursor: pointer; text-decoration: none; border-bottom: 1px dotted; }
+  .msg.err { border-color: var(--st-critical); }
+  .steps { list-style: none; margin: 0 0 8px; padding: 0; font-size: 12.5px; color: var(--text-secondary); }
+  .steps li { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; }
+  .steps .tool { font-family: ui-monospace, monospace; color: var(--text-primary); }
+  .meta { font-size: 11.5px; color: var(--text-muted); margin-top: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .chips button { border: 1px solid var(--line); background: var(--surface-1); border-radius: 999px; padding: 4px 12px; cursor: pointer; font-size: 12.5px; }
+  .chips button:hover { border-color: var(--accent); }
+  .chat-input { display: flex; gap: 8px; align-items: flex-end; }
+  .chat-input textarea { flex: 1; min-height: 46px; max-height: 200px; }
+
   /* toasts */
   #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
   .toast { background: var(--surface-1); border: 1px solid var(--line); border-left: 4px solid var(--c, var(--st-neutral));
@@ -236,6 +261,7 @@
     <a href="#routes" data-view="routes">Routes</a>
     <a href="#graph" data-view="graph">Graph</a>
     <a href="#indicators" data-view="indicators">Indicators</a>
+    <a href="#analyst" data-view="analyst">Analyst</a>
   </nav>
   <button class="pill" id="watch-pill" title="Start or stop live network monitoring"><span class="dot"></span><span id="watch-label">Monitoring off</span></button>
   <button class="icon-btn" id="theme" title="Toggle light/dark theme">Dark</button>
@@ -279,7 +305,7 @@
         </div>
       </div>
     </div>
-    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>5</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
+    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>6</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
   </section>
 
   <!-- LIVE NETWORK -->
@@ -332,6 +358,24 @@
       <svg id="graph" aria-label="Knowledge graph"><g id="viewport"><g id="cols"></g><g id="edges"></g><g id="nodes"></g></g></svg>
       <div class="graph-root" id="g-root"></div>
       <div class="graph-hint">Click a node for details · double-click to expand · drag to move · scroll to zoom</div>
+    </div>
+  </section>
+
+  <!-- ANALYST -->
+  <section class="view" id="view-analyst">
+    <div class="chat">
+      <div class="chat-head">
+        <div><h2 style="margin:0">AI analyst</h2><span class="muted" id="a-model"></span></div>
+        <button class="ghost small" id="a-new">New conversation</button>
+      </div>
+      <div id="a-unavailable" class="warn" hidden></div>
+      <div class="chat-log" id="a-log" aria-live="polite"></div>
+      <div class="chips" id="a-chips"></div>
+      <div class="chat-input">
+        <textarea id="a-q" rows="2" placeholder="Ask about an indicator, your live connections, alerts or a pasted report. Enter to send, Shift+Enter for a new line."></textarea>
+        <button class="primary" id="a-go">Ask</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">The analyst uses Claude and sends the question plus the data its tools read (indicators, connection list, evidence) to Anthropic. Verdicts come from IntelGraph Lite's own evidence engine.</p>
     </div>
   </section>
 
@@ -451,7 +495,7 @@ applyTheme(store.get("iglite-theme"));
 $("theme").onclick = () => { const next = isDark() ? "light" : "dark"; applyTheme(next); store.set("iglite-theme", next); };
 
 /* ---------- routing & shortcuts ---------- */
-const VIEWS = ["overview", "live", "routes", "graph", "indicators"];
+const VIEWS = ["overview", "live", "routes", "graph", "indicators", "analyst"];
 let view = "overview";
 function route() {
   view = (location.hash || "#overview").slice(1);
@@ -465,9 +509,9 @@ window.addEventListener("hashchange", route);
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { Drawer.close(); Tip.hide(); return; }
   if (e.target.matches("input, textarea, select") || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key >= "1" && e.key <= "5") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
+  if (e.key >= "1" && e.key <= "6") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
   if (e.key === "/") {
-    const box = { live: "live-q", routes: "r-target", graph: "g-add", indicators: "i-q", overview: "inv-text" }[view];
+    const box = { live: "live-q", routes: "r-target", graph: "g-add", indicators: "i-q", overview: "inv-text", analyst: "a-q" }[view];
     if (box) { $(box).focus(); e.preventDefault(); }
   }
 });
@@ -858,6 +902,7 @@ const Drawer = {
       el("div", { class: "actions" },
         LOOKUP_KINDS.has(n.kind) ? el("button", { class: "primary", onclick: ev => reInvestigate(ev.currentTarget) }, "Investigate again") : null,
         TRACEABLE.has(n.kind) ? el("button", { class: "ghost", onclick: () => Routes.start(n.value) }, "Trace route") : null,
+        el("button", { class: "ghost", onclick: () => Analyst.send(`Explain ${key}: is it dangerous, what is it connected to, and what should I do about it?`) }, "Ask analyst"),
         el("button", { class: "ghost", onclick: () => Graph.focus(key) }, "Show in graph"),
         el("button", { class: "ghost", onclick: () => { Graph.setRoot(key); Graph.focus(key, false); } }, "Make graph root"),
         copy),
@@ -1117,12 +1162,122 @@ const Graph = {
   window.addEventListener("resize", () => Graph.resize());
 })();
 
+/* ---------- AI analyst ---------- */
+const IND_RE = /\b(?:ip|domain|url|hash|cve|email|process|org|tag|asn|host|report):[^\s,;()<>\]"'`]+/g;
+function inline(text) {
+  // **bold**, `code` and kind:value indicator links, built as DOM nodes (never innerHTML).
+  const out = [];
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/);
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.startsWith("**") && part.endsWith("**")) { out.push(el("strong", {}, ...inline(part.slice(2, -2)))); continue; }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      const inner = part.slice(1, -1);
+      out.push(IND_RE.test(inner) ? indLink(inner) : el("code", {}, inner)); IND_RE.lastIndex = 0; continue;
+    }
+    let last = 0;
+    for (const m of part.matchAll(IND_RE)) {
+      const key = m[0].replace(/[.:]+$/, "");
+      out.push(part.slice(last, m.index), indLink(key));
+      last = m.index + key.length;
+    }
+    out.push(part.slice(last));
+  }
+  return out.filter(x => x !== "");
+}
+const indLink = key => el("a", { class: "ind", title: "Open details", onclick: () => Drawer.open(key) }, key);
+function renderMarkdown(md) {
+  const nodes = []; let list = null, para = [];
+  const flushPara = () => { if (para.length) { nodes.push(el("p", {}, ...inline(para.join(" ")))); para = []; } };
+  const flushList = () => { if (list) { nodes.push(list); list = null; } };
+  for (const raw of md.split("\n")) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    if ((m = line.match(/^#{1,6}\s+(.*)/))) { flushPara(); flushList(); nodes.push(el("h4", {}, ...inline(m[1]))); continue; }
+    if ((m = line.match(/^\s*[-*•]\s+(.*)/)) || (m = line.match(/^\s*\d+[.)]\s+(.*)/))) {
+      flushPara();
+      const ordered = /^\s*\d/.test(line);
+      if (!list || (list.tagName === "OL") !== ordered) { flushList(); list = el(ordered ? "ol" : "ul"); }
+      list.append(el("li", {}, ...inline(m[1]))); continue;
+    }
+    flushList(); para.push(line.trim());
+  }
+  flushPara(); flushList();
+  return nodes;
+}
+const Analyst = {
+  session: (() => { try { let s = sessionStorage.getItem("iglite-session"); if (!s) { s = Math.random().toString(36).slice(2); sessionStorage.setItem("iglite-session", s); } return s; } catch (e) { return Math.random().toString(36).slice(2); } })(),
+  status: null, busy: false,
+  SUGGEST: ["Is anything on my network talking to something malicious?", "Summarize today's alerts and what I should do",
+            "What are the most dangerous indicators in my database?", "Check my live connections and explain anything unusual"],
+  async init() {
+    if (this.status) return;
+    try { this.status = await api("/api/agent/status"); } catch (e) { this.status = { available: false, reason: e.message }; }
+    const box = $("a-unavailable");
+    if (!this.status.available) {
+      box.hidden = false;
+      fill(box, el("b", {}, "The analyst isn't set up yet: "), this.status.reason, ".", el("br"),
+        "Setup: ", el("code", { class: "mono" }, "python -m pip install .[ai]"), ", put ",
+        el("code", { class: "mono" }, "ANTHROPIC_API_KEY=…"), " in .env, then restart ", el("code", { class: "mono" }, "iglite serve"), ".");
+      $("a-go").disabled = true;
+    } else $("a-model").textContent = this.status.model;
+    fill($("a-chips"), this.SUGGEST.map(q => el("button", { onclick: () => this.send(q) }, q)));
+    if (!$("a-log").children.length) $("a-log").append(el("div", { class: "msg bot" },
+      el("p", {}, "Hi, I'm the IntelGraph Lite analyst. I can look up indicators, walk the graph, read your live connections and alerts, run traceroutes, and explain what I find."),
+      el("p", { class: "muted" }, "Try one of the suggestions below, or paste a threat report.")));
+  },
+  async send(question) {
+    location.hash = "#analyst";
+    await this.init();
+    question = (question ?? $("a-q").value).trim();
+    if (!question || this.busy || !this.status.available) return;
+    $("a-q").value = ""; this.busy = true; $("a-go").disabled = true;
+    const log = $("a-log");
+    log.append(el("div", { class: "msg user" }, question));
+    const steps = el("ul", { class: "steps" });
+    const pending = el("div", { class: "msg bot" }, steps, el("p", { class: "muted" }, el("span", { class: "spinner" }), " Thinking…"));
+    log.append(pending); log.scrollTop = log.scrollHeight;
+    try {
+      let job = await api("/api/agent", { question, session: this.session });
+      while (job.status === "running") {
+        await new Promise(r => setTimeout(r, 900));
+        job = await api("/api/agent?id=" + job.id);
+        this.paintSteps(steps, job.steps);
+      }
+      this.paintSteps(steps, job.steps);
+      if (job.status === "error") { pending.classList.add("err"); fill(pending, steps, el("p", {}, job.error)); }
+      else {
+        const u = job.usage;
+        fill(pending, steps.children.length ? steps : null, ...renderMarkdown(job.answer || ""),
+          el("div", { class: "meta" }, `${u.model} · ${job.steps.length} tool call(s) · ${u.input_tokens.toLocaleString()} in / ${u.output_tokens.toLocaleString()} out tokens`));
+        refreshStats();
+      }
+    } catch (e) { pending.classList.add("err"); fill(pending, el("p", {}, e.message)); }
+    finally { this.busy = false; $("a-go").disabled = !this.status.available; log.scrollTop = log.scrollHeight; }
+  },
+  paintSteps(ul, steps) {
+    fill(ul, steps.map(s => el("li", {}, s.ok ? "✓" : "✕", el("span", { class: "tool" }, s.tool),
+      el("span", { class: "muted" }, Object.values(s.input).filter(v => typeof v !== "boolean" && v !== "" && !(Array.isArray(v) && !v.length)).map(v => Array.isArray(v) ? v.join(", ") : v).join(" · ").slice(0, 80)),
+      el("span", {}, "→ ", s.summary))));
+    $("a-log").scrollTop = $("a-log").scrollHeight;
+  },
+  async reset() {
+    try { await api("/api/agent/reset", { session: this.session }); } catch (e) {}
+    fill($("a-log")); this.status = null; await this.init();
+  },
+};
+$("a-go").onclick = () => Analyst.send();
+$("a-new").onclick = () => Analyst.reset();
+$("a-q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); Analyst.send(); } });
+
 /* ---------- polling (paused while the tab is hidden) ---------- */
 async function refreshView() {
   try {
     if (view === "overview") await Promise.all([refreshStats(), pollAlerts(), Activity.refresh(), refreshSources()]);
     else if (view === "live") await Live.refresh();
     else if (view === "routes") await Routes.list();
+    else if (view === "analyst") await Analyst.init();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
     else if (view === "graph" && !Graph.nodes.size) {
       await Graph.load("host:this-computer", true, 3);

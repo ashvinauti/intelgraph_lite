@@ -73,6 +73,38 @@ fires when one comes back suspicious or malicious.
 Run it as a normal user. On Linux, root is needed to see other users'
 processes. Only monitor machines and networks you're responsible for.
 
+## AI analyst
+
+An optional Claude-powered agent that investigates for you. Ask in plain
+language and it uses IntelGraph Lite's own tools: looking up indicators,
+walking the graph, reading live connections and alerts, and running
+traceroutes. It then answers with the evidence.
+
+```bash
+python -m pip install .[ai]          # adds the anthropic SDK (the only extra dependency)
+# put ANTHROPIC_API_KEY=... in your .env (get a key at console.anthropic.com)
+
+iglite ask "Is anything on my network talking to something malicious?"
+iglite ask "Triage this report" -f report.txt
+iglite chat                          # back-and-forth conversation
+```
+
+Or use the **Analyst** tab in the dashboard. Indicators in its answers are
+clickable, and every indicator's details panel has an **Ask analyst** button.
+
+* **Grounded:** scores and verdicts come from the evidence engine. The model
+  explains and correlates; it doesn't invent findings.
+* **Bounded:** at most 10 model turns per question (`ai_max_steps`), and every
+  tool runs under the engine's own budget and deadline.
+* **Injection-aware:** text from feeds and web pages is treated as data, never
+  as instructions.
+* **Configurable:** `ai_model` (default `claude-opus-5-5`) and `ai_effort`
+  (`low` … `max`, default `high`) in `iglite.toml`, or `--model` / `--effort` on
+  the command line. Lower effort is cheaper and faster.
+* **Privacy:** the question and whatever its tools read (indicators, your
+  connection list, evidence) are sent to Anthropic's API. Nothing is sent until
+  you ask a question.
+
 ## Traceroute
 
 `iglite trace <ip|domain|url>` (or the **Routes** tab, or **Trace** on any live
@@ -95,9 +127,10 @@ Windows and macOS include one.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
 * **Graph**: two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **Indicators**: a searchable, sortable list with STIX export.
+* **Analyst**: chat with the optional AI analyst (see below).
 * **Details panel**: why an indicator got its score, its connections and attributes, and a button to investigate again.
 
-Keyboard: `1`–`5` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`6` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -169,7 +202,7 @@ docker run -p 8765:8765 -e IGLITE_API_TOKEN=change-me -v iglite:/data iglite
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 60 offline tests, ~3 s
+.venv/bin/pytest            # 71 offline tests, ~3 s
 .venv/bin/ruff check src tests
 ```
 
