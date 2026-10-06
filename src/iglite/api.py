@@ -273,7 +273,45 @@ def _connections(engine: Engine, q: dict, body: dict) -> Any:
 
 
 def _alerts(engine: Engine, q: dict, body: dict) -> Any:
-    return engine.store.alerts(_int(q, "since", 0, 2**62), _int(q, "limit", 100, 1000))
+    alerts = engine.store.alerts(_int(q, "since", 0, 2**62), _int(q, "limit", 100, 1000))
+    triage = engine.store.latest_triage(alert_ids=[a["id"] for a in alerts])
+    return [{**a, "triage": triage.get(a["id"])} for a in alerts]
+
+
+def _triage_status(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.triage_worker().status()
+
+
+def _triage_submit(engine: Engine, q: dict, body: dict) -> Any:
+    from .llm import AgentUnavailable
+
+    alert_id, key = body.get("alert_id"), body.get("key")
+    try:
+        alert_id = int(alert_id) if alert_id is not None else None
+    except (TypeError, ValueError):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "alert_id must be an integer")
+    if alert_id is None and not key:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "give alert_id or key")
+    if alert_id is None:
+        key = _key({"key": str(key)})
+        if engine.store.node(key) is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, f"{key} not found")
+    elif not any(a["id"] == alert_id for a in engine.store.alerts(limit=1000)):
+        raise ApiError(HTTPStatus.NOT_FOUND, f"no alert #{alert_id}")
+    try:
+        engine.triage_worker().submit(alert_id=alert_id, key=key, trigger="manual")
+    except AgentUnavailable as exc:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
+    return {"queued": True, "alert_id": alert_id, "key": key}
+
+
+def _triage_latest(engine: Engine, q: dict, body: dict) -> Any:
+    if q.get("alert_id"):
+        return engine.store.latest_triage(alert_ids=[_int(q, "alert_id", 0, 2**62)]).get(
+            _int(q, "alert_id", 0, 2**62)
+        )
+    key = _key(q)
+    return engine.store.latest_triage(key=key).get(key)
 
 
 def _history(engine: Engine, q: dict, body: dict) -> Any:
@@ -383,6 +421,9 @@ ROUTES = {
     ("POST", "/api/trace"): _trace_start,
     ("GET", "/api/trace"): _trace_get,
     ("GET", "/api/traces"): _traces,
+    ("GET", "/api/triage/status"): _triage_status,
+    ("POST", "/api/triage"): _triage_submit,
+    ("GET", "/api/triage/latest"): _triage_latest,
     ("POST", "/api/feedback"): _feedback_set,
     ("GET", "/api/feedback"): _feedback_list,
     ("GET", "/api/suppressions"): _suppressions,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -167,6 +168,71 @@ def cmd_mark(engine: Engine, args: argparse.Namespace) -> int:
     except KeyError:
         raise SystemExit(f"{key} is not in the database")
     _print_assessment(key, a.as_dict())
+    return 0
+
+
+_ASSESS = {
+    "likely_false_positive": ("benign", "LIKELY FALSE POSITIVE"),
+    "likely_true_positive": ("malicious", "LIKELY REAL"),
+    "uncertain": ("suspicious", "UNCERTAIN"),
+}
+
+
+def _print_triage(t: dict[str, Any]) -> None:
+    if t.get("status") == "error":
+        print(f"  triage failed: {t.get('error')}")
+        return
+    colour, label = _ASSESS.get(t.get("assessment") or "", ("unknown", "?"))
+    print(_paint(colour, f"  AI: {label} ({(t.get('confidence') or 0):.0%})") + f"  [{t.get('model')}]")
+    if t.get("summary"):
+        print(f"  {t['summary']}")
+    for r in t.get("reasons") or []:
+        print(f"   - {r}")
+    print(f"  suggested: {(t.get('action') or '').replace('_', ' ')}")
+
+
+def cmd_alerts(engine: Engine, args: argparse.Namespace) -> int:
+    alerts = engine.store.alerts(limit=args.limit)
+    triage = engine.store.latest_triage(alert_ids=[a["id"] for a in alerts])
+    if not alerts:
+        print("No alerts yet. Run `iglite watch` or `iglite serve --watch`.")
+    for a in alerts:
+        c = a["context"] or {}
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(a["at"]))
+        status = "" if a["status"] == "open" else f" [{a['status'].replace('_', ' ')}]"
+        print(
+            _paint(a["verdict"], f"#{a['id']:<4} {when}  {a['verdict']:<10} {a['score']:>3}  {a['key']}")
+            + f"  <- {c.get('process') or '?'}:{c.get('remote_port')}{status}"
+        )
+        if t := triage.get(a["id"]):
+            _print_triage(t)
+    return 0
+
+
+def cmd_triage(engine: Engine, args: argparse.Namespace) -> int:
+    from .llm import AgentUnavailable
+    from .triage import Triager
+
+    targets: list[tuple[int | None, str | None]] = [(i, None) for i in args.alert]
+    if args.indicator:
+        targets.append((None, _resolve_key(args.indicator)))
+    if args.open:
+        targets += [(a["id"], None) for a in engine.store.alerts(limit=200) if a["status"] == "open"]
+    if not targets:
+        raise SystemExit("usage: iglite triage ALERT_ID... | --indicator X | --open")
+    try:
+        triager = Triager(engine)
+    except AgentUnavailable as exc:
+        raise SystemExit(f"error: {exc}")
+    print(f"Triage agent: {triager.backend.model} via {triager.backend.endpoint}\n")
+    for alert_id, key in targets:
+        label = f"alert #{alert_id}" if alert_id is not None else key
+        print(f"{label}: investigating...", flush=True)
+        try:
+            _print_triage(triager.run(alert_id=alert_id, key=key, trigger="manual"))
+        except KeyError as exc:
+            print(f"  not found: {exc}")
+        print()
     return 0
 
 
@@ -445,6 +511,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("feedback", help="list your marks and per-source false-positive rates").set_defaults(
         func=cmd_feedback
     )
+
+    sp = sub.add_parser("alerts", help="list recent alerts with their AI triage")
+    sp.add_argument("--limit", type=int, default=20)
+    sp.set_defaults(func=cmd_alerts)
+
+    sp = sub.add_parser("triage", help="AI false-positive triage of alerts or an indicator")
+    sp.add_argument("alert", nargs="*", type=int, help="alert id(s), see `iglite alerts`")
+    sp.add_argument("--indicator", help="triage an indicator that has no alert")
+    sp.add_argument("--open", action="store_true", help="triage every open alert")
+    sp.set_defaults(func=cmd_triage)
 
     sp = sub.add_parser("suppress", help="alert suppression rules")
     sp.add_argument(

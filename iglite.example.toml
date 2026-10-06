@@ -18,8 +18,13 @@ alert_min_score = 60            # live alerts need at least this score (70 = mal
 # Seconds between live network snapshots (`iglite watch`, `serve --watch`).
 watch_interval = 30
 
-# AI analyst (optional; `pip install .[ai]` and ANTHROPIC_API_KEY in .env).
-ai_model = "claude-opus-5-5"
+# AI agents (optional). Provider: "anthropic" (Claude; `pip install .[ai]` +
+# ANTHROPIC_API_KEY in .env) or "ollama" (local model; nothing leaves the PC).
+ai_provider = "anthropic"
+# ai_model = "claude-opus-5-5"   # default per provider; e.g. "qwen2.5:7b" for ollama
+# ollama_url = "http://localhost:11434"
+ai_triage = "auto"      # auto | manual | off: AI false-positive triage of new alerts
+ai_triage_per_hour = 20
 ai_effort = "high"      # low | medium | high | xhigh | max
 ai_max_steps = 10       # model turns per question
 

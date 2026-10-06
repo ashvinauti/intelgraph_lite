@@ -211,6 +211,13 @@
   .warn-text { color: color-mix(in srgb, var(--st-warning) 55%, var(--text-primary)); }
   .ok { border: 1px solid var(--st-good); border-left-width: 4px; border-radius: 6px; padding: 8px 10px; margin: 10px 0; }
   ul.feed li.resolved { opacity: .6; }
+  .ai-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 1px 8px 1px 6px; border-radius: 999px;
+             border: 1px dashed var(--line-strong); color: var(--text-secondary); }
+  .ai-chip i { font-style: normal; font-size: 10px; width: 13px; height: 13px; border-radius: 50%; display: inline-grid; place-items: center;
+               color: #0b0b0b; background: var(--c, var(--st-neutral)); }
+  .ai-chip.v-malicious i { color: #fff; }
+  .triage { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--surface-0); }
+  .triage ul.reasons { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
   ul.feed .acts { grid-column: 2 / 4; display: flex; gap: 6px; }
   .warn { border: 1px solid var(--st-warning); border-left-width: 4px; border-radius: 6px; padding: 8px 10px; margin: 10px 0; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
@@ -299,7 +306,7 @@
       </div>
       <div class="grid">
         <div class="card">
-          <h2>Recent alerts</h2>
+          <div class="card-head"><h2>Recent alerts</h2><span class="muted" id="triage-status" style="font-size:12px"></span></div>
           <ul class="feed" id="alert-feed"></ul>
         </div>
         <div class="card">
@@ -570,8 +577,8 @@ async function refreshSources() {
 
 /* ---------- false-positive feedback ---------- */
 const Feedback = {
-  async mark(key, verdict, askNote = true) {
-    let note = "";
+  async mark(key, verdict, askNote = true, presetNote = "") {
+    let note = presetNote;
     if (askNote && verdict !== "clear") {
       note = prompt(verdict === "false_positive" ? "Why is this a false positive? (optional)" : "Why is this confirmed malicious? (optional)");
       if (note === null) return null;  // cancelled
@@ -592,6 +599,83 @@ const Feedback = {
   },
   async unsuppress(id) { await api("/api/suppressions/delete", { id }); refreshSources(); },
 };
+
+/* ---------- AI false-positive triage ---------- */
+const ASSESS = {
+  likely_false_positive: { label: "likely false positive", v: "benign" },
+  likely_true_positive: { label: "likely real", v: "malicious" },
+  uncertain: { label: "uncertain", v: "suspicious" },
+};
+const ACTION_LABEL = { mark_false_positive: "Mark false positive", confirm_malicious: "Confirm malicious",
+  suppress_process: "Mute the program", monitor: "Keep monitoring", investigate_further: "Investigate further" };
+const Triage = {
+  status: null,
+  async refreshStatus() {
+    try { this.status = await api("/api/triage/status"); } catch (e) { this.status = null; return; }
+    const st = this.status;
+    $("triage-status").textContent = !st.available ? "AI triage: not set up"
+      : st.mode === "off" ? "AI triage: off"
+      : `AI triage: ${st.mode} · ${st.model} · ${st.auto_runs_last_hour}/${st.per_hour_cap} this hour`;
+    $("triage-status").title = st.available ? `Runs on ${st.endpoint}` : (st.reason || "");
+  },
+  chip(a) {
+    const t = a.triage, stop = fn => ev => { ev.stopPropagation(); fn(); };
+    if (t && t.status === "running") return el("span", { class: "ai-chip" }, el("span", { class: "spinner" }), " AI investigating…");
+    if (t && t.status === "done") {
+      const m = ASSESS[t.assessment] || ASSESS.uncertain;
+      return el("span", { class: "ai-chip v-" + m.v, title: t.summary || "" },
+        el("i", { "aria-hidden": "true" }, ICON[m.v]), `AI: ${m.label} ${Math.round((t.confidence || 0) * 100)}%`);
+    }
+    if (!this.status || !this.status.available) return null;
+    return el("button", { class: "ghost small", title: "Ask the AI whether this is a false positive",
+      onclick: stop(() => this.run({ alert_id: a.id })) }, t && t.status === "error" ? "AI failed: retry" : "AI check");
+  },
+  async run(target) {
+    try { await api("/api/triage", target); } catch (e) { alert(e.message); return; }
+    setTimeout(fetchAlerts, 400);
+    if (target.key && Drawer.key === target.key) setTimeout(() => Drawer.open(target.key), 400);
+  },
+  panel(t, key, alertRow) {
+    const box = el("div", { class: "triage" });
+    if (!t) {
+      if (!this.status || !this.status.available) return null;
+      box.append(el("p", { class: "muted", style: "margin:0" }, "Not triaged yet. "),
+        el("button", { class: "ghost small", onclick: () => this.run({ key }) }, "Investigate with AI"));
+      return box;
+    }
+    if (t.status === "running") { box.append(el("p", { class: "muted", style: "margin:0" }, el("span", { class: "spinner" }), " The AI is investigating this…")); return box; }
+    if (t.status === "error") {
+      box.append(el("p", { class: "muted", style: "margin:0" }, `Triage failed: ${t.error}`), " ",
+        el("button", { class: "ghost small", onclick: () => this.run({ key }) }, "Retry")); return box;
+    }
+    const m = ASSESS[t.assessment] || ASSESS.uncertain, conf = Math.round((t.confidence || 0) * 100);
+    const apply = {
+      mark_false_positive: () => Feedback.mark(key, "false_positive", false, `AI triage: ${t.summary}`),
+      confirm_malicious: () => Feedback.mark(key, "confirmed", false, `AI triage: ${t.summary}`),
+      suppress_process: alertRow && alertRow.context && alertRow.context.process ? () => Feedback.suppress("process", alertRow.context.process) : null,
+    }[t.action];
+    box.append(
+      el("div", { style: "display:flex;gap:10px;align-items:center" }, badge(m.v), el("b", {}, m.label), el("span", { class: "muted" }, `${conf}% confident`)),
+      el("div", { class: "meter" }, el("div", { style: `width:${conf}%;--c:var(${VCOLOR[m.v]})` })),
+      t.summary ? el("p", { style: "margin:8px 0 4px" }, t.summary) : null,
+      t.reasons.length ? el("ul", { class: "reasons" }, t.reasons.map(r => el("li", {}, r))) : null,
+      el("div", { class: "actions", style: "margin:8px 0 0" },
+        apply ? el("button", { class: "primary", onclick: apply }, `Apply: ${ACTION_LABEL[t.action]}`)
+              : el("span", { class: "muted" }, `Suggested: ${ACTION_LABEL[t.action] || t.action}`),
+        el("button", { class: "ghost", onclick: () => this.run({ key }) }, "Re-check")),
+      el("p", { class: "muted", style: "font-size:11.5px;margin:6px 0 0" },
+        `${t.model} · ${t.steps.length} tool call(s) · ${t.trigger === "auto" ? "automatic" : "on request"} · ${timeAgo(t.at)}. The AI only suggests; nothing is marked until you click.`));
+    return box;
+  },
+};
+function triageToast(a) {
+  const m = ASSESS[a.triage.assessment] || ASSESS.uncertain;
+  const t = el("div", { class: "toast", style: `--c:var(${VCOLOR[m.v]})`, role: "status", onclick: () => { Drawer.open(a.key); t.remove(); } },
+    el("div", { class: "t" }, el("span", {}, `AI triage: ${m.label}`), el("span", { class: "mono", style: "font-weight:400" }, a.key)),
+    el("div", { class: "secondary", style: "font-size:12px;margin-top:4px" }, a.triage.summary || ""));
+  $("toasts").append(t);
+  setTimeout(() => t.remove(), 12000);
+}
 
 /* activity line chart: connections + flagged per scan, crosshair tooltip */
 const Activity = {
@@ -645,12 +729,18 @@ function pollAlerts() {
   return alertsInFlight;
 }
 async function fetchAlerts() {
-  const fresh = await api("/api/alerts?since=" + alertsSince + "&limit=50");
+  // Re-read the newest alerts every time: their AI triage and status change after they arrive.
+  const latest = await api("/api/alerts?limit=30");
+  const fresh = latest.filter(a => a.id > alertsSince);
   if (fresh.length) {
     alertsSince = Math.max(...fresh.map(a => a.id));
     if (alertsPrimed) fresh.slice(0, 3).forEach(toast);
-    recentAlerts = [...fresh, ...recentAlerts].slice(0, 30);
   }
+  for (const a of latest) {  // tell the user when the AI finishes a triage they're waiting on
+    const before = recentAlerts.find(x => x.id === a.id);
+    if (alertsPrimed && before && before.triage && before.triage.status === "running" && a.triage && a.triage.status === "done") triageToast(a);
+  }
+  recentAlerts = latest;
   alertsPrimed = true;
   const STATUS_LABEL = { false_positive: "marked false positive", confirmed: "confirmed" };
   fill($("alert-feed"), recentAlerts.map(a => {
@@ -658,6 +748,7 @@ async function fetchAlerts() {
     return el("li", { class: a.status && a.status !== "open" ? "resolved" : null, onclick: () => Drawer.open(a.key) },
       badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted" }, timeAgo(a.at)),
       el("span", { class: "sub" }, describeAlert(a)),
+      el("span", { class: "sub" }, Triage.chip(a)),
       a.status && a.status !== "open"
         ? el("span", { class: "acts" }, el("span", { class: "muted", style: "font-size:12px" }, STATUS_LABEL[a.status] || a.status),
             el("button", { class: "ghost small", onclick: stop(() => Feedback.mark(a.key, "clear", false)) }, "Undo"))
@@ -924,8 +1015,9 @@ const Drawer = {
     const d = $("drawer"); d.classList.add("open");
     fill(d, el("p", { class: "muted" }, el("span", { class: "spinner" }), " Loading…"));
     try {
-      const info = await api("/api/indicator?key=" + encodeURIComponent(key));
-      if (this.key === key) this.render(info);
+      const [info, triage] = await Promise.all([api("/api/indicator?key=" + encodeURIComponent(key)),
+        api("/api/triage/latest?key=" + encodeURIComponent(key)).catch(() => null)]);
+      if (this.key === key) this.render(info, triage);
     } catch (e) { fill(d, this.head(key), el("p", { class: "muted" }, e.message)); }
     if (view === "live") Live.render(); else if (view === "indicators") Indicators.render();
     Graph.select(key);
@@ -935,8 +1027,9 @@ const Drawer = {
     return el("div", { class: "drawer-head" }, el("h2", { class: "secondary", style: "font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin:0" }, title),
       el("button", { class: "icon-btn", onclick: () => this.close(), "aria-label": "Close details" }, "✕"));
   },
-  render(info) {
+  render(info, triage = null) {
     const n = info.node, a = info.assessment, key = n.key;
+    const tpanel = LOOKUP_KINDS.has(n.kind) ? Triage.panel(triage, key, recentAlerts.find(x => x.key === key)) : null;
     const links = info.edges.map(e => {
       const out = e.src === key, other = out ? e.dst : e.src;
       return el("li", { onclick: () => this.open(other) }, el("span", { class: "muted nowrap" }, out ? `${e.rel} →` : `← ${e.rel}`),
@@ -972,6 +1065,8 @@ const Drawer = {
         el("button", { class: "ghost", onclick: () => Graph.focus(key) }, "Show in graph"),
         el("button", { class: "ghost", onclick: () => { Graph.setRoot(key); Graph.focus(key, false); } }, "Make graph root"),
         copy),
+      tpanel ? el("h3", {}, "AI triage") : null,
+      tpanel,
       el("h3", {}, "Why this score"),
       a.reasons.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", { class: "static" }, "Source"), el("th", { class: "num static" }, "Effect"), el("th", { class: "static" }, "Evidence"))),
         el("tbody", {}, a.reasons.map(r => el("tr", { style: "cursor:default" }, el("td", {}, r.source),
@@ -1289,7 +1384,9 @@ const Analyst = {
       $("a-go").disabled = true;
     } else {
       $("a-model").textContent = `${this.status.model} via ${this.status.endpoint}`;
-      $("a-privacy").textContent = this.status.official
+      $("a-privacy").textContent = this.status.provider === "ollama"
+        ? `The analyst runs on a model served by ${this.status.endpoint}. With Ollama on this computer, nothing leaves your machine.`
+        : this.status.official
         ? "The analyst sends your question and the data its tools read (indicators, connection list, evidence) to Anthropic's API."
         : `The analyst sends your question and the data its tools read (indicators, connection list, evidence) to ${this.status.endpoint}, a third-party gateway, not Anthropic.`;
     }
@@ -1345,7 +1442,7 @@ $("a-q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey
 /* ---------- polling (paused while the tab is hidden) ---------- */
 async function refreshView() {
   try {
-    if (view === "overview") await Promise.all([refreshStats(), pollAlerts(), Activity.refresh(), refreshSources()]);
+    if (view === "overview") await Promise.all([refreshStats(), Triage.refreshStatus().then(pollAlerts), Activity.refresh(), refreshSources()]);
     else if (view === "live") await Live.refresh();
     else if (view === "routes") await Routes.list();
     else if (view === "analyst") await Analyst.init();
@@ -1366,13 +1463,14 @@ async function poll() {
       watch = await api("/api/watch"); paintWatch();
       await pollAlerts();
       if (view === "live" && watch.running) await Live.refresh();
-      if (view === "overview") { await refreshStats(); if (watch.running) await Activity.refresh(); }
+      if (view === "overview") { await refreshStats(); await Triage.refreshStatus(); if (watch.running) await Activity.refresh(); }
     } catch (e) {}
   }
   setTimeout(poll, 5000);
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshView(); Graph.kick(0.05); } });
 Graph.legend();
+Triage.refreshStatus();
 route();
 poll();
 </script>

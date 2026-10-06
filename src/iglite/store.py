@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -83,6 +83,26 @@ CREATE TABLE IF NOT EXISTS feedback (
     sources     TEXT NOT NULL DEFAULT '[]',
     at          REAL NOT NULL
 );
+
+-- AI false-positive triage results (one row per run; the newest per alert wins).
+CREATE TABLE IF NOT EXISTS triage (
+    id          INTEGER PRIMARY KEY,
+    alert_id    INTEGER,
+    key         TEXT NOT NULL,
+    status      TEXT NOT NULL,              -- running | done | error
+    assessment  TEXT,                        -- likely_false_positive | likely_true_positive | uncertain
+    confidence  REAL,
+    summary     TEXT,
+    reasons     TEXT NOT NULL DEFAULT '[]',
+    action      TEXT,
+    model       TEXT,
+    steps       TEXT NOT NULL DEFAULT '[]',
+    error       TEXT,
+    trigger     TEXT NOT NULL DEFAULT 'manual',
+    at          REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS triage_alert ON triage(alert_id);
+CREATE INDEX IF NOT EXISTS triage_key ON triage(key);
 
 -- Alert suppression rules: never alert for this indicator / process.
 CREATE TABLE IF NOT EXISTS suppressions (
@@ -360,6 +380,68 @@ class Store:
             for src in json.loads(row["sources"]):
                 stats.setdefault(src, {"false_positives": 0, "confirmed": 0})[field] += 1
         return stats
+
+    # -- AI triage -------------------------------------------------------------
+
+    _TRIAGE_JSON = ("reasons", "steps")
+
+    def start_triage(self, key: str, alert_id: int | None, model: str, trigger: str) -> int:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO triage (alert_id, key, status, model, trigger, at) VALUES (?,?,?,?,?,?)",
+                (alert_id, key, "running", model, trigger, time.time()),
+            )
+            return int(cur.lastrowid or 0)
+
+    def finish_triage(self, triage_id: int, **fields: Any) -> None:
+        allowed = {
+            "status",
+            "assessment",
+            "confidence",
+            "summary",
+            "reasons",
+            "action",
+            "steps",
+            "error",
+            "model",
+        }
+        cols = {
+            k: (json.dumps(v) if k in self._TRIAGE_JSON else v) for k, v in fields.items() if k in allowed
+        }
+        if not cols:
+            return
+        sets = ", ".join(f"{k}=?" for k in cols)  # keys come from the allow-list above
+        with self._lock:
+            self._db.execute(f"UPDATE triage SET {sets} WHERE id=?", (*cols.values(), triage_id))  # noqa: S608
+
+    def _triage_row(self, row: Any) -> dict[str, Any]:
+        d = dict(row)
+        for k in self._TRIAGE_JSON:
+            d[k] = json.loads(d[k] or "[]")
+        return d
+
+    def triage(self, triage_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM triage WHERE id=?", (triage_id,))
+        return self._triage_row(rows[0]) if rows else None
+
+    def latest_triage(
+        self, *, key: str | None = None, alert_ids: Iterable[int] = ()
+    ) -> dict[Any, dict[str, Any]]:
+        """Newest triage per alert id (or for one key, under that key)."""
+        if key is not None:
+            rows = self._query("SELECT * FROM triage WHERE key=? ORDER BY id DESC LIMIT 1", (key,))
+            return {key: self._triage_row(rows[0])} if rows else {}
+        ids = [int(i) for i in alert_ids]
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        rows = self._query(f"SELECT * FROM triage WHERE alert_id IN ({marks}) ORDER BY id", ids)  # noqa: S608
+        return {r["alert_id"]: self._triage_row(r) for r in rows}  # later rows overwrite earlier
+
+    def triage_runs_since(self, since: float, trigger: str = "auto") -> int:
+        return int(
+            self._query("SELECT COUNT(*) FROM triage WHERE at >= ? AND trigger=?", (since, trigger))[0][0]
+        )
 
     # -- suppression rules ---------------------------------------------------
 
