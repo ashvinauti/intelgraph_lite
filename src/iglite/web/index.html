@@ -375,7 +375,7 @@
         <textarea id="a-q" rows="2" placeholder="Ask about an indicator, your live connections, alerts or a pasted report. Enter to send, Shift+Enter for a new line."></textarea>
         <button class="primary" id="a-go">Ask</button>
       </div>
-      <p class="muted" style="font-size:12px;margin:6px 0 0">The analyst uses Claude and sends the question plus the data its tools read (indicators, connection list, evidence) to Anthropic. Verdicts come from IntelGraph Lite's own evidence engine.</p>
+      <p class="muted" style="font-size:12px;margin:6px 0 0"><span id="a-privacy">The analyst sends your question and the data its tools read to the configured model API.</span> Verdicts come from IntelGraph Lite's own evidence engine.</p>
     </div>
   </section>
 
@@ -1221,7 +1221,12 @@ const Analyst = {
         "Setup: ", el("code", { class: "mono" }, "python -m pip install .[ai]"), ", put ",
         el("code", { class: "mono" }, "ANTHROPIC_API_KEY=…"), " in .env, then restart ", el("code", { class: "mono" }, "iglite serve"), ".");
       $("a-go").disabled = true;
-    } else $("a-model").textContent = this.status.model;
+    } else {
+      $("a-model").textContent = `${this.status.model} via ${this.status.endpoint}`;
+      $("a-privacy").textContent = this.status.official
+        ? "The analyst sends your question and the data its tools read (indicators, connection list, evidence) to Anthropic's API."
+        : `The analyst sends your question and the data its tools read (indicators, connection list, evidence) to ${this.status.endpoint}, a third-party gateway, not Anthropic.`;
+    }
     fill($("a-chips"), this.SUGGEST.map(q => el("button", { onclick: () => this.send(q) }, q)));
     if (!$("a-log").children.length) $("a-log").append(el("div", { class: "msg bot" },
       el("p", {}, "Hi, I'm the IntelGraph Lite analyst. I can look up indicators, walk the graph, read your live connections and alerts, run traceroutes, and explain what I find."),

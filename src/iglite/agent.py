@@ -29,6 +29,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from .extract import classify, extract
 from .model import KINDS
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
     from .engine import Engine
 
 DEFAULT_MODEL = "claude-opus-5-5"
+# Models that accept server-side refusal fallback (`fallbacks: "default"`).
+FALLBACK_MODELS = frozenset({"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"})
 MAX_RESULT_CHARS = 12_000
 
 SYSTEM_PROMPT = """\
@@ -372,8 +375,16 @@ class Analyst:
         self.model = model or cfg.ai_model or DEFAULT_MODEL
         self.effort = effort or cfg.ai_effort
         self.max_steps = max_steps or cfg.ai_max_steps
+        self.base_url = (cfg.ai_base_url or "").rstrip("/") or None
+        # Anthropic-only features (beta endpoint, server-side fallback) are used only on
+        # Anthropic's own API; a third-party gateway gets a plain, standard request.
+        self.official = self.base_url is None or urlsplit(self.base_url).hostname == "api.anthropic.com"
         self.tools = Toolbox(engine)
         self.client = client if client is not None else self._make_client()
+
+    @property
+    def endpoint(self) -> str:
+        return urlsplit(self.base_url).hostname or self.base_url if self.base_url else "api.anthropic.com"
 
     def _make_client(self) -> Any:
         try:
@@ -381,8 +392,16 @@ class Analyst:
         except ImportError:
             raise AgentUnavailable("the AI analyst needs the 'anthropic' package: pip install .[ai]")
         key = self.engine.config.keys.get("anthropic")
+        if self.base_url and not key:
+            raise AgentUnavailable(
+                f"ANTHROPIC_BASE_URL is set to {self.base_url} but no ANTHROPIC_API_KEY was found"
+            )
         if key:
-            return anthropic.Anthropic(api_key=key)
+            return (
+                anthropic.Anthropic(api_key=key, base_url=self.base_url)
+                if self.base_url
+                else anthropic.Anthropic(api_key=key)
+            )
         # No key in .env: the SDK can still use its own credential chain
         # (ANTHROPIC_AUTH_TOKEN, or a profile from `ant auth login`). If none of
         # those exist either, say so now rather than failing on the first question.
@@ -462,40 +481,56 @@ class Analyst:
         answer.stop_reason = "step_limit"
         return answer
 
+    def request(self, messages: list[dict[str, Any]]) -> tuple[Any, dict[str, Any]]:
+        """The create() function and keyword arguments for one model turn."""
+        kw: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": 16000,
+            "tools": TOOLS,
+            "messages": messages,
+            "output_config": {"effort": self.effort},
+        }
+        if "haiku" not in self.model:
+            # Opus 4.x runs without reasoning unless asked; newer models accept this too.
+            kw["thinking"] = {"type": "adaptive"}
+        if self.official:
+            kw["system"] = SYSTEM_PROMPT
+            kw["cache_control"] = {"type": "ephemeral"}  # tools + system + history are a stable prefix
+            if self.model in FALLBACK_MODELS:
+                # If a safety classifier declines, retry on Anthropic's recommended model.
+                kw["betas"] = ["server-side-fallback-2026-07-01"]
+                kw["fallbacks"] = "default"
+                return self.client.beta.messages.create, kw
+            return self.client.messages.create, kw
+        # Gateway: only long-standing fields. Caching via a block-level marker on the system prompt.
+        kw["system"] = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+        return self.client.messages.create, kw
+
     def _call(self, messages: list[dict[str, Any]]) -> Any:
+        create, kw = self.request(messages)
         try:
-            return self.client.beta.messages.create(
-                model=self.model,
-                max_tokens=16000,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=messages,
-                output_config={"effort": self.effort},
-                cache_control={"type": "ephemeral"},  # tools + system + history are a stable prefix
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",  # if a safety classifier declines, retry on the recommended model
-            )
+            return create(**kw)
         except Exception as exc:  # map SDK errors to a message the user can act on
-            raise AgentUnavailable(_explain_error(exc)) from exc
+            raise AgentUnavailable(_explain_error(exc, self.endpoint)) from exc
 
 
-def _explain_error(exc: Exception) -> str:
+def _explain_error(exc: Exception, endpoint: str = "api.anthropic.com") -> str:
     try:
         import anthropic
     except ImportError:  # pragma: no cover - client was injected
         return str(exc)
     if isinstance(exc, anthropic.AuthenticationError):
-        return "Anthropic rejected the API key. Check ANTHROPIC_API_KEY in your .env file."
+        return f"{endpoint} rejected the API key. Check ANTHROPIC_API_KEY in your .env file."
     if isinstance(exc, anthropic.PermissionDeniedError):
         return "This API key is not allowed to use the model. Check your Anthropic account."
     if isinstance(exc, anthropic.RateLimitError):
-        return "Rate limited by the Anthropic API. Wait a minute and try again."
+        return f"Rate limited by {endpoint}. Wait a minute and try again."
     if isinstance(exc, anthropic.BadRequestError):
-        return f"The Anthropic API rejected the request: {exc.message}"
+        return f"{endpoint} rejected the request: {exc.message}"
     if isinstance(exc, anthropic.APIStatusError):
-        return f"Anthropic API error ({exc.status_code}). Try again shortly."
+        return f"{endpoint} returned an error ({exc.status_code}). Try again shortly."
     if isinstance(exc, anthropic.APIConnectionError):
-        return "Could not reach the Anthropic API. Check your internet connection or proxy."
+        return f"Could not reach {endpoint}. Check your internet connection, proxy or ANTHROPIC_BASE_URL."
     return f"{type(exc).__name__}: {exc}"
 
 
@@ -533,7 +568,8 @@ class AgentDesk:
     def status(self) -> dict[str, Any]:
         try:
             self._get()
-            return {"available": True, "model": self._analyst.model if self._analyst else DEFAULT_MODEL}
+            a = self._analyst
+            return {"available": True, "model": a.model, "endpoint": a.endpoint, "official": a.official}
         except AgentUnavailable as exc:
             return {"available": False, "reason": str(exc)}
 

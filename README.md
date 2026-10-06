@@ -102,8 +102,25 @@ clickable, and every indicator's details panel has an **Ask analyst** button.
   (`low` … `max`, default `high`) in `iglite.toml`, or `--model` / `--effort` on
   the command line. Lower effort is cheaper and faster.
 * **Privacy:** the question and whatever its tools read (indicators, your
-  connection list, evidence) are sent to Anthropic's API. Nothing is sent until
-  you ask a question.
+  connection list, evidence) are sent to Anthropic's API, or to your gateway if
+  you set one (below). Nothing is sent until you ask a question.
+
+### Using an Anthropic-compatible gateway
+
+To route the analyst through a third-party gateway or reseller that speaks
+the Anthropic Messages API, set these in `.env`:
+
+```ini
+ANTHROPIC_API_KEY=your-gateway-key
+ANTHROPIC_BASE_URL=https://the-gateway-host
+IGLITE_AI_MODEL=the-model-name-the-gateway-expects
+```
+
+With a gateway, the analyst sends a plain, standard request: no beta endpoint
+and no server-side refusal fallback, since gateways may not support them. The
+dashboard shows which endpoint is in use. A gateway sees everything the
+analyst sends, so use one you trust. Anthropic's own model IDs use hyphens
+(`claude-opus-4-8`, `claude-opus-5-5`); a gateway may use its own names.
 
 ## Traceroute
 
