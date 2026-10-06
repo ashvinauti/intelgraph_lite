@@ -24,7 +24,7 @@ from .base import Context, Source
 
 
 class IndicatorList(Source):
-    kinds = frozenset(Kind) - {Kind.ORG, Kind.TAG, Kind.REPORT, Kind.PROCESS}
+    kinds = frozenset(Kind) - {Kind.ORG, Kind.TAG, Kind.REPORT, Kind.PROCESS, Kind.HOST}
     ttl = 6 * 3600
     RETRY_AFTER = 300.0
     remote = False  # membership test runs locally, safe for internal indicators

@@ -31,6 +31,7 @@ class Kind(enum.StrEnum):
     TAG = "tag"
     REPORT = "report"
     PROCESS = "process"
+    HOST = "host"  # this computer, the origin of live connections and routes
 
 
 class Verdict(enum.StrEnum):

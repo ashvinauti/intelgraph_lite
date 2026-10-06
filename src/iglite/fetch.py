@@ -74,12 +74,14 @@ class Fetcher:
         ttl: float,
         headers: dict[str, str] | None = None,
         form: dict[str, str] | None = None,
+        secret_params: dict[str, str] | None = None,
     ) -> tuple[int, bytes] | None:
         """Return ``(status, body)``, from cache when fresh; ``None`` if unavailable."""
         if not url.startswith(("https://", "http://")):
             raise FetchError(f"refusing non-HTTP URL: {url}")
         body = urlencode(form).encode() if form is not None else None
-        # Credentials live in headers and are deliberately not part of the key.
+        # Credentials (headers, secret_params) are deliberately not part of the
+        # cache key, so API keys are never written to the database.
         cache_key = method + " " + url
         if body:
             cache_key += " " + hashlib.sha256(body).hexdigest()
@@ -94,6 +96,9 @@ class Fetcher:
         if body is not None:
             hdrs["Content-Type"] = "application/x-www-form-urlencoded"
 
+        send_url = url
+        if secret_params:
+            send_url += ("&" if "?" in url else "?") + urlencode(secret_params)
         host = urlsplit(url).hostname or ""
         interval = self._min_interval.get(host, 0.0)
         with self._throttle(host):
@@ -101,13 +106,15 @@ class Fetcher:
             if wait > 0:
                 time.sleep(wait)
             try:
-                status, payload = self._send(method, url, hdrs, body)
+                status, payload = self._send(method, send_url, hdrs, body)
             except (OSError, ValueError) as exc:
                 raise FetchError(f"{host}: {exc}") from exc
             finally:
                 self._last_call[host] = time.monotonic()
                 self.network_calls += 1
 
+        if status in (401, 403):  # bad or missing key: fixable, so never cached
+            raise FetchError(f"{host}: HTTP {status} (check the API key)")
         if status == 429 or status >= 500:
             raise FetchError(f"{host}: HTTP {status}")  # transient: don't cache
         self.store.cache_put(cache_key, status, payload)

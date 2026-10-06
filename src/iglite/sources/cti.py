@@ -59,7 +59,7 @@ class VirusTotal(Source):
     trust = 0.8
     ttl = 24 * 3600
     needs_key = True
-    description = "VirusTotal engine verdicts (VT_API_KEY, free tier is 4 req/min)"
+    description = "VirusTotal engine verdicts (VIRUSTOTAL_API_KEY; free tier is 4 req/min)"
     rate_limits = {"www.virustotal.com": 15.0}
     API_PATH = {Kind.IP: "ip_addresses", Kind.DOMAIN: "domains", Kind.HASH: "files"}
     GUI_PATH = {Kind.IP: "ip-address", Kind.DOMAIN: "domain", Kind.HASH: "file", Kind.URL: "search"}
@@ -167,4 +167,77 @@ class URLhaus(Source):
             finding.relations.append(
                 Relation(ind, "tagged", Indicator(Kind.TAG, str(tag).lower()), pivot=False)
             )
+        return finding
+
+
+class Shodan(Source):
+    name = "shodan"
+    kinds = frozenset({Kind.IP})
+    trust = 0.6
+    ttl = 24 * 3600
+    needs_key = True
+    description = "Shodan host data: owner, ASN, ports, CVEs, tags (SHODAN_API_KEY)"
+    rate_limits = {"api.shodan.io": 1.0}  # API allows about 1 request/second
+
+    MALICIOUS_TAGS = {"c2", "malware", "compromised"}
+    SUSPICIOUS_TAGS = {"tor", "proxy", "vpn", "scanner", "honeypot", "doublepulsar"}
+
+    def lookup(self, ind: Indicator, ctx: Context) -> Finding | None:
+        # The key travels as a query parameter but is kept out of the cache key.
+        data = ctx.fetcher.json(
+            f"https://api.shodan.io/shodan/host/{quote(ind.value)}?minify=true",
+            ttl=ctx.ttl(self),
+            secret_params={"key": ctx.config.key(self.name) or ""},
+        )
+        if not data or "ip_str" not in data:
+            return None
+        tags = {str(t).lower() for t in data.get("tags") or []}
+        vulns = sorted(data.get("vulns") or [])
+        finding = Finding(
+            attributes={
+                k: v
+                for k, v in {
+                    "org": data.get("org"),
+                    "isp": data.get("isp"),
+                    "asn": data.get("asn"),
+                    "country": data.get("country_name"),
+                    "os": data.get("os"),
+                    "ports": data.get("ports") or [],
+                    "tags": sorted(tags),
+                    "vulns": len(vulns),
+                    "last_update": data.get("last_update"),
+                }.items()
+                if v not in (None, "", [])
+            }
+        )
+        if bad := tags & self.MALICIOUS_TAGS:
+            finding.evidence.append(
+                Evidence(
+                    self.name,
+                    Verdict.MALICIOUS,
+                    f"tagged {', '.join(sorted(bad))}",
+                    0.8,
+                    f"https://www.shodan.io/host/{ind.value}",
+                )
+            )
+        elif odd := tags & self.SUSPICIOUS_TAGS:
+            finding.evidence.append(
+                Evidence(
+                    self.name,
+                    Verdict.SUSPICIOUS,
+                    f"tagged {', '.join(sorted(odd))}",
+                    0.5,
+                    f"https://www.shodan.io/host/{ind.value}",
+                )
+            )
+        if org := data.get("org"):
+            finding.relations.append(Relation(ind, "operated_by", Indicator(Kind.ORG, str(org)), pivot=False))
+        if (asn := classify(str(data.get("asn") or ""))) is not None and asn.kind is Kind.ASN:
+            finding.relations.append(Relation(ind, "announced_by", asn, pivot=False))
+        for host in (data.get("hostnames") or [])[:10]:
+            if (dom := classify(host)) is not None and dom.kind is Kind.DOMAIN:
+                finding.relations.append(Relation(dom, "resolves_to", ind))
+        for cve in vulns[:20]:
+            if (c := classify(cve)) is not None:
+                finding.relations.append(Relation(ind, "has_vuln", c, pivot=False))
         return finding

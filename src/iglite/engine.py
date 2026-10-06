@@ -32,9 +32,10 @@ from .model import Assessment, Indicator, Kind, Relation, Verdict
 from .netwatch import NetWatch
 from .sources import Context, Source, build
 from .store import Store
+from .trace import Tracer
 
 # Kinds that are context, never looked up.
-_PASSIVE = frozenset({Kind.ORG, Kind.TAG, Kind.REPORT, Kind.PROCESS})
+_PASSIVE = frozenset({Kind.ORG, Kind.TAG, Kind.REPORT, Kind.PROCESS, Kind.HOST})
 
 
 @dataclass
@@ -80,6 +81,13 @@ class Engine:
         )
         self.ctx = Context(self.fetcher, config)
         self._netwatch: NetWatch | None = None
+        self._tracer: Tracer | None = None
+
+    def tracer(self) -> Tracer:
+        """Traceroute runner, created on first use."""
+        if self._tracer is None:
+            self._tracer = Tracer(self)
+        return self._tracer
 
     def watcher(self, interval: float | None = None) -> NetWatch:
         """The live network watcher, created on first use."""
