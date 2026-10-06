@@ -1,0 +1,15 @@
+SAMPLE THREAT REPORT (synthetic, for demonstration; all indicators are reserved/example values)
+
+Summary
+A phishing campaign directed victims to hxxps://login-portal[.]example/auth and
+hxxp://cdn-update[.]example/setup.bin. Stage-two payloads beaconed to
+203.0.113[.]66 on port 443 and to backup C2 198.51.100[.]23.
+
+Indicators
+- Dropper SHA256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+- Loader MD5: 5d41402abc4b2a76b9719d911017c592
+- Reply-to address: billing(at)invoice-notice[.]example
+- Exploited vulnerability: CVE-2024-3400
+
+Files named setup.exe and readme.txt were also dropped (these are file names,
+not network indicators, and are ignored by extraction).
