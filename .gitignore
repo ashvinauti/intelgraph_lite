@@ -1,0 +1,7 @@
+.venv/
+*.db
+*.db-*
+__pycache__/
+*.egg-info/
+build/
+iglite.toml

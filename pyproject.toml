@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iglite"
+version = "0.1.0"
+description = "IntelGraph Lite: lightweight threat intelligence and OSINT correlation with explainable scores."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ashvin Auti" }]
+# Intentionally empty: the runtime uses only the Python standard library.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.13.0"]
+
+[project.scripts]
+iglite = "iglite.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+iglite = ["web/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "C4", "S"]
+ignore = ["E501", "B904", "S101", "S110", "S310"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]

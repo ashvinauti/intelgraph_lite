@@ -1,0 +1,37 @@
+# IntelGraph Lite configuration. Every setting is optional.
+# API keys are NOT read from this file: set OTX_API_KEY, VT_API_KEY and
+# ABUSECH_AUTH_KEY in the environment instead.
+
+db = "~/.iglite/iglite.db"
+
+# Cost limits for one investigation.
+depth = 1        # pivot hops from the starting indicators
+budget = 50      # max indicators looked up
+deadline = 60    # seconds; partial results are returned after this
+workers = 8      # concurrent lookups
+
+# Restrict or switch off sources (see `iglite sources`).
+# enabled = ["rdap", "internetdb", "otx"]
+disabled = []
+
+# Free plain-text feeds, refreshed every 6 hours. Local paths work too.
+[blocklists]
+feodo = "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"
+urlhaus_online = "https://urlhaus.abuse.ch/downloads/text_online/"
+# internal = "~/intel/our-blocklist.txt"
+
+# Known-good infrastructure, to counter false positives.
+[allowlists]
+# corporate = "~/intel/allowlist.txt"
+
+# How much each source's verdict moves the score (0 to 1).
+[trust]
+virustotal = 0.8
+urlhaus = 0.8
+otx = 0.6
+internetdb = 0.6
+feodo = 0.8
+
+# Seconds a cached answer stays fresh, per source.
+[ttl]
+virustotal = 86400

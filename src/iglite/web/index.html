@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IntelGraph Lite</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
+    --accent: #2f5bd3; --mal: #c62828; --sus: #b26a00; --ben: #2e7d32; --unk: #8a8a84;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1f1f1d; --text: #ecece8; --muted: #9b9b95; --line: #33332f;
+            --accent: #7b9cf0; --mal: #ef6b6b; --sus: #e0a040; --ben: #6cc070; --unk: #85857f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 16px;
+           align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  #stats { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; padding: 16px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+            min-width: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  textarea, input, select, button { font: inherit; color: inherit; }
+  textarea { width: 100%; min-height: 90px; resize: vertical; padding: 8px; border: 1px solid var(--line);
+             border-radius: 6px; background: var(--bg); }
+  input, select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+  button { padding: 6px 12px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  ul.list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 55vh; overflow: auto; }
+  ul.list li { display: flex; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); cursor: pointer;
+               align-items: baseline; }
+  ul.list li:hover { background: var(--bg); }
+  .key { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 10px; color: #fff;
+           white-space: nowrap; background: var(--unk); }
+  .malicious { background: var(--mal); } .suspicious { background: var(--sus); }
+  .benign { background: var(--ben); } .unknown { background: var(--unk); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .muted { color: var(--muted); }
+  .warn { color: var(--sus); font-weight: 600; }
+  svg { width: 100%; height: 360px; display: block; }
+  svg text { fill: var(--text); font-size: 10px; }
+  svg line { stroke: var(--line); stroke-width: 1.2; }
+  #msg { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>IntelGraph Lite</h1>
+  <span id="stats"></span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Investigate</h2>
+      <textarea id="input" placeholder="Paste indicators or a whole report: IPs, domains, URLs, hashes, CVEs. Defanged values like hxxp://evil[.]com work."></textarea>
+      <div class="row">
+        <label>Depth <select id="depth"><option>0</option><option selected>1</option><option>2</option></select></label>
+        <button id="go">Investigate</button>
+        <span id="msg"></span>
+      </div>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Indicators</h2>
+      <div class="row">
+        <input id="q" class="grow" placeholder="Filter">
+        <select id="verdict">
+          <option value="">All</option><option>malicious</option><option>suspicious</option>
+          <option>benign</option><option>unknown</option>
+        </select>
+      </div>
+      <ul class="list" id="list"></ul>
+    </section>
+  </div>
+  <div>
+    <section id="detail"><p class="muted">Select an indicator to see why it was scored the way it was.</p></section>
+  </div>
+</main>
+<script>
+"use strict";
+let token = null;
+try { token = sessionStorage.getItem("iglite-token"); } catch (e) {}
+
+async function api(path, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = "Bearer " + token;
+  const res = await fetch(path, body ? { method: "POST", headers, body: JSON.stringify(body) } : { headers });
+  if (res.status === 401) {
+    token = prompt("API token");
+    try { sessionStorage.setItem("iglite-token", token || ""); } catch (e) {}
+    return api(path, body);
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") node.className = v; else if (k.startsWith("on")) node[k] = v; else node.setAttribute(k, v);
+  }
+  for (const c of children) node.append(c instanceof Node ? c : document.createTextNode(String(c ?? "")));
+  return node;
+}
+const badge = (v, score) => el("span", { class: "badge " + (v || "unknown") }, (v || "unscored") + (score != null ? " " + score : ""));
+
+async function refreshStats() {
+  const s = await api("/api/stats");
+  const v = s.by_verdict;
+  document.getElementById("stats").textContent =
+    `${s.nodes} indicators · ${s.edges} links · ${v.malicious || 0} malicious · ${v.suspicious || 0} suspicious`;
+}
+
+let timer;
+async function refreshList() {
+  const params = new URLSearchParams({ limit: 200 });
+  const q = document.getElementById("q").value.trim(), v = document.getElementById("verdict").value;
+  if (q) params.set("q", q);
+  if (v) params.set("verdict", v);
+  const rows = await api("/api/indicators?" + params);
+  const list = document.getElementById("list");
+  list.replaceChildren(...rows.map(n =>
+    el("li", { onclick: () => showDetail(n.key) }, badge(n.verdict, n.score), el("span", { class: "key" }, n.key))));
+  if (!rows.length) list.append(el("li", { class: "muted" }, "Nothing yet."));
+}
+
+async function showDetail(key) {
+  const [d, g] = await Promise.all([
+    api("/api/indicator?key=" + encodeURIComponent(key)),
+    api("/api/graph?depth=1&limit=40&key=" + encodeURIComponent(key)),
+  ]);
+  const a = d.assessment;
+  const reasons = el("table", {}, el("tr", {}, el("th", {}, "Source"), el("th", {}, "Effect"), el("th", {}, "Why")),
+    ...a.reasons.map(r => el("tr", {}, el("td", {}, r.source),
+      el("td", {}, (r.contribution >= 0 ? "+" : "") + r.contribution.toFixed(2)), el("td", {}, r.detail))));
+  const attrs = el("table", {}, ...Object.entries(d.node.attrs).map(([k, v]) =>
+    el("tr", {}, el("th", {}, k), el("td", { class: "key" }, typeof v === "object" ? JSON.stringify(v) : v))));
+  document.getElementById("detail").replaceChildren(
+    el("h2", {}, d.node.kind),
+    el("div", { class: "row" }, badge(a.verdict, a.score), el("span", { class: "key" }, d.node.value)),
+    a.contradiction ? el("p", { class: "warn" }, "Sources disagree about this indicator. Review the evidence.") : "",
+    el("h2", { style: "margin-top:14px" }, "Why"),
+    a.reasons.length ? reasons : el("p", { class: "muted" }, "No source has an opinion yet."),
+    el("h2", { style: "margin-top:14px" }, "Connections"),
+    drawGraph(g, key),
+    ...(Object.keys(d.node.attrs).length ? [el("h2", { style: "margin-top:14px" }, "Attributes"), attrs] : []),
+  );
+}
+
+function drawGraph(g, root) {
+  const NS = "http://www.w3.org/2000/svg", W = 640, H = 360, cx = W / 2, cy = H / 2;
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const others = g.nodes.filter(n => n.key !== root);
+  const pos = { [root]: [cx, cy] };
+  others.forEach((n, i) => {
+    const t = (2 * Math.PI * i) / Math.max(1, others.length);
+    pos[n.key] = [cx + Math.cos(t) * (W / 2 - 110), cy + Math.sin(t) * (H / 2 - 40)];
+  });
+  const colour = v => getComputedStyle(document.documentElement)
+    .getPropertyValue({ malicious: "--mal", suspicious: "--sus", benign: "--ben" }[v] || "--unk");
+  for (const e of g.edges) {
+    if (!pos[e.src] || !pos[e.dst]) continue;
+    const line = document.createElementNS(NS, "line");
+    [["x1", pos[e.src][0]], ["y1", pos[e.src][1]], ["x2", pos[e.dst][0]], ["y2", pos[e.dst][1]]]
+      .forEach(([k, v]) => line.setAttribute(k, v));
+    const title = document.createElementNS(NS, "title"); title.textContent = e.rel; line.append(title);
+    svg.append(line);
+  }
+  for (const n of g.nodes) {
+    const [x, y] = pos[n.key];
+    const grp = document.createElementNS(NS, "g");
+    grp.style.cursor = "pointer";
+    grp.onclick = () => showDetail(n.key);
+    const c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", n.key === root ? 9 : 6);
+    c.setAttribute("fill", colour(n.verdict));
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("x", x + 10); t.setAttribute("y", y + 3);
+    t.textContent = n.key.length > 42 ? n.key.slice(0, 40) + "…" : n.key;
+    grp.append(c, t); svg.append(grp);
+  }
+  if (!others.length) return el("p", { class: "muted" }, "No connections recorded.");
+  return svg;
+}
+
+document.getElementById("go").onclick = async () => {
+  const btn = document.getElementById("go"), msg = document.getElementById("msg");
+  const text = document.getElementById("input").value;
+  if (!text.trim()) return;
+  btn.disabled = true; msg.textContent = "Looking up…";
+  try {
+    const r = await api("/api/investigate", { text, depth: +document.getElementById("depth").value });
+    msg.textContent = `${r.looked_up} looked up, ${r.network_calls} network calls, ${r.elapsed}s` +
+      (r.partial ? " (limit reached)" : "") + (r.errors.length ? `, ${r.errors.length} error(s)` : "");
+    await Promise.all([refreshList(), refreshStats()]);
+    if (r.seeds.length) showDetail(r.seeds[0]);
+  } catch (e) { msg.textContent = e.message; }
+  finally { btn.disabled = false; }
+};
+document.getElementById("q").oninput = () => { clearTimeout(timer); timer = setTimeout(refreshList, 250); };
+document.getElementById("verdict").onchange = refreshList;
+refreshStats(); refreshList();
+</script>
+</body>
+</html>
