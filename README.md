@@ -37,7 +37,51 @@ iglite export stix -o bundle.json       # STIX 2.1 for MISP / OpenCTI
 
 # Dashboard and JSON API on http://127.0.0.1:8765
 iglite serve
+
+# Monitor this machine's live connections (alerts on flagged IPs)
+iglite watch                     # live, every 30 s
+iglite watch --once              # one snapshot table
+iglite serve --watch             # dashboard + monitoring together
 ```
+
+## Live network monitoring
+
+`iglite watch` checks which remote addresses this computer is talking to,
+which program owns each connection and, on Windows, which domain name it
+resolved from. New public IPs are looked up through your sources, and an alert
+fires when one comes back suspicious or malicious.
+
+* **No driver, no admin rights, almost no CPU.** It reads the operating
+  system's connection table (`netstat`/`tasklist`/`ipconfig /displaydns` on
+  Windows, `/proc` on Linux, `lsof` on macOS) instead of capturing packets.
+* **Bounded.** At most 25 new IPs are looked up per snapshot, and each IP is
+  rechecked at most hourly. Answers are cached.
+* **Private addresses never leave the machine.** Only public remote IPs are
+  sent to the online sources. Use `--offline` or keyless/local lists if you
+  don't want your traffic metadata sent anywhere.
+* **One alert per indicator per day**, plus a new alert if a suspicious IP
+  escalates to malicious. Alerts are stored, shown in the dashboard and
+  printed by `iglite watch`.
+* It sees connections *at the moment of each snapshot*. A connection that
+  opens and closes between snapshots is missed. Lower `--interval` (minimum 5 s)
+  for more coverage. On Windows, the DNS cache still reveals recently
+  contacted domains.
+
+Run it as a normal user. On Linux, root is needed to see other users'
+processes. Only monitor machines and networks you're responsible for.
+
+## Dashboard
+
+`iglite serve` opens an interactive dashboard:
+
+* **Overview**: totals by verdict, recent alerts, and a box for investigating pasted indicators or reports.
+* **Live network**: live connections with process, remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
+* **Graph**: a force-directed knowledge graph. Drag nodes, zoom, pan, double-click to expand, and filter by verdict.
+* **Indicators**: a searchable, sortable list with STIX export.
+* **Details panel**: why an indicator got its score, its connections and attributes, and a button to investigate again.
+
+New alerts pop up as notifications. Polling pauses while the browser tab is
+hidden, so an idle dashboard costs nothing.
 
 Example output:
 
@@ -93,7 +137,7 @@ docker run -p 8765:8765 -e IGLITE_API_TOKEN=change-me -v iglite:/data iglite
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 39 offline tests, ~3 s
+.venv/bin/pytest            # 47 offline tests, ~3 s
 .venv/bin/ruff check src tests
 ```
 

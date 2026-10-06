@@ -30,6 +30,7 @@ class Kind(enum.StrEnum):
     ORG = "org"
     TAG = "tag"
     REPORT = "report"
+    PROCESS = "process"
 
 
 class Verdict(enum.StrEnum):
@@ -112,3 +113,6 @@ class Assessment:
                 for r in self.reasons
             ],
         }
+
+
+KINDS = frozenset(k.value for k in Kind)

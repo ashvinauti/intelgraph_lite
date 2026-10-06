@@ -12,7 +12,7 @@ stays cheap to run and easy to maintain.
 |------|-----|
 | Low CPU / memory | The graph lives in SQLite and is traversed with indexed recursive SQL, so nothing is loaded wholesale into RAM. Lookups are I/O bound and run in a small thread pool. |
 | Fast and predictable | Every investigation has three hard limits: **depth**, **budget** (max indicators) and **deadline** (seconds). Every HTTP answer is cached with a per-source TTL, so a repeated investigation makes zero network calls. |
-| Sustainable | **Zero runtime dependencies.** Standard library only: `sqlite3`, `urllib`, `concurrent.futures`, `http.server`, `tomllib`. No dependency churn, nothing to patch but Python itself. About 2.3k lines of code. |
+| Sustainable | **Zero runtime dependencies.** Standard library only: `sqlite3`, `urllib`, `concurrent.futures`, `http.server`, `tomllib`. No dependency churn, nothing to patch but Python itself. About 2.9k lines of code. |
 | Logical | One direction of data flow and one contract per layer (below). Sources never touch the database, and scoring is a pure function. |
 | Explainable | Every score is a sum of named contributions, and each one is shown to the user. |
 | Safe by default | Private IPs and internal names are never sent to third parties. The API binds to localhost and needs a token to listen publicly. API keys come from the environment only. |
@@ -69,6 +69,24 @@ stays cheap to run and easy to maintain.
 | `engine.py` | seeds and limits | `Report` | parse source responses |
 | `cli.py`, `api.py` | user requests | engine and store calls | contain business logic |
 
+## Live network monitoring
+
+```
+netwatch.collect()            OS connection table + owning process (+ DNS cache on Windows)
+   │  Snapshot(connections, dns)
+NetWatch.scan()
+   ├─ record  process ─connected_to→ ip,  domain ─resolves_to→ ip   (local, no lookups)
+   ├─ due = public IPs not checked in the last hour, capped at 25 per scan
+   ├─ engine.investigate(due, depth=0)                               (cached, rate-limited)
+   └─ alert when verdict ∈ {suspicious, malicious}: once/day, or on escalation
+```
+
+The watcher runs in a daemon thread inside `iglite serve --watch` or in the
+foreground with `iglite watch`. Reading the connection table instead of
+sniffing packets means no capture driver, no admin rights and process
+attribution for free. The cost is that very short-lived connections between
+snapshots are missed.
+
 ## Scoring
 
 ```
@@ -121,13 +139,13 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (39 tests, offline) | ~3 s |
+| Full test suite (47 tests, offline) | ~3 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 
 | | IntelGraph | IntelGraph Lite |
 |---|---|---|
-| Code size | ~43k lines, 285 modules | ~2.3k lines, 17 modules |
+| Code size | ~43k lines, 285 modules | ~2.9k lines, 18 modules |
 | Runtime dependencies | 15 (FastAPI, uvicorn, strawberry, stix2, pydantic, …) | 0 |
 | Graph | In-memory adjacency list, loaded from storage | SQLite tables and recursive SQL |
 | Concurrency | Async framework | Thread pool for I/O, single DB writer |

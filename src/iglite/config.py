@@ -34,6 +34,7 @@ class Config:
     ttl: dict[str, int] = field(default_factory=dict)  # per-source cache seconds
     blocklists: dict[str, str] = field(default_factory=dict)  # name -> path or URL
     allowlists: dict[str, str] = field(default_factory=dict)
+    watch_interval: float = 30.0  # seconds between live network snapshots
     api_token: str | None = None
     keys: dict[str, str] = field(default_factory=dict)
 
