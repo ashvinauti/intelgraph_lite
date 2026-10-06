@@ -10,6 +10,9 @@ budget = 50      # max indicators looked up
 deadline = 60    # seconds; partial results are returned after this
 workers = 8      # concurrent lookups
 
+# Seconds between live network snapshots (`iglite watch`, `serve --watch`).
+watch_interval = 30
+
 # Restrict or switch off sources (see `iglite sources`).
 # enabled = ["rdap", "internetdb", "otx"]
 disabled = []

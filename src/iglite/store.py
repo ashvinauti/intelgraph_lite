@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -63,6 +63,15 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 CREATE INDEX IF NOT EXISTS evidence_node ON evidence(node, source);
 
+CREATE TABLE IF NOT EXISTS alerts (
+    id          INTEGER PRIMARY KEY,
+    at          REAL NOT NULL,
+    key         TEXT NOT NULL,
+    verdict     TEXT NOT NULL,
+    score       INTEGER NOT NULL,
+    context     TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS cache (
     key         TEXT PRIMARY KEY,
     status      INTEGER NOT NULL,
@@ -91,6 +100,10 @@ class Store:
                 raise RuntimeError(
                     f"database schema v{row['v']} is newer than this release (v{SCHEMA_VERSION})"
                 )
+            else:
+                # Migrations are additive (CREATE ... IF NOT EXISTS above), so
+                # upgrading only needs the recorded version bumped.
+                self._db.execute("UPDATE meta SET v=? WHERE k='schema_version'", (str(SCHEMA_VERSION),))
 
     def close(self) -> None:
         with self._lock:
@@ -190,6 +203,7 @@ class Store:
             "edges": count("SELECT COUNT(*) FROM edges"),
             "evidence": count("SELECT COUNT(*) FROM evidence"),
             "cached_responses": count("SELECT COUNT(*) FROM cache"),
+            "alerts": count("SELECT COUNT(*) FROM alerts"),
             "by_verdict": by_verdict,
             "by_kind": by_kind,
         }
@@ -271,6 +285,27 @@ class Store:
             Evidence(r["source"], Verdict(r["verdict"]), r["detail"], r["confidence"], r["url"]) for r in rows
         ]
 
+    # -- alerts ------------------------------------------------------------
+
+    def add_alert(self, key: str, verdict: str, score: int, context: str = "{}") -> int:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO alerts (at, key, verdict, score, context) VALUES (?,?,?,?,?)",
+                (time.time(), key, verdict, score, context),
+            )
+            return int(cur.lastrowid or 0)
+
+    def recent_alert_verdicts(self, since: float) -> dict[str, tuple[str, float]]:
+        """Latest alert per indicator since ``since``: key -> (verdict, at)."""
+        rows = self._query(
+            "SELECT key, verdict, MAX(at) AS at FROM alerts WHERE at >= ? GROUP BY key", (since,)
+        )
+        return {r["key"]: (r["verdict"], r["at"]) for r in rows}
+
+    def alerts(self, since_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._query("SELECT * FROM alerts WHERE id > ? ORDER BY id DESC LIMIT ?", (since_id, limit))
+        return [{**dict(r), "context": json.loads(r["context"])} for r in rows]
+
     # -- cache -------------------------------------------------------------
 
     def cache_get(self, key: str, max_age: float) -> tuple[int, bytes] | None:
@@ -293,6 +328,7 @@ class Store:
         cutoff = time.time() - older_than_days * 86400
         with self.transaction() as db:
             cache = db.execute("DELETE FROM cache WHERE fetched_at < ?", (cutoff,)).rowcount
+            alerts = db.execute("DELETE FROM alerts WHERE at < ?", (cutoff,)).rowcount
             ev = db.execute("DELETE FROM evidence WHERE observed_at < ?", (cutoff,)).rowcount
             edges = db.execute("DELETE FROM edges WHERE last_seen < ?", (cutoff,)).rowcount
             nodes = db.execute(
@@ -304,7 +340,7 @@ class Store:
             ).rowcount
         with self._lock:
             self._db.execute("PRAGMA optimize")
-        return {"cache": cache, "evidence": ev, "edges": edges, "nodes": nodes}
+        return {"cache": cache, "evidence": ev, "edges": edges, "nodes": nodes, "alerts": alerts}
 
 
 def _node_dict(row: sqlite3.Row) -> dict[str, Any]:

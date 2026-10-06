@@ -30,6 +30,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import __version__, export
 from .engine import Engine
 from .extract import classify, extract
+from .model import KINDS
 from .sources import describe
 
 MAX_BODY = 1024 * 1024
@@ -139,7 +140,7 @@ def _int(q: dict[str, str], name: str, default: int, hi: int) -> int:
 
 def _key(q: dict[str, str]) -> str:
     raw = q.get("key", "")
-    if raw.split(":", 1)[0] in {"ip", "domain", "url", "hash", "cve", "email", "asn", "org", "tag", "report"}:
+    if raw.split(":", 1)[0] in KINDS:
         return raw
     ind = classify(raw)
     if ind is None:
@@ -194,6 +195,37 @@ def _export(engine: Engine, q: dict, body: dict) -> Any:
     return export.FORMATS[fmt](engine.store, None), ctype
 
 
+def _watch_status(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.watcher().status()
+
+
+def _watch_control(engine: Engine, q: dict, body: dict) -> Any:
+    action = body.get("action")
+    try:
+        interval = float(body["interval"]) if body.get("interval") else None
+    except (TypeError, ValueError):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "interval must be a number")
+    watch = engine.watcher(interval)
+    if action == "start":
+        watch.start()
+    elif action == "stop":
+        watch.stop()
+    elif action == "scan":
+        return {**watch.status(), "result": watch.scan()}
+    else:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "action must be start, stop or scan")
+    return watch.status()
+
+
+def _connections(engine: Engine, q: dict, body: dict) -> Any:
+    watch = engine.watcher()
+    return {"status": watch.status(), "connections": watch.rows[:1000]}
+
+
+def _alerts(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.store.alerts(_int(q, "since", 0, 2**62), _int(q, "limit", 100, 1000))
+
+
 def _extract(engine: Engine, q: dict, body: dict) -> Any:
     return [i.key for i in extract(str(body.get("text", ""))[:MAX_BODY])]
 
@@ -230,6 +262,10 @@ ROUTES = {
     ("GET", "/api/graph"): _graph,
     ("POST", "/api/extract"): _extract,
     ("POST", "/api/investigate"): _investigate,
+    ("GET", "/api/watch"): _watch_status,
+    ("POST", "/api/watch"): _watch_control,
+    ("GET", "/api/connections"): _connections,
+    ("GET", "/api/alerts"): _alerts,
 }
 
 

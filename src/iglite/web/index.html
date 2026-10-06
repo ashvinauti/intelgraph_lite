@@ -6,87 +6,265 @@
 <title>IntelGraph Lite</title>
 <style>
   :root {
-    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
-    --accent: #2f5bd3; --mal: #c62828; --sus: #b26a00; --ben: #2e7d32; --unk: #8a8a84;
+    --surface-0: #f4f4f2; --surface-1: #fcfcfb; --surface-2: #efefec; --line: #e1e1dc; --line-strong: #c9c9c2;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974;
+    --accent: #2a78d6; --accent-ink: #ffffff;
+    /* Status palette: always paired with an icon and a label. */
+    --st-critical: #d03b3b; --st-warning: #fab219; --st-good: #0ca30c; --st-neutral: #8a8a84; --st-info: #2a78d6;
+    --shadow: 0 6px 24px rgba(0,0,0,.12);
+  }
+  :root[data-theme="dark"] {
+    --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242422; --line: #30302d; --line-strong: #46463f;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #94938b;
+    --accent: #3987e5; --st-neutral: #85857f; --st-info: #3987e5; --shadow: 0 6px 24px rgba(0,0,0,.5);
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #151514; --panel: #1f1f1d; --text: #ecece8; --muted: #9b9b95; --line: #33332f;
-            --accent: #7b9cf0; --mal: #ef6b6b; --sus: #e0a040; --ben: #6cc070; --unk: #85857f; }
+    :root:not([data-theme="light"]) {
+      --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242422; --line: #30302d; --line-strong: #46463f;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #94938b;
+      --accent: #3987e5; --st-neutral: #85857f; --st-info: #3987e5; --shadow: 0 6px 24px rgba(0,0,0,.5);
+    }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 16px;
-           align-items: baseline; flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0; }
-  #stats { color: var(--muted); font-size: 13px; }
-  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; padding: 16px; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
-            min-width: 0; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
-  textarea, input, select, button { font: inherit; color: inherit; }
-  textarea { width: 100%; min-height: 90px; resize: vertical; padding: 8px; border: 1px solid var(--line);
-             border-radius: 6px; background: var(--bg); }
-  input, select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
-  button { padding: 6px 12px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: wait; }
-  .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
-  .grow { flex: 1; min-width: 0; }
-  ul.list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 55vh; overflow: auto; }
-  ul.list li { display: flex; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); cursor: pointer;
-               align-items: baseline; }
-  ul.list li:hover { background: var(--bg); }
-  .key { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-  .badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 10px; color: #fff;
-           white-space: nowrap; background: var(--unk); }
-  .malicious { background: var(--mal); } .suspicious { background: var(--sus); }
-  .benign { background: var(--ben); } .unknown { background: var(--unk); }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
+  .muted { color: var(--text-muted); }
+  .secondary { color: var(--text-secondary); }
+
+  /* header */
+  header { display: flex; align-items: center; gap: 16px; padding: 0 16px; height: 52px; flex: none;
+           background: var(--surface-1); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+  nav { display: flex; gap: 2px; overflow-x: auto; flex: 1; min-width: 0; }
+  nav a { padding: 6px 12px; border-radius: 6px; color: var(--text-secondary); text-decoration: none; white-space: nowrap; }
+  nav a:hover { background: var(--surface-2); }
+  nav a[aria-current="page"] { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+          border: 1px solid var(--line); background: var(--surface-1); cursor: pointer; white-space: nowrap; }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-neutral); }
+  .pill.on .dot { background: var(--st-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--st-good) 25%, transparent); }
+  .icon-btn { border: 1px solid var(--line); background: var(--surface-1); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+
+  /* layout */
+  .shell { flex: 1; display: flex; min-height: 0; }
+  main { flex: 1; overflow: auto; padding: 16px; min-width: 0; }
+  section.view { display: none; }
+  section.view.active { display: block; }
+  .card { background: var(--surface-1); border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-width: 0; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-secondary); margin: 0 0 10px; }
+  .grid { display: grid; gap: 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; cursor: pointer; text-align: left; }
+  .tile:hover { border-color: var(--line-strong); }
+  .tile .label { color: var(--text-secondary); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .two { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); align-items: start; }
+  ul.feed { max-height: 62vh; overflow: auto; }
+  @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
+
+  /* controls */
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .toolbar .grow { flex: 1; min-width: 160px; }
+  input[type=text], input[type=search], select, textarea {
+    padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-0); }
+  textarea { width: 100%; min-height: 84px; resize: vertical; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+  button.ghost { background: var(--surface-1); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: progress; }
+  label.check { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); white-space: nowrap; }
+
+  /* status badge: icon + label, color never alone */
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 6px; border-radius: 999px;
+           border: 1px solid var(--line); background: var(--surface-1); font-size: 12px; white-space: nowrap; }
+  .badge i { font-style: normal; font-size: 11px; width: 14px; height: 14px; border-radius: 50%; display: inline-grid; place-items: center;
+             color: #0b0b0b; background: var(--c, var(--st-neutral)); }
+  .badge b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .v-malicious { --c: var(--st-critical); } .v-malicious i { color: #fff; }
+  .v-suspicious { --c: var(--st-warning); } .v-benign { --c: var(--st-good); }
+  .v-unknown, .v-unscored, .v-private { --c: var(--st-neutral); } .v-pending { --c: var(--st-info); } .v-pending i { color: #fff; }
+
+  /* tables */
+  .table-wrap { overflow: auto; max-height: calc(100vh - 220px); border: 1px solid var(--line); border-radius: 8px; background: var(--surface-1); }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 500; }
-  .muted { color: var(--muted); }
-  .warn { color: var(--sus); font-weight: 600; }
-  svg { width: 100%; height: 360px; display: block; }
-  svg text { fill: var(--text); font-size: 10px; }
-  svg line { stroke: var(--line); stroke-width: 1.2; }
-  #msg { color: var(--muted); font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--surface-1); color: var(--text-secondary); font-weight: 500; z-index: 1;
+       cursor: pointer; user-select: none; white-space: nowrap; }
+  th[aria-sort="ascending"]::after { content: " ▲"; font-size: 9px; }
+  th[aria-sort="descending"]::after { content: " ▼"; font-size: 9px; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--surface-2); }
+  tbody tr.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  td .nowrap, .nowrap { white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  .empty { padding: 28px; text-align: center; color: var(--text-muted); }
+
+  /* verdict breakdown bar */
+  .stack { display: flex; gap: 2px; height: 14px; margin: 6px 0 10px; }
+  .stack div { background: var(--c); min-width: 3px; }
+  .stack div:first-child { border-radius: 4px 0 0 4px; } .stack div:last-child { border-radius: 0 4px 4px 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+  .legend span { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .legend .sw { width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+
+  /* alerts list */
+  ul.feed { list-style: none; margin: 0; padding: 0; }
+  ul.feed li { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; padding: 8px 4px; border-bottom: 1px solid var(--line);
+               cursor: pointer; align-items: baseline; }
+  ul.feed li:hover { background: var(--surface-2); }
+  ul.feed .sub { grid-column: 2 / 4; font-size: 12px; color: var(--text-secondary); }
+
+  /* graph */
+  #graph-wrap { position: relative; height: calc(100vh - 170px); min-height: 360px; border: 1px solid var(--line);
+                border-radius: 8px; background: var(--surface-1); overflow: hidden; touch-action: none; }
+  #graph { width: 100%; height: 100%; display: block; cursor: grab; }
+  #graph.panning { cursor: grabbing; }
+  #graph line { stroke: var(--line-strong); stroke-width: 1.3; }
+  #graph line.hl { stroke: var(--accent); stroke-width: 2; }
+  #graph g.node { cursor: pointer; }
+  #graph g.node circle { stroke: var(--surface-1); stroke-width: 2; }
+  #graph g.node.sel circle { stroke: var(--accent); stroke-width: 3; }
+  #graph g.node.dim, #graph line.dim { opacity: .18; }
+  #graph text { fill: var(--text-primary); font-size: 10.5px; paint-order: stroke; user-select: none;
+                stroke: var(--surface-1); stroke-width: 3px; }
+  #graph text.glyph { fill: #0b0b0b; stroke: none; font-size: 9px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+  .graph-hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: var(--text-muted); pointer-events: none; }
+  #tooltip { position: fixed; z-index: 50; pointer-events: none; background: var(--surface-1); border: 1px solid var(--line);
+             box-shadow: var(--shadow); border-radius: 6px; padding: 6px 9px; font-size: 12px; display: none; max-width: 360px; }
+
+  /* detail drawer */
+  aside#drawer { width: 420px; flex: none; border-left: 1px solid var(--line); background: var(--surface-1); overflow: auto;
+                 padding: 16px; display: none; }
+  aside#drawer.open { display: block; }
+  @media (max-width: 640px) {
+    header { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; }
+    header h1 { flex: 1; }
+    nav { order: 3; flex-basis: 100%; }
+  }
+  @media (max-width: 1000px) {
+    aside#drawer { position: fixed; inset: 52px 0 0 auto; width: min(420px, 100vw); box-shadow: var(--shadow); z-index: 20; }
+  }
+  .drawer-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .drawer-head h2 { margin: 0; }
+  .big-score { font-size: 32px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+  .warn { border: 1px solid var(--st-warning); border-left-width: 4px; border-radius: 6px; padding: 8px 10px; margin: 10px 0; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+  .kv { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 4px 12px; font-size: 13px; }
+  .kv dt { color: var(--text-secondary); } .kv dd { margin: 0; }
+  .contrib { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-secondary); margin: 18px 0 8px; }
+  ul.links { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  ul.links li { padding: 5px 0; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+  ul.links li:hover { color: var(--accent); }
+
+  /* toasts */
+  #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
+  .toast { background: var(--surface-1); border: 1px solid var(--line); border-left: 4px solid var(--c, var(--st-neutral));
+           box-shadow: var(--shadow); border-radius: 6px; padding: 10px 12px; width: min(360px, calc(100vw - 32px)); cursor: pointer; }
+  .toast .t { font-weight: 600; display: flex; gap: 6px; align-items: center; }
 </style>
 </head>
 <body>
 <header>
   <h1>IntelGraph Lite</h1>
-  <span id="stats"></span>
+  <nav aria-label="Views">
+    <a href="#overview" data-view="overview">Overview</a>
+    <a href="#live" data-view="live">Live network</a>
+    <a href="#graph" data-view="graph">Graph</a>
+    <a href="#indicators" data-view="indicators">Indicators</a>
+  </nav>
+  <button class="pill" id="watch-pill" title="Start or stop live network monitoring"><span class="dot"></span><span id="watch-label">Monitoring off</span></button>
+  <button class="icon-btn" id="theme" title="Toggle light/dark theme">Dark</button>
 </header>
+
+<div class="shell">
 <main>
-  <div>
-    <section>
-      <h2>Investigate</h2>
-      <textarea id="input" placeholder="Paste indicators or a whole report: IPs, domains, URLs, hashes, CVEs. Defanged values like hxxp://evil[.]com work."></textarea>
-      <div class="row">
-        <label>Depth <select id="depth"><option>0</option><option selected>1</option><option>2</option></select></label>
-        <button id="go">Investigate</button>
-        <span id="msg"></span>
+  <!-- OVERVIEW -->
+  <section class="view" id="view-overview">
+    <div class="tiles" id="tiles"></div>
+    <div class="grid two" style="margin-top:16px">
+      <div class="grid">
+        <div class="card">
+          <h2>Verdicts</h2>
+          <div class="stack" id="stack" role="img" aria-label="Indicators by verdict"></div>
+          <div class="legend" id="legend"></div>
+        </div>
+        <div class="card">
+          <h2>Investigate</h2>
+          <textarea id="inv-text" placeholder="Paste indicators or a whole report: IPs, domains, URLs, hashes, CVEs. Defanged values like hxxp://evil[.]com work."></textarea>
+          <div class="toolbar" style="margin:8px 0 0">
+            <label class="check">Depth <select id="inv-depth"><option>0</option><option selected>1</option><option>2</option></select></label>
+            <button class="primary" id="inv-go">Investigate</button>
+            <span id="inv-msg" class="muted"></span>
+          </div>
+        </div>
       </div>
-    </section>
-    <section style="margin-top:16px">
-      <h2>Indicators</h2>
-      <div class="row">
-        <input id="q" class="grow" placeholder="Filter">
-        <select id="verdict">
-          <option value="">All</option><option>malicious</option><option>suspicious</option>
-          <option>benign</option><option>unknown</option>
-        </select>
+      <div class="card">
+        <h2>Recent alerts</h2>
+        <ul class="feed" id="alert-feed"></ul>
       </div>
-      <ul class="list" id="list"></ul>
-    </section>
-  </div>
-  <div>
-    <section id="detail"><p class="muted">Select an indicator to see why it was scored the way it was.</p></section>
-  </div>
+    </div>
+  </section>
+
+  <!-- LIVE NETWORK -->
+  <section class="view" id="view-live">
+    <div class="toolbar">
+      <button class="primary" id="live-toggle">Start monitoring</button>
+      <button class="ghost" id="live-scan">Scan now</button>
+      <label class="check">Every
+        <select id="live-interval"><option value="10">10 s</option><option value="30" selected>30 s</option><option value="60">1 min</option><option value="300">5 min</option></select>
+      </label>
+      <input type="search" class="grow" id="live-q" placeholder="Filter by process, IP or domain">
+      <label class="check"><input type="checkbox" id="live-flagged"> Flagged only</label>
+      <label class="check"><input type="checkbox" id="live-private"> Show local</label>
+    </div>
+    <p class="muted" id="live-status" style="margin:0 0 10px"></p>
+    <div class="table-wrap"><table id="live-table"></table></div>
+  </section>
+
+  <!-- GRAPH -->
+  <section class="view" id="view-graph">
+    <div class="toolbar">
+      <input type="search" class="grow" id="g-add" placeholder="Add an indicator to the graph (IP, domain, URL…) and press Enter">
+      <button class="ghost" id="g-fit">Fit</button>
+      <button class="ghost" id="g-labels">Labels on</button>
+      <button class="ghost" id="g-clear">Clear</button>
+      <span class="legend" id="g-legend"></span>
+    </div>
+    <div id="graph-wrap">
+      <svg id="graph" aria-label="Knowledge graph"><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg>
+      <div class="graph-hint">Drag nodes · scroll to zoom · drag background to pan · double-click a node to expand</div>
+    </div>
+  </section>
+
+  <!-- INDICATORS -->
+  <section class="view" id="view-indicators">
+    <div class="toolbar">
+      <input type="search" class="grow" id="i-q" placeholder="Search values">
+      <select id="i-verdict"><option value="">All verdicts</option><option>malicious</option><option>suspicious</option><option>benign</option><option>unknown</option></select>
+      <select id="i-kind"><option value="">All kinds</option><option>ip</option><option>domain</option><option>url</option><option>hash</option><option>cve</option><option>email</option><option>process</option><option>org</option><option>tag</option><option>report</option></select>
+      <a class="ghost" id="i-export" href="/api/export/stix" download="iglite-stix.json" style="text-decoration:none;padding:6px 12px;border:1px solid var(--line);border-radius:6px">Export STIX</a>
+    </div>
+    <div class="table-wrap"><table id="i-table"></table></div>
+    <div class="toolbar" style="margin-top:10px"><button class="ghost" id="i-more">Load more</button><span class="muted" id="i-count"></span></div>
+  </section>
 </main>
+<aside id="drawer" aria-label="Indicator details"></aside>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<div id="tooltip" role="tooltip"></div>
+
 <script>
 "use strict";
+/* ---------- helpers ---------- */
+const $ = id => document.getElementById(id);
+const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter(k => k != null && k !== false));
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+};
 let token = null;
 try { token = sessionStorage.getItem("iglite-token"); } catch (e) {}
 
@@ -97,120 +275,507 @@ async function api(path, body) {
   if (res.status === 401) {
     token = prompt("API token");
     try { sessionStorage.setItem("iglite-token", token || ""); } catch (e) {}
+    if (!token) throw new Error("unauthorised");
     return api(path, body);
   }
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
-
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
-    if (k === "class") node.className = v; else if (k.startsWith("on")) node[k] = v; else node.setAttribute(k, v);
+    if (v == null || v === false) continue;
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node[k] = v;
+    else node.setAttribute(k, v === true ? "" : v);
   }
-  for (const c of children) node.append(c instanceof Node ? c : document.createTextNode(String(c ?? "")));
+  for (const c of children.flat()) if (c != null && c !== false) node.append(c instanceof Node ? c : document.createTextNode(String(c)));
   return node;
 }
-const badge = (v, score) => el("span", { class: "badge " + (v || "unknown") }, (v || "unscored") + (score != null ? " " + score : ""));
-
-async function refreshStats() {
-  const s = await api("/api/stats");
-  const v = s.by_verdict;
-  document.getElementById("stats").textContent =
-    `${s.nodes} indicators · ${s.edges} links · ${v.malicious || 0} malicious · ${v.suspicious || 0} suspicious`;
+const ICON = { malicious: "✕", suspicious: "!", benign: "✓", unknown: "?", unscored: "?", pending: "…", private: "⌂" };
+function badge(verdict, score) {
+  const v = verdict || "unscored";
+  return el("span", { class: "badge v-" + v }, el("i", { "aria-hidden": "true" }, ICON[v] || "?"), v,
+            score != null ? el("b", {}, score) : null);
 }
+const timeAgo = ts => {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : new Date(ts * 1000).toLocaleDateString();
+};
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const VERDICTS = ["malicious", "suspicious", "unknown", "benign"];
+const VCOLOR = { malicious: "--st-critical", suspicious: "--st-warning", benign: "--st-good", unknown: "--st-neutral", unscored: "--st-neutral" };
 
-let timer;
-async function refreshList() {
-  const params = new URLSearchParams({ limit: 200 });
-  const q = document.getElementById("q").value.trim(), v = document.getElementById("verdict").value;
-  if (q) params.set("q", q);
-  if (v) params.set("verdict", v);
-  const rows = await api("/api/indicators?" + params);
-  const list = document.getElementById("list");
-  list.replaceChildren(...rows.map(n =>
-    el("li", { onclick: () => showDetail(n.key) }, badge(n.verdict, n.score), el("span", { class: "key" }, n.key))));
-  if (!rows.length) list.append(el("li", { class: "muted" }, "Nothing yet."));
-}
-
-async function showDetail(key) {
-  const [d, g] = await Promise.all([
-    api("/api/indicator?key=" + encodeURIComponent(key)),
-    api("/api/graph?depth=1&limit=40&key=" + encodeURIComponent(key)),
-  ]);
-  const a = d.assessment;
-  const reasons = el("table", {}, el("tr", {}, el("th", {}, "Source"), el("th", {}, "Effect"), el("th", {}, "Why")),
-    ...a.reasons.map(r => el("tr", {}, el("td", {}, r.source),
-      el("td", {}, (r.contribution >= 0 ? "+" : "") + r.contribution.toFixed(2)), el("td", {}, r.detail))));
-  const attrs = el("table", {}, ...Object.entries(d.node.attrs).map(([k, v]) =>
-    el("tr", {}, el("th", {}, k), el("td", { class: "key" }, typeof v === "object" ? JSON.stringify(v) : v))));
-  document.getElementById("detail").replaceChildren(
-    el("h2", {}, d.node.kind),
-    el("div", { class: "row" }, badge(a.verdict, a.score), el("span", { class: "key" }, d.node.value)),
-    a.contradiction ? el("p", { class: "warn" }, "Sources disagree about this indicator. Review the evidence.") : "",
-    el("h2", { style: "margin-top:14px" }, "Why"),
-    a.reasons.length ? reasons : el("p", { class: "muted" }, "No source has an opinion yet."),
-    el("h2", { style: "margin-top:14px" }, "Connections"),
-    drawGraph(g, key),
-    ...(Object.keys(d.node.attrs).length ? [el("h2", { style: "margin-top:14px" }, "Attributes"), attrs] : []),
-  );
-}
-
-function drawGraph(g, root) {
-  const NS = "http://www.w3.org/2000/svg", W = 640, H = 360, cx = W / 2, cy = H / 2;
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  const others = g.nodes.filter(n => n.key !== root);
-  const pos = { [root]: [cx, cy] };
-  others.forEach((n, i) => {
-    const t = (2 * Math.PI * i) / Math.max(1, others.length);
-    pos[n.key] = [cx + Math.cos(t) * (W / 2 - 110), cy + Math.sin(t) * (H / 2 - 40)];
+/* sortable table: columns = [{key, label, num, render(row)}] */
+function renderTable(table, columns, rows, sort, onSort, onRow, selectedKey) {
+  const sorted = [...rows].sort((a, b) => {
+    const col = columns.find(c => c.key === sort.key) || columns[0];
+    const va = col.sortValue ? col.sortValue(a) : a[col.key], vb = col.sortValue ? col.sortValue(b) : b[col.key];
+    const cmp = va == null ? 1 : vb == null ? -1 : (typeof va === "number" ? va - vb : String(va).localeCompare(String(vb)));
+    return sort.dir === "asc" ? cmp : -cmp;
   });
-  const colour = v => getComputedStyle(document.documentElement)
-    .getPropertyValue({ malicious: "--mal", suspicious: "--sus", benign: "--ben" }[v] || "--unk");
-  for (const e of g.edges) {
-    if (!pos[e.src] || !pos[e.dst]) continue;
-    const line = document.createElementNS(NS, "line");
-    [["x1", pos[e.src][0]], ["y1", pos[e.src][1]], ["x2", pos[e.dst][0]], ["y2", pos[e.dst][1]]]
-      .forEach(([k, v]) => line.setAttribute(k, v));
-    const title = document.createElementNS(NS, "title"); title.textContent = e.rel; line.append(title);
-    svg.append(line);
-  }
-  for (const n of g.nodes) {
-    const [x, y] = pos[n.key];
-    const grp = document.createElementNS(NS, "g");
-    grp.style.cursor = "pointer";
-    grp.onclick = () => showDetail(n.key);
-    const c = document.createElementNS(NS, "circle");
-    c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", n.key === root ? 9 : 6);
-    c.setAttribute("fill", colour(n.verdict));
-    const t = document.createElementNS(NS, "text");
-    t.setAttribute("x", x + 10); t.setAttribute("y", y + 3);
-    t.textContent = n.key.length > 42 ? n.key.slice(0, 40) + "…" : n.key;
-    grp.append(c, t); svg.append(grp);
-  }
-  if (!others.length) return el("p", { class: "muted" }, "No connections recorded.");
-  return svg;
+  const head = el("tr", {}, columns.map(c => el("th", {
+    class: c.num ? "num" : null, scope: "col",
+    "aria-sort": sort.key === c.key ? (sort.dir === "asc" ? "ascending" : "descending") : null,
+    onclick: () => onSort(c.key),
+  }, c.label)));
+  const body = sorted.map(r => el("tr", { class: r.key === selectedKey ? "selected" : null, onclick: () => onRow(r) },
+    columns.map(c => el("td", { class: c.num ? "num" : null }, c.render ? c.render(r) : (r[c.key] ?? "")))));
+  fill(table, el("thead", {}, head), el("tbody", {}, body));
+  if (!rows.length) table.append(el("tbody", {}, el("tr", {}, el("td", { colspan: columns.length, class: "empty" }, table.dataset.empty || "Nothing to show."))));
+}
+const VRANK = { malicious: 0, suspicious: 1, pending: 2, unknown: 3, unscored: 3, benign: 4, private: 5 };
+
+/* ---------- theme ---------- */
+const isDark = () => document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+function applyTheme(t) {
+  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  $("theme").textContent = isDark() ? "Light" : "Dark";
+}
+applyTheme(store.get("iglite-theme"));
+$("theme").onclick = () => {
+  const next = isDark() ? "light" : "dark";
+  applyTheme(next); store.set("iglite-theme", next); Graph.render();
+};
+
+/* ---------- routing ---------- */
+let view = "overview";
+function route() {
+  view = (location.hash || "#overview").slice(1);
+  if (!$("view-" + view)) view = "overview";
+  document.querySelectorAll("section.view").forEach(s => s.classList.toggle("active", s.id === "view-" + view));
+  document.querySelectorAll("nav a").forEach(a => a.setAttribute("aria-current", a.dataset.view === view ? "page" : "false"));
+  refreshView();
+  if (view === "graph") Graph.resize();
+}
+window.addEventListener("hashchange", route);
+
+/* ---------- overview ---------- */
+let stats = null, watch = { running: false };
+async function refreshStats() {
+  stats = await api("/api/stats");
+  const v = stats.by_verdict;
+  const tiles = [
+    ["Indicators", stats.nodes, null, "#indicators"],
+    ["Malicious", v.malicious || 0, "malicious", "#indicators?malicious"],
+    ["Suspicious", v.suspicious || 0, "suspicious", "#indicators?suspicious"],
+    ["Live connections", watch.connections ?? 0, null, "#live"],
+    ["Alerts", stats.alerts || 0, null, "#overview"],
+  ];
+  fill($("tiles"), ...tiles.map(([label, value, verdict, href]) => el("button", {
+    class: "tile", onclick: () => {
+      const [h, filter] = href.split("?");
+      if (filter) { $("i-verdict").value = filter; Indicators.reset(); }
+      location.hash = h;
+    } }, el("div", { class: "label" }, verdict ? badge(verdict) : label), el("div", { class: "value" }, value.toLocaleString()))));
+
+  const total = VERDICTS.reduce((s, k) => s + (v[k] || 0), 0);
+  fill($("stack"), ...VERDICTS.filter(k => v[k]).map(k => el("div", {
+    style: `flex:${v[k]};--c:var(${VCOLOR[k]})`, title: `${k}: ${v[k]} (${Math.round(100 * v[k] / total)}%)` })));
+  fill($("legend"), ...VERDICTS.map(k => el("span", {
+    onclick: () => { $("i-verdict").value = k; Indicators.reset(); location.hash = "#indicators"; } },
+    el("i", { class: "sw", style: `--c:var(${VCOLOR[k]})` }), `${k} `, el("b", {}, (v[k] || 0).toLocaleString()))));
 }
 
-document.getElementById("go").onclick = async () => {
-  const btn = document.getElementById("go"), msg = document.getElementById("msg");
-  const text = document.getElementById("input").value;
-  if (!text.trim()) return;
-  btn.disabled = true; msg.textContent = "Looking up…";
+let alertsSince = 0, alertsPrimed = false, recentAlerts = [], alertsInFlight = null;
+function pollAlerts() {
+  if (!alertsInFlight) alertsInFlight = fetchAlerts().finally(() => { alertsInFlight = null; });
+  return alertsInFlight;
+}
+async function fetchAlerts() {
+  const fresh = await api("/api/alerts?since=" + alertsSince + "&limit=50");
+  if (fresh.length) {
+    alertsSince = Math.max(...fresh.map(a => a.id));
+    if (alertsPrimed) fresh.slice(0, 3).forEach(toast);
+    recentAlerts = [...fresh, ...recentAlerts].slice(0, 30);
+  }
+  alertsPrimed = true;
+  const feed = $("alert-feed");
+  fill(feed, ...recentAlerts.map(a => el("li", { onclick: () => Drawer.open(a.key) },
+    badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted" }, timeAgo(a.at)),
+    el("span", { class: "sub" }, describeAlert(a)))));
+  if (!recentAlerts.length) feed.append(el("li", { class: "muted", style: "display:block;cursor:default" },
+    "No alerts yet. Start monitoring to check this machine's connections against your sources."));
+}
+const describeAlert = a => {
+  const c = a.context || {};
+  return [c.process ? `${c.process}${c.pid ? " (" + c.pid + ")" : ""}` : null, c.remote_port ? "port " + c.remote_port : null,
+          c.names && c.names.length ? c.names.join(", ") : null].filter(Boolean).join(" · ") || "flagged indicator";
+};
+function toast(a) {
+  const t = el("div", { class: "toast", style: `--c:var(${VCOLOR[a.verdict] || "--st-neutral"})`, role: "status",
+    onclick: () => { Drawer.open(a.key); t.remove(); } },
+    el("div", { class: "t" }, badge(a.verdict, a.score), el("span", { class: "mono" }, a.key)),
+    el("div", { class: "secondary", style: "font-size:12px;margin-top:4px" }, describeAlert(a)));
+  $("toasts").append(t);
+  setTimeout(() => t.remove(), 12000);
+}
+
+$("inv-go").onclick = async () => {
+  const text = $("inv-text").value.trim();
+  if (!text) return;
+  const btn = $("inv-go"); btn.disabled = true; $("inv-msg").textContent = "Looking up…";
   try {
-    const r = await api("/api/investigate", { text, depth: +document.getElementById("depth").value });
-    msg.textContent = `${r.looked_up} looked up, ${r.network_calls} network calls, ${r.elapsed}s` +
-      (r.partial ? " (limit reached)" : "") + (r.errors.length ? `, ${r.errors.length} error(s)` : "");
-    await Promise.all([refreshList(), refreshStats()]);
-    if (r.seeds.length) showDetail(r.seeds[0]);
-  } catch (e) { msg.textContent = e.message; }
+    const r = await api("/api/investigate", { text, depth: +$("inv-depth").value });
+    $("inv-msg").textContent = `${r.looked_up} looked up · ${r.network_calls} network calls · ${r.elapsed}s` +
+      (r.partial ? " · limit reached" : "") + (r.errors.length ? ` · ${r.errors.length} error(s)` : "");
+    await refreshStats();
+    if (r.seeds.length) { Drawer.open(r.seeds[0]); r.seeds.slice(0, 10).forEach(k => Graph.load(k, false)); }
+  } catch (e) { $("inv-msg").textContent = e.message; }
   finally { btn.disabled = false; }
 };
-document.getElementById("q").oninput = () => { clearTimeout(timer); timer = setTimeout(refreshList, 250); };
-document.getElementById("verdict").onchange = refreshList;
-refreshStats(); refreshList();
+
+/* ---------- watch control ---------- */
+function paintWatch() {
+  $("watch-pill").classList.toggle("on", !!watch.running);
+  $("watch-label").textContent = watch.running ? `Monitoring · ${watch.connections ?? 0} conns` : "Monitoring off";
+  $("live-toggle").textContent = watch.running ? "Stop monitoring" : "Start monitoring";
+  const sel = $("live-interval");
+  if (watch.interval && document.activeElement !== sel) {
+    const v = String(Math.round(watch.interval));
+    if (![...sel.options].some(o => o.value === v)) sel.append(el("option", { value: v }, `${v} s`));
+    sel.value = v;
+  }
+  const last = watch.last_scan ? `Last scan ${timeAgo(watch.last_scan)}` : "Not scanned yet";
+  $("live-status").textContent = `${last} · ${watch.connections ?? 0} connections · ${watch.flagged ?? 0} flagged` +
+    (watch.running ? ` · every ${watch.interval}s` : "") + (watch.last_error ? ` · error: ${watch.last_error}` : "");
+}
+async function setWatch(action) {
+  const btns = [$("live-toggle"), $("live-scan")]; btns.forEach(b => b.disabled = true);
+  try {
+    watch = await api("/api/watch", { action, interval: +$("live-interval").value });
+    if (action !== "stop") await Live.refresh();
+    paintWatch(); refreshStats(); pollAlerts();
+  } catch (e) { $("live-status").textContent = e.message; }
+  finally { btns.forEach(b => b.disabled = false); }
+}
+$("watch-pill").onclick = () => setWatch(watch.running ? "stop" : "start");
+$("live-toggle").onclick = () => setWatch(watch.running ? "stop" : "start");
+$("live-scan").onclick = () => setWatch("scan");
+$("live-interval").onchange = () => { if (watch.running) setWatch("start"); };
+
+/* ---------- live network ---------- */
+const Live = {
+  rows: [], sort: { key: "verdict", dir: "asc" },
+  columns: [
+    { key: "verdict", label: "Verdict", render: r => badge(r.verdict, r.score), sortValue: r => VRANK[r.verdict] * 1000 - (r.score || 0) },
+    { key: "process", label: "Process", render: r => el("span", {}, r.process || el("span", { class: "muted" }, "unknown"),
+        r.pid ? el("span", { class: "muted" }, ` ${r.pid}`) : null) },
+    { key: "remote_ip", label: "Remote", render: r => el("span", { class: "mono nowrap" }, `${r.remote_ip}:${r.remote_port}`) },
+    { key: "names", label: "Names", render: r => el("span", { class: "mono secondary" }, r.names.join(", ")), sortValue: r => r.names[0] || "~" },
+    { key: "proto", label: "Proto" },
+    { key: "state", label: "State" },
+    { key: "count", label: "Conns", num: true },
+  ],
+  async refresh() {
+    const data = await api("/api/connections");
+    watch = data.status; this.rows = data.connections; paintWatch(); this.render();
+  },
+  render() {
+    const q = $("live-q").value.trim().toLowerCase(), flagged = $("live-flagged").checked, local = $("live-private").checked;
+    const rows = this.rows.filter(r => (local || r.verdict !== "private") &&
+      (!flagged || r.verdict === "malicious" || r.verdict === "suspicious") &&
+      (!q || [r.process, r.remote_ip, ...r.names].some(s => s && s.toLowerCase().includes(q))));
+    $("live-table").dataset.empty = this.rows.length ? "No connections match the filters." : "No snapshot yet. Press “Scan now” or start monitoring.";
+    renderTable($("live-table"), this.columns, rows, this.sort, k => this.toggleSort(k), r => Drawer.open(r.key), Drawer.key);
+  },
+  toggleSort(k) { this.sort = { key: k, dir: this.sort.key === k && this.sort.dir === "asc" ? "desc" : "asc" }; this.render(); },
+};
+["live-q", "live-flagged", "live-private"].forEach(id => $(id).addEventListener("input", () => Live.render()));
+
+/* ---------- indicators ---------- */
+const Indicators = {
+  rows: [], offset: 0, sort: { key: "score", dir: "desc" }, done: false,
+  columns: [
+    { key: "verdict", label: "Verdict", render: r => badge(r.verdict, r.score), sortValue: r => VRANK[r.verdict || "unscored"] * 1000 - (r.score || 0) },
+    { key: "score", label: "Score", num: true },
+    { key: "kind", label: "Kind" },
+    { key: "value", label: "Value", render: r => el("span", { class: "mono" }, r.value) },
+    { key: "last_seen", label: "Last seen", render: r => el("span", { class: "muted" }, timeAgo(r.last_seen)) },
+  ],
+  reset() { this.rows = []; this.offset = 0; this.done = false; return this.load(); },
+  async load() {
+    const p = new URLSearchParams({ limit: 200, offset: this.offset });
+    if ($("i-q").value.trim()) p.set("q", $("i-q").value.trim());
+    if ($("i-verdict").value) p.set("verdict", $("i-verdict").value);
+    if ($("i-kind").value) p.set("kind", $("i-kind").value);
+    const batch = await api("/api/indicators?" + p);
+    this.rows = this.rows.concat(batch); this.offset += batch.length; this.done = batch.length < 200;
+    this.render();
+  },
+  render() {
+    $("i-table").dataset.empty = "No indicators match. Investigate something on the Overview tab.";
+    renderTable($("i-table"), this.columns, this.rows, this.sort, k => {
+      this.sort = { key: k, dir: this.sort.key === k && this.sort.dir === "desc" ? "asc" : "desc" }; this.render();
+    }, r => Drawer.open(r.key), Drawer.key);
+    $("i-more").hidden = this.done;
+    $("i-count").textContent = `${this.rows.length} shown`;
+  },
+};
+let iTimer;
+$("i-q").oninput = () => { clearTimeout(iTimer); iTimer = setTimeout(() => Indicators.reset(), 250); };
+$("i-verdict").onchange = $("i-kind").onchange = () => Indicators.reset();
+$("i-more").onclick = () => Indicators.load();
+
+/* ---------- detail drawer ---------- */
+const Drawer = {
+  key: null,
+  async open(key) {
+    this.key = key;
+    const d = $("drawer"); d.classList.add("open");
+    fill(d, el("p", { class: "muted" }, "Loading…"));
+    try {
+      const [info, hood] = await Promise.all([
+        api("/api/indicator?key=" + encodeURIComponent(key)),
+        api("/api/graph?depth=1&limit=60&key=" + encodeURIComponent(key)),
+      ]);
+      if (this.key === key) this.render(info, hood);
+    } catch (e) { fill(d, this.head(key), el("p", { class: "muted" }, e.message)); }
+    if (view === "live") Live.render(); else if (view === "indicators") Indicators.render();
+    Graph.select(key);
+  },
+  close() { this.key = null; $("drawer").classList.remove("open"); Graph.select(null); },
+  head(title) {
+    return el("div", { class: "drawer-head" }, el("h2", { class: "secondary", style: "font-size:12px;text-transform:uppercase;letter-spacing:.05em" }, title),
+      el("button", { class: "icon-btn", onclick: () => this.close(), "aria-label": "Close details" }, "✕"));
+  },
+  render(info, hood) {
+    const n = info.node, a = info.assessment, key = n.key;
+    const byKey = Object.fromEntries(hood.nodes.map(x => [x.key, x]));
+    const links = info.edges.map(e => {
+      const out = e.src === key, other = out ? e.dst : e.src, o = byKey[other] || {};
+      return el("li", { onclick: () => this.open(other) }, badge(o.verdict), el("span", { class: "muted" }, out ? `${e.rel} →` : `← ${e.rel}`),
+        el("span", { class: "mono" }, other));
+    });
+    const attrs = Object.entries(n.attrs);
+    const reInvestigate = async btn => {
+      btn.disabled = true; btn.textContent = "Looking up…";
+      try { await api("/api/investigate", { indicators: [n.value], depth: 1 }); await this.open(key); Graph.load(key, true); refreshStats(); }
+      catch (e) { btn.textContent = e.message; }
+    };
+    const copy = el("button", { class: "ghost", onclick: async ev => {
+      try { await navigator.clipboard.writeText(n.value); ev.target.textContent = "Copied"; } catch (e) { ev.target.textContent = "Copy failed"; } } }, "Copy value");
+    fill($("drawer"), 
+      this.head(n.kind),
+      el("div", { style: "display:flex;gap:14px;align-items:center;margin-top:10px" },
+        el("div", { class: "big-score", title: "Score 0–100" }, a.score), el("div", {}, badge(a.verdict), el("div", { class: "mono", style: "margin-top:4px" }, n.value))),
+      a.contradiction ? el("div", { class: "warn", role: "note" }, el("b", {}, "Sources disagree. "), "Trusted sources call this both malicious and benign. Check the evidence before acting.") : null,
+      el("div", { class: "actions" },
+        n.kind !== "process" && n.kind !== "tag" && n.kind !== "org" && n.kind !== "report"
+          ? el("button", { class: "primary", onclick: ev => reInvestigate(ev.target) }, "Investigate again") : null,
+        el("button", { class: "ghost", onclick: () => { Graph.load(key, true); location.hash = "#graph"; } }, "Show in graph"),
+        copy),
+      el("h3", {}, "Why this score"),
+      a.reasons.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Source"), el("th", { class: "num" }, "Effect"), el("th", {}, "Evidence"))),
+        el("tbody", {}, a.reasons.map(r => el("tr", { style: "cursor:default" }, el("td", {}, r.source),
+          el("td", { class: "num contrib" }, (r.contribution >= 0 ? "+" : "−") + Math.abs(r.contribution).toFixed(2)), el("td", {}, r.detail)))))
+        : el("p", { class: "muted" }, "No source has an opinion yet. The score is the neutral starting point."),
+      el("h3", {}, `Connections (${info.edges.length})`),
+      links.length ? el("ul", { class: "links" }, links) : el("p", { class: "muted" }, "None recorded."),
+      attrs.length ? el("h3", {}, "Attributes") : null,
+      attrs.length ? el("dl", { class: "kv" }, attrs.flatMap(([k, v]) => [el("dt", {}, k),
+        el("dd", { class: "mono" }, typeof v === "number" && k.endsWith("last_seen") ? timeAgo(v) : typeof v === "object" ? JSON.stringify(v) : String(v))])) : null,
+      el("h3", {}, "Seen"),
+      el("p", { class: "secondary", style: "margin:0" }, `First ${timeAgo(n.first_seen)} · last ${timeAgo(n.last_seen)}`),
+    );
+  },
+};
+document.addEventListener("keydown", e => { if (e.key === "Escape") Drawer.close(); });
+
+/* ---------- graph ---------- */
+const NS = "http://www.w3.org/2000/svg";
+const GLYPH = { ip: "IP", domain: "D", url: "U", hash: "#", cve: "CV", email: "@", process: "P", org: "O", tag: "T", report: "R", asn: "AS" };
+const Graph = {
+  nodes: new Map(), edges: new Map(), hidden: new Set(), labels: true, selected: null,
+  view: { x: 0, y: 0, k: 1 }, alpha: 0, raf: null, w: 800, h: 500, hover: null,
+
+  svgEl(tag, attrs = {}) { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; },
+  resize() { const r = $("graph").getBoundingClientRect(); this.w = r.width || 800; this.h = r.height || 500; },
+
+  async load(key, expand) {
+    try {
+      const g = await api(`/api/graph?depth=1&limit=${expand ? 80 : 25}&key=` + encodeURIComponent(key));
+      this.merge(g, g.root);
+    } catch (e) { /* unknown indicator: ignore */ }
+  },
+  merge(g, root) {
+    this.resize();
+    const anchor = this.nodes.get(root);
+    const cx = anchor ? anchor.x : (this.w / 2 - this.view.x) / this.view.k, cy = anchor ? anchor.y : (this.h / 2 - this.view.y) / this.view.k;
+    for (const n of g.nodes) {
+      const old = this.nodes.get(n.key);
+      if (old) { Object.assign(old, { verdict: n.verdict, score: n.score }); continue; }
+      const t = Math.random() * Math.PI * 2, r = n.key === root ? 0 : 40 + Math.random() * 40;
+      this.nodes.set(n.key, { key: n.key, kind: n.kind, value: n.value, verdict: n.verdict, score: n.score,
+        x: cx + Math.cos(t) * r, y: cy + Math.sin(t) * r, vx: 0, vy: 0, fixed: false });
+    }
+    for (const e of g.edges) this.edges.set(`${e.src}|${e.rel}|${e.dst}`, e);
+    if (this.nodes.size > 400) this.prune(root);
+    this.build(); this.kick();
+  },
+  prune(keep) {  // keep the graph light: drop the oldest nodes beyond 400
+    for (const k of [...this.nodes.keys()]) { if (this.nodes.size <= 400) break; if (k !== keep && k !== this.selected) this.nodes.delete(k); }
+    for (const [id, e] of this.edges) if (!this.nodes.has(e.src) || !this.nodes.has(e.dst)) this.edges.delete(id);
+  },
+  degree(key) { let d = 0; for (const e of this.edges.values()) if (e.src === key || e.dst === key) d++; return d; },
+  visible(n) { return !this.hidden.has(n.verdict || "unknown"); },
+
+  build() {
+    const ge = $("edges"), gn = $("nodes");
+    fill(ge, ); fill(gn, );
+    for (const e of this.edges.values()) {
+      const a = this.nodes.get(e.src), b = this.nodes.get(e.dst);
+      if (!a || !b || !this.visible(a) || !this.visible(b)) { e._el = null; continue; }
+      const line = this.svgEl("line"); e._el = line; ge.append(line);
+    }
+    for (const n of this.nodes.values()) {
+      if (!this.visible(n)) { n._el = null; continue; }
+      const r = Math.min(16, 7 + Math.sqrt(this.degree(n.key)) * 2); n.r = r;
+      const g = this.svgEl("g", { class: "node" + (n.key === this.selected ? " sel" : "") });
+      const c = this.svgEl("circle", { r });
+      c.style.fill = `var(${VCOLOR[n.verdict] || "--st-neutral"})`;
+      const glyph = this.svgEl("text", { class: "glyph" }); glyph.textContent = GLYPH[n.kind] || "?";
+      if (n.verdict === "malicious") glyph.style.fill = "#fff";
+      const label = this.svgEl("text", { x: r + 4, y: 4 });
+      label.textContent = n.value.length > 38 ? n.value.slice(0, 36) + "…" : n.value;
+      label.style.display = this.labels ? "" : "none";
+      g.append(c, glyph, label); n._el = g; n._label = label;
+      this.bindNode(g, n); gn.append(g);
+    }
+    this.render();
+  },
+  render() {
+    $("viewport").setAttribute("transform", `translate(${this.view.x},${this.view.y}) scale(${this.view.k})`);
+    for (const e of this.edges.values()) {
+      if (!e._el) continue;
+      const a = this.nodes.get(e.src), b = this.nodes.get(e.dst);
+      e._el.setAttribute("x1", a.x); e._el.setAttribute("y1", a.y); e._el.setAttribute("x2", b.x); e._el.setAttribute("y2", b.y);
+    }
+    for (const n of this.nodes.values()) if (n._el) n._el.setAttribute("transform", `translate(${n.x},${n.y})`);
+  },
+  kick(a = 1) { this.alpha = Math.max(this.alpha, a); if (!this.raf) this.raf = requestAnimationFrame(() => this.tick()); },
+  tick() {
+    this.raf = null;
+    const ns = [...this.nodes.values()].filter(n => n._el);
+    // repulsion (O(n²), fine for a few hundred nodes; stops when the layout settles)
+    for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+      const a = ns[i], b = ns[j]; let dx = b.x - a.x, dy = b.y - a.y; let d2 = dx * dx + dy * dy || 0.01;
+      if (d2 > 90000) continue;
+      const f = 900 / d2 * this.alpha, d = Math.sqrt(d2); dx /= d; dy /= d;
+      a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
+    }
+    for (const e of this.edges.values()) {
+      if (!e._el) continue;
+      const a = this.nodes.get(e.src), b = this.nodes.get(e.dst);
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = (d - 80) * 0.04 * this.alpha;
+      a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f;
+    }
+    let cx = 0, cy = 0; ns.forEach(n => { cx += n.x; cy += n.y; }); cx /= ns.length || 1; cy /= ns.length || 1;
+    for (const n of ns) {
+      if (n.fixed) { n.vx = n.vy = 0; continue; }
+      n.vx -= (n.x - cx) * 0.002 * this.alpha; n.vy -= (n.y - cy) * 0.002 * this.alpha;
+      n.vx *= 0.6; n.vy *= 0.6; n.x += n.vx; n.y += n.vy;
+    }
+    this.render();
+    this.alpha *= 0.97;
+    if (this.alpha > 0.02 && !document.hidden) this.raf = requestAnimationFrame(() => this.tick());
+  },
+  toWorld(ev) { const r = $("graph").getBoundingClientRect(); return [(ev.clientX - r.left - this.view.x) / this.view.k, (ev.clientY - r.top - this.view.y) / this.view.k]; },
+  bindNode(g, n) {
+    let moved = false, start = null;
+    g.addEventListener("pointerdown", ev => {
+      ev.stopPropagation(); g.setPointerCapture(ev.pointerId); moved = false; start = [ev.clientX, ev.clientY]; n.fixed = true;
+    });
+    g.addEventListener("pointermove", ev => {
+      if (!start) return;
+      if (Math.abs(ev.clientX - start[0]) + Math.abs(ev.clientY - start[1]) > 3) moved = true;
+      if (moved) { [n.x, n.y] = this.toWorld(ev); this.render(); this.kick(0.3); }
+    });
+    g.addEventListener("pointerup", () => { start = null; if (!moved) { n.fixed = false; Drawer.open(n.key); } });
+    g.addEventListener("dblclick", ev => { ev.stopPropagation(); this.load(n.key, true); });
+    g.addEventListener("pointerenter", ev => this.highlight(n, ev));
+    g.addEventListener("pointerleave", () => this.highlight(null));
+  },
+  highlight(n, ev) {
+    const tip = $("tooltip");
+    if (!n) { tip.style.display = "none"; for (const x of this.nodes.values()) x._el && x._el.classList.remove("dim"); for (const e of this.edges.values()) e._el && e._el.classList.remove("dim", "hl"); return; }
+    const near = new Set([n.key]); const rels = [];
+    for (const e of this.edges.values()) if (e._el && (e.src === n.key || e.dst === n.key)) { near.add(e.src); near.add(e.dst); rels.push(e.rel); }
+    for (const x of this.nodes.values()) x._el && x._el.classList.toggle("dim", !near.has(x.key));
+    for (const e of this.edges.values()) if (e._el) { const on = e.src === n.key || e.dst === n.key; e._el.classList.toggle("hl", on); e._el.classList.toggle("dim", !on); }
+    fill(tip, el("div", {}, badge(n.verdict, n.score)), el("div", { class: "mono", style: "margin-top:4px" }, n.key),
+      rels.length ? el("div", { class: "muted", style: "margin-top:2px" }, [...new Set(rels)].join(", ")) : null,
+      el("div", { class: "muted", style: "margin-top:2px" }, "Click for details · double-click to expand"));
+    tip.style.display = "block"; tip.style.left = Math.min(ev.clientX + 14, innerWidth - 370) + "px"; tip.style.top = (ev.clientY + 14) + "px";
+  },
+  select(key) {
+    this.selected = key;
+    for (const n of this.nodes.values()) n._el && n._el.classList.toggle("sel", n.key === key);
+  },
+  fit() {
+    const ns = [...this.nodes.values()].filter(n => n._el); if (!ns.length) return; this.resize();
+    const xs = ns.map(n => n.x), ys = ns.map(n => n.y);
+    const minX = Math.min(...xs) - 60, maxX = Math.max(...xs) + 200, minY = Math.min(...ys) - 40, maxY = Math.max(...ys) + 40;
+    const k = Math.min(2, Math.max(0.2, Math.min(this.w / (maxX - minX), this.h / (maxY - minY))));
+    this.view = { k, x: (this.w - (minX + maxX) * k) / 2, y: (this.h - (minY + maxY) * k) / 2 }; this.render();
+  },
+  legend() {
+    fill($("g-legend"), ...VERDICTS.map(v => el("label", { class: "check" },
+      el("input", { type: "checkbox", checked: !this.hidden.has(v), onchange: ev => { ev.target.checked ? this.hidden.delete(v) : this.hidden.add(v); this.build(); this.kick(0.3); } }),
+      badge(v))));
+  },
+};
+(function bindGraphCanvas() {
+  const svg = $("graph"); let pan = null;
+  svg.addEventListener("pointerdown", ev => { pan = [ev.clientX - Graph.view.x, ev.clientY - Graph.view.y]; svg.classList.add("panning"); svg.setPointerCapture(ev.pointerId); });
+  svg.addEventListener("pointermove", ev => { if (pan) { Graph.view.x = ev.clientX - pan[0]; Graph.view.y = ev.clientY - pan[1]; Graph.render(); } });
+  svg.addEventListener("pointerup", () => { pan = null; svg.classList.remove("panning"); });
+  svg.addEventListener("wheel", ev => {
+    ev.preventDefault();
+    const r = svg.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    const k = Math.min(4, Math.max(0.15, Graph.view.k * Math.exp(-ev.deltaY * 0.0015)));
+    Graph.view.x = mx - (mx - Graph.view.x) * k / Graph.view.k; Graph.view.y = my - (my - Graph.view.y) * k / Graph.view.k; Graph.view.k = k; Graph.render();
+  }, { passive: false });
+  $("g-add").addEventListener("keydown", async ev => {
+    if (ev.key !== "Enter" || !ev.target.value.trim()) return;
+    await Graph.load(ev.target.value.trim(), true); ev.target.value = "";
+  });
+  $("g-fit").onclick = () => Graph.fit();
+  $("g-clear").onclick = () => { Graph.nodes.clear(); Graph.edges.clear(); Graph.build(); };
+  $("g-labels").onclick = ev => { Graph.labels = !Graph.labels; ev.target.textContent = Graph.labels ? "Labels on" : "Labels off"; Graph.build(); };
+  window.addEventListener("resize", () => Graph.resize());
+})();
+
+/* ---------- polling (paused while the tab is hidden) ---------- */
+async function refreshView() {
+  try {
+    if (view === "overview") await Promise.all([refreshStats(), pollAlerts()]);
+    else if (view === "live") await Live.refresh();
+    else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
+    else if (view === "graph" && !Graph.nodes.size) {
+      const top = await api("/api/indicators?limit=8&verdict=malicious");
+      const more = top.length ? top : await api("/api/indicators?limit=8");
+      for (const n of more) await Graph.load(n.key, false);
+      setTimeout(() => Graph.fit(), 900);
+    }
+  } catch (e) { /* surfaced by the next successful poll */ }
+}
+async function poll() {
+  if (!document.hidden) {
+    try {
+      watch = await api("/api/watch"); paintWatch();
+      await pollAlerts();
+      if (view === "live" && watch.running) await Live.refresh();
+      if (view === "overview") await refreshStats();
+    } catch (e) {}
+  }
+  setTimeout(poll, 5000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshView(); Graph.kick(0.05); } });
+Graph.legend();
+route();
+poll();
 </script>
 </body>
 </html>
