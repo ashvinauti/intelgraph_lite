@@ -157,7 +157,53 @@ def _stats(engine: Engine, q: dict, body: dict) -> Any:
 
 
 def _sources(engine: Engine, q: dict, body: dict) -> Any:
-    return describe(engine.config)
+    stats = engine.store.source_feedback_stats()
+    return [
+        {**s, **stats.get(s["name"], {"false_positives": 0, "confirmed": 0})} for s in describe(engine.config)
+    ]
+
+
+def _feedback_set(engine: Engine, q: dict, body: dict) -> Any:
+    verdict = body.get("verdict")
+    if verdict not in ("false_positive", "confirmed", "clear"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "verdict must be false_positive, confirmed or clear")
+    key = _key({"key": str(body.get("key", ""))})
+    try:
+        a = engine.set_feedback(key, None if verdict == "clear" else verdict, str(body.get("note") or ""))
+    except KeyError:
+        raise ApiError(HTTPStatus.NOT_FOUND, f"{key} not found")
+    return {"key": key, "assessment": a.as_dict()}
+
+
+def _feedback_list(engine: Engine, q: dict, body: dict) -> Any:
+    return {"feedback": engine.store.all_feedback(), "sources": engine.store.source_feedback_stats()}
+
+
+def _suppressions(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.store.suppressions()
+
+
+def _suppression_add(engine: Engine, q: dict, body: dict) -> Any:
+    kind, value = body.get("kind"), str(body.get("value") or "").strip()
+    if kind not in ("indicator", "process") or not value:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "kind must be indicator or process, with a value")
+    if kind == "indicator":
+        value = _key({"key": value})
+    return {
+        "id": engine.store.add_suppression(
+            kind, value.lower() if kind == "process" else value, str(body.get("note") or "")[:500]
+        )
+    }
+
+
+def _suppression_delete(engine: Engine, q: dict, body: dict) -> Any:
+    try:
+        ok = engine.store.remove_suppression(int(body.get("id")))
+    except (TypeError, ValueError):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "id must be an integer")
+    if not ok:
+        raise ApiError(HTTPStatus.NOT_FOUND, "no such rule")
+    return {"ok": True}
 
 
 def _indicators(engine: Engine, q: dict, body: dict) -> Any:
@@ -219,7 +265,11 @@ def _watch_control(engine: Engine, q: dict, body: dict) -> Any:
 
 def _connections(engine: Engine, q: dict, body: dict) -> Any:
     watch = engine.watcher()
-    return {"status": watch.status(), "connections": watch.rows[:1000]}
+    rules: dict[str, set[str]] = {}
+    for rule in engine.store.suppressions():  # current rules, not those at scan time
+        rules.setdefault(rule["kind"], set()).add(rule["value"])
+    rows = [{**r, "suppressed": watch._suppressed(r["key"], r["process"], rules)} for r in watch.rows[:1000]]
+    return {"status": watch.status(), "connections": rows}
 
 
 def _alerts(engine: Engine, q: dict, body: dict) -> Any:
@@ -333,6 +383,11 @@ ROUTES = {
     ("POST", "/api/trace"): _trace_start,
     ("GET", "/api/trace"): _trace_get,
     ("GET", "/api/traces"): _traces,
+    ("POST", "/api/feedback"): _feedback_set,
+    ("GET", "/api/feedback"): _feedback_list,
+    ("GET", "/api/suppressions"): _suppressions,
+    ("POST", "/api/suppressions"): _suppression_add,
+    ("POST", "/api/suppressions/delete"): _suppression_delete,
     ("GET", "/api/agent/status"): _agent_status,
     ("POST", "/api/agent"): _agent_ask,
     ("GET", "/api/agent"): _agent_get,

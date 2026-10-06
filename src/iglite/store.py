@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS evidence (
     confidence  REAL NOT NULL,
     detail      TEXT NOT NULL,
     url         TEXT,
-    observed_at REAL NOT NULL
+    observed_at REAL NOT NULL,
+    last_seen   REAL
 );
 CREATE INDEX IF NOT EXISTS evidence_node ON evidence(node, source);
 
@@ -69,7 +70,28 @@ CREATE TABLE IF NOT EXISTS alerts (
     key         TEXT NOT NULL,
     verdict     TEXT NOT NULL,
     score       INTEGER NOT NULL,
-    context     TEXT NOT NULL DEFAULT '{}'
+    context     TEXT NOT NULL DEFAULT '{}',
+    status      TEXT NOT NULL DEFAULT 'open'
+);
+
+-- Analyst verdicts that override the computed one ("false_positive" / "confirmed").
+-- `sources` records which sources were flagging it when marked, for per-source FP stats.
+CREATE TABLE IF NOT EXISTS feedback (
+    key         TEXT PRIMARY KEY,
+    verdict     TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    sources     TEXT NOT NULL DEFAULT '[]',
+    at          REAL NOT NULL
+);
+
+-- Alert suppression rules: never alert for this indicator / process.
+CREATE TABLE IF NOT EXISTS suppressions (
+    id          INTEGER PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    at          REAL NOT NULL,
+    UNIQUE (kind, value)
 );
 
 CREATE TABLE IF NOT EXISTS routes (
@@ -90,6 +112,12 @@ CREATE TABLE IF NOT EXISTS cache (
 
 
 class Store:
+    # (table, column, declaration) added after v1; applied to older databases on open.
+    _ADDED_COLUMNS = (
+        ("evidence", "last_seen", "REAL"),
+        ("alerts", "status", "TEXT NOT NULL DEFAULT 'open'"),
+    )
+
     def __init__(self, path: str | Path = ":memory:") -> None:
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -109,8 +137,12 @@ class Store:
                     f"database schema v{row['v']} is newer than this release (v{SCHEMA_VERSION})"
                 )
             else:
-                # Migrations are additive (CREATE ... IF NOT EXISTS above), so
-                # upgrading only needs the recorded version bumped.
+                # Migrations are additive: new tables come from CREATE ... IF NOT
+                # EXISTS above, new columns are added here, then the version is bumped.
+                for table, column, decl in self._ADDED_COLUMNS:
+                    cols = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
+                    if column not in cols:
+                        self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
                 self._db.execute("UPDATE meta SET v=? WHERE k='schema_version'", (str(SCHEMA_VERSION),))
 
     def close(self) -> None:
@@ -279,19 +311,75 @@ class Store:
         with self.transaction() as db:
             db.execute("DELETE FROM evidence WHERE node=? AND source=?", (key, source))
             db.executemany(
-                "INSERT INTO evidence (node, source, verdict, confidence, detail, url, observed_at)"
-                " VALUES (?,?,?,?,?,?,?)",
-                [(key, source, e.verdict.value, e.confidence, e.detail, e.url, now) for e in items],
+                "INSERT INTO evidence (node, source, verdict, confidence, detail, url, observed_at, last_seen)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                [
+                    (key, source, e.verdict.value, e.confidence, e.detail, e.url, now, e.last_seen)
+                    for e in items
+                ],
             )
 
     def evidence(self, key: str) -> list[Evidence]:
         rows = self._query(
-            "SELECT source, verdict, confidence, detail, url FROM evidence WHERE node=? ORDER BY id",
+            "SELECT source, verdict, confidence, detail, url, last_seen FROM evidence WHERE node=? ORDER BY id",
             (key,),
         )
         return [
-            Evidence(r["source"], Verdict(r["verdict"]), r["detail"], r["confidence"], r["url"]) for r in rows
+            Evidence(
+                r["source"], Verdict(r["verdict"]), r["detail"], r["confidence"], r["url"], r["last_seen"]
+            )
+            for r in rows
         ]
+
+    # -- analyst feedback --------------------------------------------------
+
+    def set_feedback(self, key: str, verdict: str, note: str, sources: list[str]) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO feedback (key, verdict, note, sources, at) VALUES (?,?,?,?,?)",
+                (key, verdict, note, json.dumps(sorted(set(sources))), time.time()),
+            )
+
+    def clear_feedback(self, key: str) -> bool:
+        with self._lock:
+            return self._db.execute("DELETE FROM feedback WHERE key=?", (key,)).rowcount > 0
+
+    def feedback(self, key: str) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM feedback WHERE key=?", (key,))
+        return {**dict(rows[0]), "sources": json.loads(rows[0]["sources"])} if rows else None
+
+    def all_feedback(self, limit: int = 500) -> list[dict[str, Any]]:
+        rows = self._query("SELECT * FROM feedback ORDER BY at DESC LIMIT ?", (limit,))
+        return [{**dict(r), "sources": json.loads(r["sources"])} for r in rows]
+
+    def source_feedback_stats(self) -> dict[str, dict[str, int]]:
+        """Per source: how often its flags were confirmed vs. marked false positive."""
+        stats: dict[str, dict[str, int]] = {}
+        for row in self._query("SELECT verdict, sources FROM feedback"):
+            field = "false_positives" if row["verdict"] == "false_positive" else "confirmed"
+            for src in json.loads(row["sources"]):
+                stats.setdefault(src, {"false_positives": 0, "confirmed": 0})[field] += 1
+        return stats
+
+    # -- suppression rules ---------------------------------------------------
+
+    def add_suppression(self, kind: str, value: str, note: str = "") -> int:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR IGNORE INTO suppressions (kind, value, note, at) VALUES (?,?,?,?)",
+                (kind, value, note, time.time()),
+            )
+            row = self._db.execute(
+                "SELECT id FROM suppressions WHERE kind=? AND value=?", (kind, value)
+            ).fetchone()
+            return int(row[0])
+
+    def remove_suppression(self, rule_id: int) -> bool:
+        with self._lock:
+            return self._db.execute("DELETE FROM suppressions WHERE id=?", (rule_id,)).rowcount > 0
+
+    def suppressions(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._query("SELECT * FROM suppressions ORDER BY kind, value")]
 
     # -- alerts ------------------------------------------------------------
 
@@ -309,6 +397,14 @@ class Store:
             "SELECT key, verdict, MAX(at) AS at FROM alerts WHERE at >= ? GROUP BY key", (since,)
         )
         return {r["key"]: (r["verdict"], r["at"]) for r in rows}
+
+    def set_alert_status(self, key: str, status: str) -> int:
+        """Resolve every open alert for an indicator (false_positive / confirmed / open)."""
+        with self._lock:
+            return self._db.execute(
+                "UPDATE alerts SET status=? WHERE key=? AND (status='open' OR ?='open')",
+                (status, key, status),
+            ).rowcount
 
     def alerts(self, since_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._query("SELECT * FROM alerts WHERE id > ? ORDER BY id DESC LIMIT ?", (since_id, limit))

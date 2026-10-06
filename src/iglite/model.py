@@ -66,6 +66,9 @@ class Evidence:
     detail: str
     confidence: float = 1.0
     url: str | None = None
+    # When the source last saw this indicator behave this way (epoch seconds).
+    # Old sightings count for less; None means "current" (e.g. a live list).
+    last_seen: float | None = None
 
 
 @dataclass(frozen=True)
@@ -98,12 +101,15 @@ class Assessment:
     verdict: Verdict
     contradiction: bool
     reasons: tuple[Reason, ...]
+    # Set when an analyst marked the indicator: "false_positive" or "confirmed".
+    override: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "score": self.score,
             "verdict": self.verdict.value,
             "contradiction": self.contradiction,
+            "override": self.override,
             "reasons": [
                 {
                     "source": r.source,

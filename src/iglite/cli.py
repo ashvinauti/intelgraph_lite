@@ -151,8 +151,64 @@ def cmd_export(engine: Engine, args: argparse.Namespace) -> int:
 
 
 def cmd_sources(engine: Engine, args: argparse.Namespace) -> int:
+    stats = engine.store.source_feedback_stats()
     for s in describe(engine.config):
-        print(f"{s['name']:<12} {s['status']:<12} trust={s['trust']:<4} {s['description']}")
+        st = stats.get(s["name"])
+        marks = f"  [{st['false_positives']} FP / {st['confirmed']} confirmed]" if st else ""
+        print(f"{s['name']:<12} {s['status']:<12} trust={s['trust']:<4} {s['description']}{marks}")
+    return 0
+
+
+def cmd_mark(engine: Engine, args: argparse.Namespace) -> int:
+    key = _resolve_key(args.indicator)
+    verdict = {"fp": "false_positive", "confirm": "confirmed", "unmark": None}[args.command]
+    try:
+        a = engine.set_feedback(key, verdict, args.note or "")
+    except KeyError:
+        raise SystemExit(f"{key} is not in the database")
+    _print_assessment(key, a.as_dict())
+    return 0
+
+
+def cmd_feedback(engine: Engine, args: argparse.Namespace) -> int:
+    rows = engine.store.all_feedback()
+    if not rows:
+        print("No indicators marked yet. Use `iglite fp <indicator>` or `iglite confirm <indicator>`.")
+    for r in rows:
+        label = "FALSE POS" if r["verdict"] == "false_positive" else "CONFIRMED"
+        note = f"  ({r['note']})" if r["note"] else ""
+        print(f"{label:<10} {r['key']}{note}   flagged by: {', '.join(r['sources']) or '-'}")
+    stats = engine.store.source_feedback_stats()
+    if stats:
+        print("\nPer source (how often its flags turned out wrong):")
+        for name, st in sorted(stats.items(), key=lambda kv: -kv[1]["false_positives"]):
+            total = st["false_positives"] + st["confirmed"]
+            rate = st["false_positives"] / total
+            hint = "  -> consider lowering its trust in iglite.toml" if total >= 3 and rate > 0.5 else ""
+            print(
+                f"  {name:<14} {st['false_positives']} false positive(s), {st['confirmed']} confirmed ({rate:.0%} FP){hint}"
+            )
+    return 0
+
+
+def cmd_suppress(engine: Engine, args: argparse.Namespace) -> int:
+    if args.action == "list":
+        rules = engine.store.suppressions()
+        for r in rules:
+            print(f"#{r['id']:<4} {r['kind']:<10} {r['value']}" + (f"  ({r['note']})" if r["note"] else ""))
+        if not rules:
+            print("No suppression rules.")
+        return 0
+    if args.action == "remove":
+        if not args.value or not args.value.isdigit():
+            raise SystemExit("usage: iglite suppress remove <rule id>")
+        print("removed" if engine.store.remove_suppression(int(args.value)) else "no such rule")
+        return 0
+    if not args.value:
+        raise SystemExit(f"usage: iglite suppress {args.action} <value>")
+    value = _resolve_key(args.value) if args.action == "indicator" else args.value.lower()
+    rule = engine.store.add_suppression(args.action, value, args.note or "")
+    print(f"#{rule}: no alerts for {args.action} {value}")
     return 0
 
 
@@ -375,6 +431,30 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_export)
 
     sub.add_parser("sources", help="show sources and whether they are enabled").set_defaults(func=cmd_sources)
+
+    for name, text in (
+        ("fp", "mark an indicator as a false positive"),
+        ("confirm", "confirm an indicator is malicious"),
+        ("unmark", "remove your mark from an indicator"),
+    ):
+        sp = sub.add_parser(name, help=text)
+        sp.add_argument("indicator")
+        sp.add_argument("--note", help="why (shown in the evidence)")
+        sp.set_defaults(func=cmd_mark)
+
+    sub.add_parser("feedback", help="list your marks and per-source false-positive rates").set_defaults(
+        func=cmd_feedback
+    )
+
+    sp = sub.add_parser("suppress", help="alert suppression rules")
+    sp.add_argument(
+        "action",
+        choices=["process", "indicator", "list", "remove"],
+        help="add a rule for a process or indicator, list rules, or remove one by id",
+    )
+    sp.add_argument("value", nargs="?")
+    sp.add_argument("--note")
+    sp.set_defaults(func=cmd_suppress)
     sub.add_parser("stats", help="database statistics").set_defaults(func=cmd_stats)
 
     sp = sub.add_parser("prune", help="delete data older than N days")
