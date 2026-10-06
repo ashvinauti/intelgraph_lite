@@ -29,11 +29,12 @@ from .config import Config
 from .extract import derive, extract, is_public
 from .fetch import Fetcher
 from .model import Assessment, Indicator, Kind, Relation, Verdict
+from .netwatch import NetWatch
 from .sources import Context, Source, build
 from .store import Store
 
 # Kinds that are context, never looked up.
-_PASSIVE = frozenset({Kind.ORG, Kind.TAG, Kind.REPORT})
+_PASSIVE = frozenset({Kind.ORG, Kind.TAG, Kind.REPORT, Kind.PROCESS})
 
 
 @dataclass
@@ -78,6 +79,15 @@ class Engine:
             self.store, timeout=config.timeout, offline=config.offline, min_interval=limits
         )
         self.ctx = Context(self.fetcher, config)
+        self._netwatch: NetWatch | None = None
+
+    def watcher(self, interval: float | None = None) -> NetWatch:
+        """The live network watcher, created on first use."""
+        if self._netwatch is None:
+            self._netwatch = NetWatch(self, interval=interval or self.config.watch_interval)
+        elif interval:
+            self._netwatch.interval = max(5.0, float(interval))
+        return self._netwatch
 
     @property
     def trust(self) -> dict[str, float]:
