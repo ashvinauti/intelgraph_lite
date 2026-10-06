@@ -111,19 +111,34 @@ MALICIOUS   91  ip:45.155.205.20
 
 ## Sources
 
-| Source | Kind | Key needed | What it adds |
+| Source | Kind | Key (environment variable) | What it adds |
 |--------|------|------------|--------------|
-| `dns` | OSINT | no | A/AAAA records (domain → IP pivots) |
-| `rdap` | OSINT | no | Registrar, domain age (new domains are suspicious), network owner |
-| `crtsh` | OSINT | no | Subdomains from certificate transparency logs |
-| `internetdb` | OSINT | no | Open ports, hostnames, CVEs, tags (c2, tor, scanner, …) from Shodan InternetDB |
+| `dns` | OSINT | none | A/AAAA records (domain → IP pivots) |
+| `rdap` | OSINT | none | Registrar, domain age (new domains are suspicious), network owner |
+| `crtsh` | OSINT | none | Subdomains from certificate transparency logs |
+| `internetdb` | OSINT | none | Open ports, hostnames, CVEs, tags (c2, tor, scanner, …) from Shodan InternetDB |
+| `shodan` | OSINT | `SHODAN_API_KEY` | Full Shodan host data: owner, ASN, country, ports, CVEs, tags |
 | `otx` | CTI | `OTX_API_KEY` | AlienVault OTX pulses, malware families |
-| `virustotal` | CTI | `VT_API_KEY` | Engine detections (rate-limited to the free tier) |
+| `virustotal` | CTI | `VIRUSTOTAL_API_KEY` (or `VT_API_KEY`) | Engine detections (rate-limited to the free tier) |
 | `urlhaus` | CTI | `ABUSECH_AUTH_KEY` | Malware distribution URLs and payloads |
-| *your lists* | feed | no | Any text blocklist/allowlist, local file or URL |
+| *your lists* | feed | none | Any text blocklist/allowlist, local file or URL |
 
-`iglite sources` shows which are active. Keyed sources switch on automatically
-when their environment variable is set.
+### Adding your API keys
+
+Copy [`.env.example`](.env.example) to `.env` in the folder you run `iglite`
+from (or to `~/.iglite/.env` so it works from anywhere) and fill in your keys:
+
+```ini
+SHODAN_API_KEY=your-shodan-key
+VIRUSTOTAL_API_KEY=your-virustotal-key
+OTX_API_KEY=your-otx-key
+```
+
+Run `iglite sources` to confirm they show as `enabled`. The dashboard's
+Overview tab shows the same thing. `.env` is git-ignored, so keys can't be
+committed by accident. Keys are sent only to their own service; they are never
+written to the database, logs or error messages. Real environment variables
+override `.env`.
 
 ## Configure
 
@@ -154,7 +169,7 @@ docker run -p 8765:8765 -e IGLITE_API_TOKEN=change-me -v iglite:/data iglite
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 54 offline tests, ~3 s
+.venv/bin/pytest            # 60 offline tests, ~3 s
 .venv/bin/ruff check src tests
 ```
 
