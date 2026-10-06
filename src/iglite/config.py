@@ -1,7 +1,9 @@
-"""Configuration: an optional TOML file plus environment variables.
+"""Configuration: an optional TOML file, environment variables and ``.env`` files.
 
-Precedence (highest first): environment, ``iglite.toml``, defaults. API keys
-are read from the environment only, so the config file can be committed.
+Precedence (highest first): real environment, ``.env`` in the current folder,
+``~/.iglite/.env``, ``iglite.toml``, defaults. API keys are read from the
+environment or ``.env`` only, never from ``iglite.toml``, so the TOML file can
+be committed while ``.env`` stays private (it is git-ignored).
 """
 
 from __future__ import annotations
@@ -12,11 +14,34 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# source -> accepted variable names (first one set wins)
 ENV_KEYS = {
-    "otx": "OTX_API_KEY",
-    "virustotal": "VT_API_KEY",
-    "urlhaus": "ABUSECH_AUTH_KEY",
+    "otx": ("OTX_API_KEY",),
+    "virustotal": ("VT_API_KEY", "VIRUSTOTAL_API_KEY"),
+    "shodan": ("SHODAN_API_KEY",),
+    "urlhaus": ("ABUSECH_AUTH_KEY", "URLHAUS_AUTH_KEY"),
 }
+
+
+def read_dotenv(path: str | Path) -> dict[str, str]:
+    """Parse KEY=VALUE lines; ignores blanks, comments and ``export``; strips quotes."""
+    out: dict[str, str] = {}
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf-8-sig")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        out[key.strip()] = value
+    return out
 
 
 @dataclass
@@ -47,7 +72,13 @@ class Config:
 
 
 def load(path: str | Path | None = None, env: dict[str, str] | None = None) -> Config:
-    env = dict(os.environ if env is None else env)
+    real = dict(os.environ if env is None else env)
+    merged: dict[str, str] = {}
+    if env is None:  # an explicit env (tests, embedding) is used as-is
+        for dotenv in ("~/.iglite/.env", real.get("IGLITE_ENV_FILE") or ".env"):
+            merged.update(read_dotenv(dotenv))
+    merged.update(real)
+    env = merged
     data: dict[str, Any] = {}
     candidate = path or env.get("IGLITE_CONFIG")
     if candidate is None and Path("iglite.toml").is_file():
@@ -65,6 +96,11 @@ def load(path: str | Path | None = None, env: dict[str, str] | None = None) -> C
         cfg.db = env["IGLITE_DB"]
     if env.get("IGLITE_OFFLINE", "").lower() in ("1", "true", "yes"):
         cfg.offline = True
-    cfg.api_token = env.get("IGLITE_API_TOKEN") or None
-    cfg.keys = {src: env[var] for src, var in ENV_KEYS.items() if env.get(var)}
+    cfg.api_token = (env.get("IGLITE_API_TOKEN") or "").strip() or None
+    cfg.keys = {}
+    for src, names in ENV_KEYS.items():
+        for name in names:
+            if value := (env.get(name) or "").strip():
+                cfg.keys[src] = value
+                break
     return cfg

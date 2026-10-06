@@ -267,9 +267,16 @@
           </div>
         </div>
       </div>
-      <div class="card">
-        <h2>Recent alerts</h2>
-        <ul class="feed" id="alert-feed"></ul>
+      <div class="grid">
+        <div class="card">
+          <h2>Recent alerts</h2>
+          <ul class="feed" id="alert-feed"></ul>
+        </div>
+        <div class="card">
+          <h2>Sources</h2>
+          <ul class="links" id="sources"></ul>
+          <p class="muted" style="font-size:12px;margin:8px 0 0">Add API keys to a <span class="mono">.env</span> file and restart to switch more sources on.</p>
+        </div>
       </div>
     </div>
     <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>5</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
@@ -486,6 +493,14 @@ async function refreshStats() {
   fill($("legend"), VERDICTS.map(k => el("span", {
     onclick: () => { $("i-verdict").value = k; Indicators.reset(); location.hash = "#indicators"; } },
     el("i", { class: "sw", style: `--c:var(${VCOLOR[k]})` }), `${k} `, el("b", {}, (v[k] || 0).toLocaleString()))));
+}
+
+async function refreshSources() {
+  const list = await api("/api/sources");
+  const STATUS = { enabled: "benign", "missing key": "unknown", disabled: "none" };
+  fill($("sources"), list.map(s => el("li", { style: "cursor:default", title: s.description },
+    el("span", { class: "badge v-" + STATUS[s.status] }, el("i", { "aria-hidden": "true" }, s.status === "enabled" ? "✓" : s.status === "missing key" ? "?" : "·"), s.status),
+    el("span", { class: "mono" }, s.name), el("span", { class: "muted", style: "margin-left:auto;font-size:12px" }, `trust ${s.trust}`))));
 }
 
 /* activity line chart: connections + flagged per scan, crosshair tooltip */
@@ -1105,7 +1120,7 @@ const Graph = {
 /* ---------- polling (paused while the tab is hidden) ---------- */
 async function refreshView() {
   try {
-    if (view === "overview") await Promise.all([refreshStats(), pollAlerts(), Activity.refresh()]);
+    if (view === "overview") await Promise.all([refreshStats(), pollAlerts(), Activity.refresh(), refreshSources()]);
     else if (view === "live") await Live.refresh();
     else if (view === "routes") await Routes.list();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();

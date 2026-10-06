@@ -8,11 +8,11 @@ from __future__ import annotations
 from ..config import Config
 from ..model import Verdict
 from .base import Context, Source
-from .cti import OTX, URLhaus, VirusTotal
+from .cti import OTX, Shodan, URLhaus, VirusTotal
 from .lists import IndicatorList
 from .osint import DNS, RDAP, CertTransparency, InternetDB
 
-BUILTIN: list[type[Source]] = [DNS, RDAP, CertTransparency, InternetDB, OTX, VirusTotal, URLhaus]
+BUILTIN: list[type[Source]] = [DNS, RDAP, CertTransparency, InternetDB, Shodan, OTX, VirusTotal, URLhaus]
 
 __all__ = ["BUILTIN", "Context", "Source", "build", "describe"]
 
