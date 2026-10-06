@@ -98,9 +98,53 @@ iglite suppress list
 iglite feedback          # your marks + false-positive rate per source
 ```
 
+## AI false-positive triage
+
+A second agent investigates alerts for you. When live monitoring raises an
+alert, the triage agent works through the usual causes of false positives,
+then gives a verdict: **likely false positive**, **likely real**, or
+**uncertain**, with a confidence, short reasons, and a suggested action. The
+causes it checks:
+
+* how old and how independent the evidence is
+* shared CDN/cloud infrastructure
+* which program made the connection, and that program's alert history
+* **your own past decisions** on the same network, domain or owner
+* each source's false-positive rate
+
+It **only suggests**: its tools are read-only, and nothing is marked until you
+click *Apply* in the dashboard.
+
+* **Automatic** for new alerts (`IGLITE_AI_TRIAGE=auto`), capped at 20 runs
+  an hour (`ai_triage_per_hour`). Or `manual`, or `off`.
+* **On demand**: the **AI check** button on any alert, **Investigate with AI**
+  in an indicator's details panel, or the CLI:
+
+```bash
+iglite alerts               # recent alerts with their AI verdicts
+iglite triage 12            # triage alert #12 now
+iglite triage --open        # triage every open alert
+iglite triage --indicator 203.0.113.66
+```
+
+### Claude or a fully local model
+
+Both AI agents (analyst and triage) run on either backend. Choose in `.env`:
+
+| | Claude (default) | Local model via Ollama |
+|---|---|---|
+| Set | `ANTHROPIC_API_KEY` (and optionally `ANTHROPIC_BASE_URL`) | `IGLITE_AI_PROVIDER=ollama`, `IGLITE_AI_MODEL=qwen2.5:7b` |
+| Install | `pip install .[ai]` | [Ollama](https://ollama.com), then `ollama pull qwen2.5:7b` |
+| Privacy | Questions and alert data go to the API | **Nothing leaves your computer** |
+| Quality / speed | Strongest reasoning | Smaller models make more mistakes; slower without a GPU |
+
+Any Ollama model that supports tool calling works (`qwen2.5`, `llama3.1`,
+`mistral-nemo`, …); larger models triage better. The dashboard and
+`iglite triage` show which model and endpoint are in use.
+
 ## AI analyst
 
-An optional Claude-powered agent that investigates for you. Ask in plain
+An optional agent (Claude, or a local model; see above) that investigates for you. Ask in plain
 language and it uses IntelGraph Lite's own tools: looking up indicators,
 walking the graph, reading live connections and alerts, and running
 traceroutes. It then answers with the evidence.
@@ -244,7 +288,7 @@ docker run -p 8765:8765 -e IGLITE_API_TOKEN=change-me -v iglite:/data iglite
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 92 offline tests, ~3 s
+.venv/bin/pytest            # 105 offline tests, ~3 s
 .venv/bin/ruff check src tests
 ```
 

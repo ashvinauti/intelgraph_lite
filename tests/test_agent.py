@@ -77,7 +77,7 @@ def test_agent_uses_tools_and_answers(engine):
     steps = []
     answer = Analyst(engine, client=fake).ask("Is 203.0.113.66 bad?", on_step=steps.append)
 
-    assert "malicious" in answer.text and answer.stop_reason == "end_turn"
+    assert "malicious" in answer.text and answer.stop_reason == "end"
     assert [s.tool for s in steps] == ["get_indicator", "search_indicators"] and all(s.ok for s in steps)
     assert steps[0].summary == "malicious 90"
     # Both tool results went back together, in one user message, matching the call ids.
@@ -232,7 +232,7 @@ def test_no_credentials_is_reported_up_front(engine, monkeypatch, tmp_path):
         "reason": "no Anthropic API key found: add ANTHROPIC_API_KEY=... to your .env file",
     }
     engine.config.keys["anthropic"] = "dummy"
-    assert Analyst(engine).client is not None
+    assert Analyst(engine).backend.client is not None
 
 
 def test_gateway_mode_sends_a_plain_standard_request(engine):

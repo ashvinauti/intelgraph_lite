@@ -83,6 +83,7 @@ class Engine:
         self._netwatch: NetWatch | None = None
         self._tracer: Tracer | None = None
         self._desk: Any = None
+        self._triage: Any = None
 
     def agent_desk(self) -> Any:
         """The AI analyst's job runner, created on first use (imports nothing until then)."""
@@ -91,6 +92,19 @@ class Engine:
 
             self._desk = AgentDesk(self)
         return self._desk
+
+    def triage_worker(self) -> Any:
+        """Background AI false-positive triage, created on first use."""
+        if self._triage is None:
+            from .triage import TriageWorker
+
+            self._triage = TriageWorker(self)
+        return self._triage
+
+    def on_alert(self, alert_id: int) -> None:
+        """Hook for live monitoring: hand new alerts to automatic triage (if enabled)."""
+        if (self.config.ai_triage or "").lower() == "auto":
+            self.triage_worker().on_alert(alert_id)
 
     def tracer(self) -> Tracer:
         """Traceroute runner, created on first use."""
