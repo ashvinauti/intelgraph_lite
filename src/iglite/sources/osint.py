@@ -121,7 +121,9 @@ class InternetDB(Source):
     description = "Open ports, hostnames, CVEs and tags from Shodan InternetDB (free)"
 
     MALICIOUS_TAGS = {"c2", "malware", "compromised"}
-    SUSPICIOUS_TAGS = {"tor", "proxy", "vpn", "scanner", "honeypot"}
+    # VPN/proxy/honeypot describe a service, not an attack (and fire for ordinary
+    # privacy tools), so they stay attributes; tor exits and scanners are weak signals.
+    SUSPICIOUS_TAGS = {"tor": 0.4, "scanner": 0.3}
 
     def lookup(self, ind: Indicator, ctx: Context) -> Finding | None:
         data = ctx.fetcher.json(f"https://internetdb.shodan.io/{ind.value}", ttl=ctx.ttl(self))
@@ -139,9 +141,14 @@ class InternetDB(Source):
             finding.evidence.append(
                 Evidence(self.name, Verdict.MALICIOUS, f"tagged {', '.join(sorted(bad))}", 0.8)
             )
-        elif odd := tags & self.SUSPICIOUS_TAGS:
+        elif odd := tags & self.SUSPICIOUS_TAGS.keys():
             finding.evidence.append(
-                Evidence(self.name, Verdict.SUSPICIOUS, f"tagged {', '.join(sorted(odd))}", 0.5)
+                Evidence(
+                    self.name,
+                    Verdict.SUSPICIOUS,
+                    f"tagged {', '.join(sorted(odd))}",
+                    max(self.SUSPICIOUS_TAGS[t] for t in odd),
+                )
             )
         for host in (data.get("hostnames") or [])[:10]:
             if (dom := classify(host)) is not None and dom.kind is Kind.DOMAIN:

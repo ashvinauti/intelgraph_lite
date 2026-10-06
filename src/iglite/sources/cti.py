@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from ..extract import classify
 from ..model import Evidence, Finding, Indicator, Kind, Relation, Verdict
-from .base import Context, Source
+from .base import Context, Source, latest, parse_time
 
 
 class OTX(Source):
@@ -32,6 +32,7 @@ class OTX(Source):
         if not data:
             return None
         pulses = (data.get("pulse_info") or {}).get("pulses") or []
+        link = f"https://otx.alienvault.com/indicator/{section.lower()}/{ind.value}"
         finding = Finding(attributes={"otx_pulses": len(pulses)})
         if pulses:
             names = ", ".join(p.get("name", "?") for p in pulses[:3])
@@ -41,7 +42,26 @@ class OTX(Source):
                     Verdict.MALICIOUS,
                     f"in {len(pulses)} OTX pulse(s): {names}",
                     confidence=min(1.0, 0.4 + 0.15 * len(pulses)),
-                    url=f"https://otx.alienvault.com/indicator/{section.lower()}/{ind.value}",
+                    url=link,
+                    # Pulses are often years old; date the sighting by the newest one.
+                    last_seen=latest(p.get("modified") or p.get("created") for p in pulses),
+                )
+            )
+        # OTX's own counter-signals: known-good lists (e.g. popular domains, its
+        # whitelist) and community false-positive reports.
+        if validation := data.get("validation") or []:
+            why = "; ".join(str(v.get("message") or v.get("name") or v.get("source")) for v in validation[:3])
+            finding.evidence.append(
+                Evidence("otx_validation", Verdict.BENIGN, f"OTX validation: {why}", 0.7, link)
+            )
+        if reports := data.get("false_positive") or []:
+            finding.evidence.append(
+                Evidence(
+                    "otx_validation",
+                    Verdict.BENIGN,
+                    f"{len(reports)} OTX false-positive report(s)",
+                    0.8,
+                    link,
                 )
             )
         tags = {t.lower() for p in pulses for t in p.get("tags", [])}
@@ -83,19 +103,32 @@ class VirusTotal(Source):
         harmless = stats.get("harmless", 0) + stats.get("undetected", 0)
         total = bad + sus + harmless
         finding = Finding(attributes={"vt_detections": f"{bad}/{total}"})
-        if bad >= 3:
+        seen = parse_time(attrs.get("last_analysis_date"))
+        # One or two engines out of ~90 is routine noise (heuristics, stale
+        # signatures); real detections are usually broad.
+        if bad >= 5:
             finding.evidence.append(
                 Evidence(
-                    self.name, Verdict.MALICIOUS, f"{bad}/{total} engines flag it", min(1.0, bad / 10), link
+                    self.name,
+                    Verdict.MALICIOUS,
+                    f"{bad}/{total} engines flag it",
+                    min(1.0, bad / 10),
+                    link,
+                    seen,
                 )
             )
-        elif bad or sus >= 2:
+        elif bad >= 2 or (bad == 1 and sus >= 2):
             finding.evidence.append(
                 Evidence(
-                    self.name, Verdict.SUSPICIOUS, f"{bad} malicious, {sus} suspicious of {total}", 0.5, link
+                    self.name,
+                    Verdict.SUSPICIOUS,
+                    f"{bad} malicious, {sus} suspicious of {total}",
+                    0.3 + 0.1 * bad,
+                    link,
+                    seen,
                 )
             )
-        elif total >= 50 and attrs.get("reputation", 0) >= 0:
+        elif bad == 0 and sus == 0 and total >= 50 and attrs.get("reputation", 0) >= 0:
             finding.evidence.append(
                 Evidence(self.name, Verdict.BENIGN, f"0/{total} engines flag it", 0.5, link)
             )
@@ -138,6 +171,7 @@ class URLhaus(Source):
                     f"hosted {len(urls)} malware URL(s), {online} online",
                     0.9 if online else 0.6,
                     ref,
+                    None if online else latest(u.get("date_added") for u in urls),
                 )
             )
             for u in urls[:10]:
@@ -152,6 +186,9 @@ class URLhaus(Source):
                     f"{data.get('threat', 'malware')} URL ({status})",
                     0.9 if status == "online" else 0.7,
                     ref,
+                    None
+                    if status == "online"
+                    else parse_time(data.get("last_online") or data.get("date_added")),
                 )
             )
             for p in (data.get("payloads") or [])[:10]:
@@ -159,7 +196,16 @@ class URLhaus(Source):
                     finding.relations.append(Relation(ind, "serves", Indicator(Kind.HASH, sha.lower())))
         else:
             sig = data.get("signature") or "malware payload"
-            finding.evidence.append(Evidence(self.name, Verdict.MALICIOUS, f"known {sig}", 0.9))
+            finding.evidence.append(
+                Evidence(
+                    self.name,
+                    Verdict.MALICIOUS,
+                    f"known {sig}",
+                    0.9,
+                    None,
+                    parse_time(data.get("lastseen") or data.get("firstseen")),
+                )
+            )
             for u in (data.get("urls") or [])[:10]:
                 if (url := classify(u.get("url", ""))) is not None:
                     finding.relations.append(Relation(url, "serves", ind, pivot=False))
@@ -179,8 +225,10 @@ class Shodan(Source):
     description = "Shodan host data: owner, ASN, ports, CVEs, tags (SHODAN_API_KEY)"
     rate_limits = {"api.shodan.io": 1.0}  # API allows about 1 request/second
 
-    MALICIOUS_TAGS = {"c2", "malware", "compromised"}
-    SUSPICIOUS_TAGS = {"tor", "proxy", "vpn", "scanner", "honeypot", "doublepulsar"}
+    MALICIOUS_TAGS = {"c2", "malware", "compromised", "doublepulsar"}
+    # VPN, proxy and honeypot tags describe a service, not an attack, and fire
+    # constantly for ordinary privacy tools, so they are kept as attributes only.
+    SUSPICIOUS_TAGS = {"tor": 0.4, "scanner": 0.3}
 
     def lookup(self, ind: Indicator, ctx: Context) -> Finding | None:
         # The key travels as a query parameter but is kept out of the cache key.
@@ -210,25 +258,15 @@ class Shodan(Source):
                 if v not in (None, "", [])
             }
         )
+        link, seen = f"https://www.shodan.io/host/{ind.value}", parse_time(data.get("last_update"))
         if bad := tags & self.MALICIOUS_TAGS:
             finding.evidence.append(
-                Evidence(
-                    self.name,
-                    Verdict.MALICIOUS,
-                    f"tagged {', '.join(sorted(bad))}",
-                    0.8,
-                    f"https://www.shodan.io/host/{ind.value}",
-                )
+                Evidence(self.name, Verdict.MALICIOUS, f"tagged {', '.join(sorted(bad))}", 0.8, link, seen)
             )
-        elif odd := tags & self.SUSPICIOUS_TAGS:
+        elif odd := tags & self.SUSPICIOUS_TAGS.keys():
+            conf = max(self.SUSPICIOUS_TAGS[t] for t in odd)
             finding.evidence.append(
-                Evidence(
-                    self.name,
-                    Verdict.SUSPICIOUS,
-                    f"tagged {', '.join(sorted(odd))}",
-                    0.5,
-                    f"https://www.shodan.io/host/{ind.value}",
-                )
+                Evidence(self.name, Verdict.SUSPICIOUS, f"tagged {', '.join(sorted(odd))}", conf, link, seen)
             )
         if org := data.get("org"):
             finding.relations.append(Relation(ind, "operated_by", Indicator(Kind.ORG, str(org)), pivot=False))

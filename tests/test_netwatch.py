@@ -211,6 +211,7 @@ def test_watch_api(make_engine, lists):
 
 def test_alerts_are_not_repeated_after_restart_but_escalations_are(make_engine, lists, monkeypatch):
     engine = make_engine(blocklists={"bad": lists["bad"]})  # one list -> suspicious only
+    engine.config.alert_min_score = 0  # this test is about de-duplication, not the threshold
     monkeypatch.setattr("iglite.netwatch.is_public", lambda ind: not ind.value.startswith("192.168."))
     NetWatch(engine, collector=_snapshot).scan()
     assert [a["verdict"] for a in engine.store.alerts()] == ["suspicious"]
@@ -219,6 +220,7 @@ def test_alerts_are_not_repeated_after_restart_but_escalations_are(make_engine, 
     assert restarted.scan()["alerts"] == 0
 
     engine2 = make_engine(blocklists={"bad": lists["bad"], "other": lists["other"]})
+    engine2.config.alert_min_score = 0
     engine2.store = engine.store  # same data, now corroborated -> malicious
     engine2.fetcher.store = engine.store
     escalated = NetWatch(engine2, collector=_snapshot, recheck=0)

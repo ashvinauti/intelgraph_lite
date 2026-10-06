@@ -10,6 +10,11 @@ budget = 50      # max indicators looked up
 deadline = 60    # seconds; partial results are returned after this
 workers = 8      # concurrent lookups
 
+# False-positive controls
+evidence_half_life_days = 180   # bad evidence halves in weight this often (0 = never fade)
+alert_min_score = 60            # live alerts need at least this score (70 = malicious only)
+# shared_infra = ["cloudflare", "akamai", "fastly", "google", "microsoft"]  # CDN/cloud owners
+
 # Seconds between live network snapshots (`iglite watch`, `serve --watch`).
 watch_interval = 30
 
