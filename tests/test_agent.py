@@ -37,6 +37,10 @@ class FakeClient:
         self.responses = list(responses)
         self.requests = []
         self.beta = NS(messages=NS(create=self.create))
+        self.messages = NS(create=self.create_plain)
+
+    def create_plain(self, **kw):
+        return self.create(_endpoint="messages", **kw)
 
     def create(self, **kw):
         self.requests.append({**kw, "messages": list(kw["messages"])})
@@ -85,6 +89,7 @@ def test_agent_uses_tools_and_answers(engine):
     assert req["model"] == "claude-opus-5-5" and req["output_config"] == {"effort": "high"}
     assert req["cache_control"] == {"type": "ephemeral"} and req["tools"] is TOOLS
     assert req["fallbacks"] == "default" and req["betas"] == ["server-side-fallback-2026-07-01"]
+    assert req["thinking"] == {"type": "adaptive"} and "_endpoint" not in req
     assert answer.input_tokens == 200 and answer.output_tokens == 100
 
 
@@ -228,3 +233,94 @@ def test_no_credentials_is_reported_up_front(engine, monkeypatch, tmp_path):
     }
     engine.config.keys["anthropic"] = "dummy"
     assert Analyst(engine).client is not None
+
+
+def test_gateway_mode_sends_a_plain_standard_request(engine):
+    engine.config.ai_base_url = "https://gateway.example.com/"
+    engine.config.ai_model = "claude-opus-4.8"
+    fake = FakeClient(resp("end_turn", text("hi")))
+    analyst = Analyst(engine, client=fake)
+    assert analyst.endpoint == "gateway.example.com" and analyst.official is False
+    analyst.ask("hello")
+    req = fake.requests[0]
+    assert req["_endpoint"] == "messages" and req["model"] == "claude-opus-4.8"
+    assert "betas" not in req and "fallbacks" not in req and "cache_control" not in req
+    assert req["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert req["thinking"] == {"type": "adaptive"}
+
+
+def test_official_models_without_fallback_support_skip_it(engine):
+    engine.config.ai_model = "claude-opus-4-8"
+    fake = FakeClient(resp("end_turn", text("hi")))
+    Analyst(engine, client=fake).ask("hello")
+    req = fake.requests[0]
+    assert (
+        req["_endpoint"] == "messages"
+        and "fallbacks" not in req
+        and req["cache_control"] == {"type": "ephemeral"}
+    )
+
+
+def test_gateway_settings_from_env():
+    from iglite import config
+
+    cfg = config.load(
+        env={
+            "ANTHROPIC_BASE_URL": " https://gateway.example.com ",
+            "IGLITE_AI_MODEL": "claude-opus-4.8",
+            "ANTHROPIC_API_KEY": "k",
+        }
+    )
+    assert (cfg.ai_base_url, cfg.ai_model, cfg.keys["anthropic"]) == (
+        "https://gateway.example.com",
+        "claude-opus-4.8",
+        "k",
+    )
+
+
+def test_gateway_needs_a_key(engine, monkeypatch):
+    pytest.importorskip("anthropic")
+    engine.config.ai_base_url = "https://gateway.example.com"
+    engine.config.keys.pop("anthropic", None)
+    with pytest.raises(AgentUnavailable, match="ANTHROPIC_BASE_URL"):
+        Analyst(engine)
+
+
+def test_real_sdk_sends_gateway_request_to_the_configured_url(engine):
+    anthropic = pytest.importorskip("anthropic")
+    import httpx2
+
+    seen = {}
+
+    def handler(req):
+        seen.update(
+            url=str(req.url),
+            beta=req.headers.get("anthropic-beta"),
+            key=req.headers.get("x-api-key"),
+            body=json.loads(req.content),
+        )
+        return httpx2.Response(
+            200,
+            json={
+                "id": "m",
+                "type": "message",
+                "role": "assistant",
+                "model": "x",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    engine.config.ai_base_url = "https://gateway.example.com"
+    engine.config.ai_model = "claude-opus-4.8"
+    client = anthropic.Anthropic(
+        api_key="dummy",
+        base_url="https://gateway.example.com",
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)),
+    )
+    assert Analyst(engine, client=client).ask("hello").text == "ok"
+    assert seen["url"] == "https://gateway.example.com/v1/messages" and seen["beta"] is None
+    assert seen["key"] == "dummy" and seen["body"]["model"] == "claude-opus-4.8"
+    assert "fallbacks" not in seen["body"] and seen["body"]["thinking"] == {"type": "adaptive"}
