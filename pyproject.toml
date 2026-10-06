@@ -14,6 +14,8 @@ authors = [{ name = "Ashvin Auti" }]
 dependencies = []
 
 [project.optional-dependencies]
+# The AI analyst (`iglite ask`, `iglite chat`, dashboard Analyst tab). Everything else needs nothing.
+ai = ["anthropic>=1.0"]
 dev = ["pytest>=8.0", "ruff>=0.13.0"]
 
 [project.scripts]

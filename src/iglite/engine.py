@@ -82,6 +82,15 @@ class Engine:
         self.ctx = Context(self.fetcher, config)
         self._netwatch: NetWatch | None = None
         self._tracer: Tracer | None = None
+        self._desk: Any = None
+
+    def agent_desk(self) -> Any:
+        """The AI analyst's job runner, created on first use (imports nothing until then)."""
+        if self._desk is None:
+            from .agent import AgentDesk
+
+            self._desk = AgentDesk(self)
+        return self._desk
 
     def tracer(self) -> Tracer:
         """Traceroute runner, created on first use."""

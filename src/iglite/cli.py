@@ -259,6 +259,68 @@ def cmd_trace(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def _analyst(engine: Engine, args: argparse.Namespace):
+    from .agent import AgentUnavailable, Analyst
+
+    try:
+        return Analyst(engine, model=args.model, effort=args.effort)
+    except AgentUnavailable as exc:
+        raise SystemExit(f"error: {exc}")
+
+
+def _answer(analyst, question: str, history: list) -> None:
+    from .agent import AgentUnavailable
+
+    def step(s) -> None:
+        mark = "ok" if s.ok else "failed"
+        detail = json.dumps(s.input)[:80]
+        print(f"  \u2192 {s.tool} {detail}  [{mark}: {s.summary}]", file=sys.stderr, flush=True)
+
+    snapshot = len(history)
+    try:
+        a = analyst.ask(question, history, on_step=step)
+    except AgentUnavailable as exc:
+        del history[snapshot:]
+        print(f"error: {exc}", file=sys.stderr)
+        return
+    print("\n" + a.text + "\n")
+    print(
+        f"[{a.model} \u00b7 {len(a.steps)} tool call(s) \u00b7 {a.input_tokens:,} in / "
+        f"{a.output_tokens:,} out tokens, {a.cache_read_tokens:,} from cache]",
+        file=sys.stderr,
+    )
+
+
+def cmd_ask(engine: Engine, args: argparse.Namespace) -> int:
+    question = " ".join(args.question)
+    if args.file:
+        question += "\n\n" + _read_input(args.file)[0][:100_000]
+    _answer(_analyst(engine, args), question, [])
+    return 0
+
+
+def cmd_chat(engine: Engine, args: argparse.Namespace) -> int:
+    analyst = _analyst(engine, args)
+    history: list = []
+    print(
+        f"IntelGraph Lite analyst ({analyst.model}). Ask anything; 'reset' clears the conversation, "
+        "'exit' quits.\n"
+    )
+    while True:
+        try:
+            question = input("you> ").strip()
+        except EOFError:
+            return 0
+        if question.lower() in ("exit", "quit"):
+            return 0
+        if question.lower() == "reset":
+            history.clear()
+            print("(conversation cleared)")
+            continue
+        if question:
+            _answer(analyst, question, history)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="iglite", description="Lightweight threat intelligence + OSINT correlation"
@@ -325,6 +387,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--watch", action="store_true", help="also monitor live network connections")
     sp.add_argument("--interval", type=float, help="seconds between network snapshots (default 30)")
     sp.set_defaults(func=cmd_serve)
+
+    def ai(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--model", help="Claude model (default claude-opus-5-5)")
+        sp.add_argument(
+            "--effort", choices=["low", "medium", "high", "xhigh", "max"], help="reasoning effort"
+        )
+
+    sp = sub.add_parser("ask", help="ask the AI analyst a question (needs ANTHROPIC_API_KEY)")
+    sp.add_argument("question", nargs="+")
+    sp.add_argument("-f", "--file", help="attach a report: file, URL or '-'")
+    ai(sp)
+    sp.set_defaults(func=cmd_ask)
+
+    sp = sub.add_parser("chat", help="interactive conversation with the AI analyst")
+    ai(sp)
+    sp.set_defaults(func=cmd_chat)
 
     sp = sub.add_parser("trace", help="traceroute to a target and check every hop")
     sp.add_argument("target", help="IP address, domain or URL")

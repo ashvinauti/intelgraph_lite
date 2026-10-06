@@ -13,6 +13,11 @@ workers = 8      # concurrent lookups
 # Seconds between live network snapshots (`iglite watch`, `serve --watch`).
 watch_interval = 30
 
+# AI analyst (optional; `pip install .[ai]` and ANTHROPIC_API_KEY in .env).
+ai_model = "claude-opus-5-5"
+ai_effort = "high"      # low | medium | high | xhigh | max
+ai_max_steps = 10       # model turns per question
+
 # Restrict or switch off sources (see `iglite sources`).
 # enabled = ["rdap", "internetdb", "otx"]
 disabled = []
