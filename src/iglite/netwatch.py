@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -260,6 +261,9 @@ _FLAGGED = {Verdict.MALICIOUS.value, Verdict.SUSPICIOUS.value}
 _IGNORED_STATES = {"LISTEN", "LISTENING", "TIME_WAIT", "CLOSE", "CLOSED"}
 
 
+THIS_COMPUTER = Indicator(Kind.HOST, "this-computer")
+
+
 class NetWatch:
     REALERT_AFTER = 86400.0  # repeat an unchanged alert at most once a day
 
@@ -287,6 +291,8 @@ class NetWatch:
         self.last_error: str | None = None
         self.scans = 0
         self.rows: list[dict[str, Any]] = []
+        # (time, connections, public IPs, flagged) per scan, for the activity chart.
+        self.history: deque[tuple[float, int, int, int]] = deque(maxlen=720)
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -349,10 +355,13 @@ class NetWatch:
                 public.setdefault(ind.key, ind)
 
         # Record who talks to whom (cheap, local) before any lookups.
+        if live:
+            store.upsert_node(THIS_COMPUTER)
         for c in live:
             if c.process and f"ip:{c.remote_ip}" in public:
                 proc = Indicator(Kind.PROCESS, c.process.lower())
                 store.upsert_node(proc)
+                store.add_relation(Relation(THIS_COMPUTER, "runs", proc, pivot=False), "netwatch")
                 store.upsert_node(public[f"ip:{c.remote_ip}"], {"netwatch.last_seen": now})
                 store.add_relation(Relation(proc, "connected_to", public[f"ip:{c.remote_ip}"]), "netwatch")
         for ip, names in snap.dns.items():
@@ -412,6 +421,7 @@ class NetWatch:
         rank = {"malicious": 0, "suspicious": 1, "pending": 2, "unknown": 3, "benign": 4, "private": 5}
         rows.sort(key=lambda r: (rank.get(r["verdict"], 3), -(r["score"] or 0), r["remote_ip"]))
         self.rows = rows
+        self.history.append((now, len(rows), len(public), sum(r["verdict"] in _FLAGGED for r in rows)))
         self.scans += 1
         self.last_scan = now
         self.last_error = None

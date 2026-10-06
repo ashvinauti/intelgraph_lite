@@ -38,6 +38,9 @@ iglite export stix -o bundle.json       # STIX 2.1 for MISP / OpenCTI
 # Dashboard and JSON API on http://127.0.0.1:8765
 iglite serve
 
+# Trace the network path to a target and check every hop
+iglite trace example.com
+
 # Monitor this machine's live connections (alerts on flagged IPs)
 iglite watch                     # live, every 30 s
 iglite watch --once              # one snapshot table
@@ -70,17 +73,31 @@ fires when one comes back suspicious or malicious.
 Run it as a normal user. On Linux, root is needed to see other users'
 processes. Only monitor machines and networks you're responsible for.
 
+## Traceroute
+
+`iglite trace <ip|domain|url>` (or the **Routes** tab, or **Trace** on any live
+connection) runs the operating system's own `tracert` (Windows) or
+`traceroute`/`tracepath` (Linux/macOS) and streams the hops as they answer.
+Every responding router is then checked against your sources, and RDAP
+names the network that owns it. The path is saved in the graph as
+`this computer → hop 1 → hop 2 → … → target`, so it shows up in the graph's
+Path layout next to the programs that talk to the same addresses.
+
+On Linux, install `traceroute` if it is missing (`sudo apt install traceroute`).
+Windows and macOS include one.
+
 ## Dashboard
 
 `iglite serve` opens an interactive dashboard:
 
-* **Overview**: totals by verdict, recent alerts, and a box for investigating pasted indicators or reports.
+* **Overview**: totals by verdict, a live network-activity chart (connections and flagged over time), recent alerts, and a box for investigating pasted indicators or reports.
 * **Live network**: live connections with process, remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
-* **Graph**: a force-directed knowledge graph. Drag nodes, zoom, pan, double-click to expand, and filter by verdict.
+* **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
+* **Graph**: two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **Indicators**: a searchable, sortable list with STIX export.
 * **Details panel**: why an indicator got its score, its connections and attributes, and a button to investigate again.
 
-New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`5` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -137,7 +154,7 @@ docker run -p 8765:8765 -e IGLITE_API_TOKEN=change-me -v iglite:/data iglite
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 47 offline tests, ~3 s
+.venv/bin/pytest            # 54 offline tests, ~3 s
 .venv/bin/ruff check src tests
 ```
 

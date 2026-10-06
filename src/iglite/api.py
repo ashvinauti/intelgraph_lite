@@ -226,6 +226,36 @@ def _alerts(engine: Engine, q: dict, body: dict) -> Any:
     return engine.store.alerts(_int(q, "since", 0, 2**62), _int(q, "limit", 100, 1000))
 
 
+def _history(engine: Engine, q: dict, body: dict) -> Any:
+    return [
+        {"at": at, "connections": c, "public": p, "flagged": f} for at, c, p, f in engine.watcher().history
+    ]
+
+
+def _trace_start(engine: Engine, q: dict, body: dict) -> Any:
+    try:
+        job = engine.tracer().start(str(body.get("target", "")), int(body.get("max_hops", 20)))
+    except (TypeError, ValueError) as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+    except RuntimeError as exc:
+        raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+    return engine.tracer().describe(job)
+
+
+def _trace_get(engine: Engine, q: dict, body: dict) -> Any:
+    tracer = engine.tracer()
+    job = tracer.jobs.get(_int(q, "id", 0, 2**62))
+    if job is None:
+        raise ApiError(HTTPStatus.NOT_FOUND, "no such trace")
+    return tracer.describe(job)
+
+
+def _traces(engine: Engine, q: dict, body: dict) -> Any:
+    tracer = engine.tracer()
+    running = [tracer.describe(j) for j in sorted(tracer.jobs.values(), key=lambda j: -j.id)]
+    return {"jobs": running, "saved": engine.store.routes(20)}
+
+
 def _extract(engine: Engine, q: dict, body: dict) -> Any:
     return [i.key for i in extract(str(body.get("text", ""))[:MAX_BODY])]
 
@@ -266,6 +296,10 @@ ROUTES = {
     ("POST", "/api/watch"): _watch_control,
     ("GET", "/api/connections"): _connections,
     ("GET", "/api/alerts"): _alerts,
+    ("GET", "/api/watch/history"): _history,
+    ("POST", "/api/trace"): _trace_start,
+    ("GET", "/api/trace"): _trace_get,
+    ("GET", "/api/traces"): _traces,
 }
 
 

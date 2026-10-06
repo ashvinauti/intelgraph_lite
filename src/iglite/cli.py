@@ -223,6 +223,42 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
         time.sleep(watch.interval)
 
 
+def cmd_trace(engine: Engine, args: argparse.Namespace) -> int:
+    from .trace import TraceUnavailable
+
+    tracer = engine.tracer()
+    try:
+        _, ip = tracer.resolve(args.target)
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}")
+    print(f"Tracing route to {args.target} [{ip}], max {args.max_hops} hops\n")
+
+    def show(hop) -> None:
+        rtt = f"{hop.rtt:7.1f} ms" if hop.rtt is not None else "      *   "
+        print(f"{hop.n:>3}  {rtt}  {hop.ip or 'no reply'}", flush=True)
+
+    try:
+        job = tracer.run(args.target, args.max_hops, on_hop=show)
+    except TraceUnavailable as exc:
+        raise SystemExit(f"error: {exc}")
+    if job.status == "error":
+        raise SystemExit(f"error: {job.error}")
+    print("\nHops looked up against your sources:")
+    for h in tracer.describe(job)["hops"]:
+        if h["ip"]:
+            where = " ".join(x for x in (h["org"], h["country"]) if x) or (
+                "private network" if h["private"] else ""
+            )
+            score = "" if h["score"] is None else h["score"]
+            print(
+                _paint(
+                    h["verdict"],
+                    f"{h['n']:>3}  {h['verdict'] or '-':<10} {score!s:>3}  {h['ip']:<40} {where}",
+                )
+            )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="iglite", description="Lightweight threat intelligence + OSINT correlation"
@@ -289,6 +325,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--watch", action="store_true", help="also monitor live network connections")
     sp.add_argument("--interval", type=float, help="seconds between network snapshots (default 30)")
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser("trace", help="traceroute to a target and check every hop")
+    sp.add_argument("target", help="IP address, domain or URL")
+    sp.add_argument("--max-hops", type=int, default=20)
+    sp.set_defaults(func=cmd_trace)
 
     sp = sub.add_parser("watch", help="monitor this machine's live network connections")
     sp.add_argument("--interval", type=float, help="seconds between snapshots (default 30, min 5)")
