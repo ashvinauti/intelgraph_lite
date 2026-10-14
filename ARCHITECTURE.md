@@ -12,7 +12,7 @@ stays cheap to run and easy to maintain.
 |------|-----|
 | Low CPU / memory | The graph lives in SQLite and is traversed with indexed recursive SQL, so nothing is loaded wholesale into RAM. Lookups are I/O bound and run in a small thread pool. |
 | Fast and predictable | Every investigation has three hard limits: **depth**, **budget** (max indicators) and **deadline** (seconds). Every HTTP answer is cached with a per-source TTL, so a repeated investigation makes zero network calls. |
-| Sustainable | **Zero runtime dependencies.** Standard library only: `sqlite3`, `urllib`, `concurrent.futures`, `http.server`, `tomllib`. No dependency churn, nothing to patch but Python itself. About 5.5k lines of code; the core needs no third-party packages. |
+| Sustainable | **Zero runtime dependencies.** Standard library only: `sqlite3`, `urllib`, `concurrent.futures`, `http.server`, `tomllib`. No dependency churn, nothing to patch but Python itself. About 7.5k lines of code; the core needs no third-party packages. |
 | Logical | One direction of data flow and one contract per layer (below). Sources never touch the database, and scoring is a pure function. |
 | Explainable | Every score is a sum of named contributions, and each one is shown to the user. |
 | Safe by default | Private IPs and internal names are never sent to third parties. The API binds to localhost and needs a token to listen publicly. API keys come from the environment only. |
@@ -68,6 +68,8 @@ stays cheap to run and easy to maintain.
 | `store.py` | model objects | rows | know about sources or scoring |
 | `scoring.py` | evidence and trust weights | `Assessment` | do I/O |
 | `engine.py` | seeds and limits | `Report` | parse source responses |
+| `attack.py` | the ATT&CK catalogue, tags, ports, stored edges | technique links and the matrix | make network calls (except `iglite attack update`) |
+| `gateway.py` | syslog lines, NetFlow datagrams, log files, conntrack | `Snapshot` of (device, remote, port) flows | write to the store or look anything up |
 | `cli.py`, `api.py` | user requests | engine and store calls | contain business logic |
 
 ## Live network monitoring
@@ -87,6 +89,49 @@ foreground with `iglite watch`. Reading the connection table instead of
 sniffing packets means no capture driver, no admin rights and process
 attribution for free. The cost is that very short-lived connections between
 snapshots are missed.
+
+## Gateway mode
+
+```
+router / firewall ──syslog (UDP)──▶ ┐
+                  ──NetFlow/IPFIX──▶ │ GatewayCollector     LineParser: netfilter, filterlog, key=value,
+Zeek / Suricata / Pi-hole ──files──▶ │   threads + buffer    ASA, SRX, MikroTik, PAN-OS, dnsmasq, Unbound,
+NAT table (on the gateway) ────────▶ ┘   (≤ 20k flows)       Zeek TSV/JSON, Suricata eve; NetFlowParser
+        │ Lan.orient(flow) → (device, remote, port, inbound)   internal / transit / blocked flows dropped
+        │ rolling window (gateway_window), DNS answers (ip → names), DHCP names
+        ▼
+NetWatch.scan()  (the same watcher as host mode)
+   ├─ gateway ─routes_for→ host:192.168.1.23 ─connected_to→ ip,   host ─queried→ domain
+   ├─ due = public IPs + queried domains, ≤ watch_max_new per scan
+   └─ alerts carry the device, its name, and the ATT&CK technique inferred from the port
+```
+
+The collector replaces the OS connection table as NetWatch's input, so
+scoring, alerting, suppression, AI triage and the dashboard work unchanged.
+The listeners accept datagrams only from private addresses (or
+`gateway_senders`). Nothing in this path sends traffic; only public remote
+addresses go on to the normal, cached and rate-limited lookups. Blocking is
+left to the gateway, which pulls `/api/blocklist/{ip,domain,url}.txt`.
+
+## MITRE ATT&CK
+
+```
+OTX pulse attack_ids ──────────────▶ ind ─uses_technique→ technique:T1071.001      (reported)
+Suricata alert metadata ───────────▶ ind/device ─exhibits→ technique                (observed)
+feed tag c2 / phishing / tor ... ──▶ ind ─suggests_technique→ technique             (inferred)
+live alert, outbound port 443 ─────▶ ind/device ─suggests_technique→ T1071.001      (inferred)
+report text "T1566.001" ───────────▶ report ─mentions→ technique                    (report)
+feed tag emotet / apt28 ───────────▶ ind ─associated_with→ software:S0367 / group:G0007
+                                       └─ that entity's techniques, from the catalogue (associated)
+```
+
+The catalogue (`data/attack.json.gz`, about 70 KB) is built from MITRE's
+Enterprise ATT&CK STIX bundle by `attack.build()`: tactics in matrix order,
+techniques with their tactics and STIX IDs, and malware and groups with
+aliases and the techniques they use. Techniques, software and groups are
+passive node kinds. They are never looked up, and their edges don't propagate
+suspicion. The matrix is a range scan of edges whose destination is a
+technique, so it costs one indexed query.
 
 ## Traceroute
 
@@ -204,13 +249,13 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (105 tests, offline) | ~7 s |
+| Full test suite (135 tests, offline) | ~10 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 
 | | IntelGraph | IntelGraph Lite |
 |---|---|---|
-| Code size | ~43k lines, 285 modules | ~5.5k lines, 22 modules |
+| Code size | ~43k lines, 285 modules | ~7.5k lines, 24 modules |
 | Runtime dependencies | 15 (FastAPI, uvicorn, strawberry, stix2, pydantic, …) | 0 (1 optional: `anthropic`, for the AI analyst) |
 | Graph | In-memory adjacency list, loaded from storage | SQLite tables and recursive SQL |
 | Concurrency | Async framework | Thread pool for I/O, single DB writer |

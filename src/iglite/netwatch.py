@@ -13,6 +13,8 @@ which packet capture does not. Collectors:
 * Windows - ``netstat -ano``, ``tasklist`` (process names), ``ipconfig /displaydns``
 * Linux   - ``/proc/net/{tcp,tcp6,udp,udp6}`` and ``/proc/<pid>/fd`` (no subprocess)
 * macOS   - ``lsof -nP -i``
+* Gateway - flows from a router/firewall for every device on the network (``gateway.py``);
+            connections then carry the LAN device instead of a process.
 """
 
 from __future__ import annotations
@@ -49,12 +51,22 @@ class Connection:
     state: str
     pid: int | None = None
     process: str | None = None
+    # Gateway mode: the LAN device behind the router/firewall, and its DHCP/configured name.
+    device: str | None = None
+    device_name: str | None = None
+    inbound: bool = False  # a remote host connected in (e.g. to a forwarded port)
+    count: int = 1  # sockets / flow records folded into this one
 
 
 @dataclass
 class Snapshot:
     connections: list[Connection] = field(default_factory=list)
     dns: dict[str, list[str]] = field(default_factory=dict)  # ip -> names
+    # Gateway mode extras: domain -> devices that looked it up, device ip -> name,
+    # and IDS alerts as (device, remote ip, signature, ATT&CK technique ids).
+    queries: dict[str, list[str]] = field(default_factory=dict)
+    devices: dict[str, str] = field(default_factory=dict)
+    ids_alerts: list[tuple[str, str, str, tuple[str, ...]]] = field(default_factory=list)
 
 
 # -- parsing helpers -----------------------------------------------------------
@@ -262,6 +274,7 @@ _IGNORED_STATES = {"LISTEN", "LISTENING", "TIME_WAIT", "CLOSE", "CLOSED"}
 
 
 THIS_COMPUTER = Indicator(Kind.HOST, "this-computer")
+GATEWAY = Indicator(Kind.HOST, "gateway")
 
 
 class NetWatch:
@@ -275,14 +288,18 @@ class NetWatch:
         max_new: int = 25,
         recheck: float = 3600.0,
         collector: Callable[[], Snapshot] = collect,
+        origin: Indicator = THIS_COMPUTER,
+        gateway: Any = None,
     ) -> None:
         self.engine = engine
         self.interval = max(5.0, interval)
         self.max_new = max_new
         self.recheck = recheck
         self.collector = collector
-        self._checked: dict[str, float] = {}  # ip key -> last investigated
-        # ip key -> (verdict, when) already alerted; survives restarts via the store.
+        self.origin = origin
+        self.gateway = gateway  # the GatewayCollector in gateway mode, for its status
+        self._checked: dict[str, float] = {}  # indicator key -> last investigated
+        # key -> (verdict, when) already alerted; survives restarts via the store.
         self._alerted = engine.store.recent_alert_verdicts(time.time() - self.REALERT_AFTER)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -293,6 +310,10 @@ class NetWatch:
         self.rows: list[dict[str, Any]] = []
         # (time, connections, public IPs, flagged) per scan, for the activity chart.
         self.history: deque[tuple[float, int, int, int]] = deque(maxlen=720)
+
+    @property
+    def mode(self) -> str:
+        return "gateway" if self.gateway is not None else "host"
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -319,8 +340,9 @@ class NetWatch:
             self._stop.wait(self.interval)
 
     def status(self) -> dict[str, Any]:
-        return {
+        out = {
             "running": self.running,
+            "mode": self.mode,
             "interval": self.interval,
             "scans": self.scans,
             "last_scan": self.last_scan,
@@ -328,10 +350,20 @@ class NetWatch:
             "connections": len(self.rows),
             "flagged": sum(1 for r in self.rows if r["verdict"] in _FLAGGED),
         }
+        if self.gateway is not None:
+            out["gateway"] = self.gateway.status()
+            out["devices"] = len({r["device"] for r in self.rows if r.get("device")})
+        return out
 
     @staticmethod
-    def _suppressed(key: str, process: str | None, rules: dict[str, set[str]]) -> bool:
-        return key in rules.get("indicator", ()) or (process or "").lower() in rules.get("process", ())
+    def _suppressed(
+        key: str, process: str | None, rules: dict[str, set[str]], device: str | None = None
+    ) -> bool:
+        return (
+            key in rules.get("indicator", ())
+            or (process or "").lower() in rules.get("process", ())
+            or (device or "") in rules.get("device", ())
+        )
 
     def _should_alert(self, key: str, verdict: str, now: float) -> bool:
         previous = self._alerted.get(key)
@@ -339,6 +371,18 @@ class NetWatch:
             return True
         # Escalation (suspicious -> malicious) alerts again; anything else is a repeat.
         return previous[0] == "suspicious" and verdict == "malicious"
+
+    def _who(self, c: Connection) -> tuple[Indicator, str, dict[str, Any] | None] | None:
+        """The local end of a connection: (node, relation from the origin, attrs)."""
+        if c.device:
+            return (
+                Indicator(Kind.HOST, c.device),
+                "routes_for",
+                {"name": c.device_name} if c.device_name else None,
+            )
+        if c.process:
+            return Indicator(Kind.PROCESS, c.process.lower()), "runs", None
+        return None
 
     # -- one scan ----------------------------------------------------------------
 
@@ -352,30 +396,56 @@ class NetWatch:
         now = time.time()
 
         live = [c for c in snap.connections if c.state not in _IGNORED_STATES]
-        public = {}
+        public: dict[str, Indicator] = {}
         for c in live:
             ind = Indicator(Kind.IP, c.remote_ip)
             if is_public(ind):
                 public.setdefault(ind.key, ind)
+        queried: dict[str, tuple[Indicator, list[str]]] = {}  # gateway DNS logs
+        for name, devices in snap.queries.items():
+            dom = classify(name)
+            if dom is not None and dom.kind is Kind.DOMAIN and is_public(dom):
+                queried[dom.key] = (dom, devices)
 
         # Record who talks to whom (cheap, local) before any lookups.
-        if live:
-            store.upsert_node(THIS_COMPUTER)
+        if live or queried:
+            store.upsert_node(self.origin)
+        recorded: set[tuple[str, str]] = set()
         for c in live:
-            if c.process and f"ip:{c.remote_ip}" in public:
-                proc = Indicator(Kind.PROCESS, c.process.lower())
-                store.upsert_node(proc)
-                store.add_relation(Relation(THIS_COMPUTER, "runs", proc, pivot=False), "netwatch")
-                store.upsert_node(public[f"ip:{c.remote_ip}"], {"netwatch.last_seen": now})
-                store.add_relation(Relation(proc, "connected_to", public[f"ip:{c.remote_ip}"]), "netwatch")
+            if c.state == "RECENT":  # gateway flow already recorded in an earlier window
+                continue
+            ip = public.get(f"ip:{c.remote_ip}")
+            who = self._who(c)
+            if ip is None or who is None or (who[0].key, ip.key) in recorded:
+                continue
+            recorded.add((who[0].key, ip.key))
+            store.upsert_node(who[0], who[2])
+            store.add_relation(Relation(self.origin, who[1], who[0], pivot=False), "netwatch")
+            store.upsert_node(ip, {"netwatch.last_seen": now})
+            store.add_relation(Relation(who[0], "connected_to", ip), "netwatch")
+        for dom, devices in queried.values():
+            store.upsert_node(dom, {"netwatch.last_seen": now})
+            for device in devices[:20]:
+                host = Indicator(Kind.HOST, device)
+                store.upsert_node(host, {"name": snap.devices[device]} if device in snap.devices else None)
+                store.add_relation(Relation(self.origin, "routes_for", host, pivot=False), "netwatch")
+                store.add_relation(Relation(host, "queried", dom, pivot=False), "dnslog")
         for ip, names in snap.dns.items():
             if f"ip:{ip}" in public:
                 for name in names[:5]:
                     if (dom := classify(name)) is not None:
                         store.upsert_node(dom)
                         store.add_relation(Relation(dom, "resolves_to", public[f"ip:{ip}"]), "dnscache")
+        for device, remote, signature, techniques in snap.ids_alerts:
+            # A local IDS (Suricata) saw it happen: its ATT&CK metadata is an observation.
+            target = Indicator(Kind.IP, remote)
+            store.upsert_node(target, {"ids.last_signature": signature[:200], "ids.last_seen": now})
+            for tid in techniques[:10]:
+                self.engine.link_technique(target, tid, "exhibits", "ids")
+                self.engine.link_technique(Indicator(Kind.HOST, device), tid, "exhibits", "ids")
 
-        due = [ind for key, ind in public.items() if now - self._checked.get(key, 0) > self.recheck]
+        candidates = [*public.items(), *((k, v[0]) for k, v in queried.items())]
+        due = [ind for key, ind in candidates if now - self._checked.get(key, 0) > self.recheck]
         seeds = due[: self.max_new]
         report = None
         if seeds:
@@ -384,26 +454,32 @@ class NetWatch:
             # depth 0: look up exactly what we saw, nothing more.
             report = self.engine.investigate(seeds, depth=0, budget=len(seeds))
 
-        nodes = {n["key"]: n for n in store.nodes(public)}
+        nodes = {n["key"]: n for n in store.nodes([*public, *queried])}
         suppressed: dict[str, set[str]] = {}
         for rule in store.suppressions():
             suppressed.setdefault(rule["kind"], set()).add(
                 rule["value"].lower() if rule["kind"] == "process" else rule["value"]
             )
         grouped: dict[tuple, dict[str, Any]] = {}
+        rows_in: list[tuple[Connection, str]] = [(c, f"ip:{c.remote_ip}") for c in live]
+        for key, (dom, devices) in queried.items():
+            rows_in += [
+                (Connection("dns", d, dom.value, 53, "QUERY", device=d, device_name=snap.devices.get(d)), key)
+                for d in devices[:20]
+            ]
         new_alerts = 0
-        for c in live:
-            key = f"ip:{c.remote_ip}"
-            group = (c.pid, c.process, c.proto, c.remote_ip, c.remote_port)
+        for c, key in rows_in:
+            group = (c.pid, c.process, c.device, c.proto, c.remote_ip, c.remote_port, c.inbound)
             if group in grouped:  # many sockets to one endpoint = one row
-                grouped[group]["count"] += 1
+                grouped[group]["count"] += c.count
                 continue
             node = nodes.get(key) or {}
-            verdict = node.get("verdict") or ("private" if key not in public else "pending")
+            verdict = node.get("verdict") or (
+                "private" if key not in public and key not in queried else "pending"
+            )
             grouped[group] = {
                 **asdict(c),
                 "key": key,
-                "count": 1,
                 "names": snap.dns.get(c.remote_ip, [])[:3],
                 "verdict": verdict,
                 "score": node.get("score"),
@@ -411,21 +487,32 @@ class NetWatch:
             if (
                 verdict in _FLAGGED
                 and (node.get("score") or 0) >= self.engine.config.alert_min_score
-                and not self._suppressed(key, c.process, suppressed)
+                and not self._suppressed(key, c.process, suppressed, c.device)
                 and self._should_alert(key, verdict, now)
             ):
                 self._alerted[key] = (verdict, now)
+                techniques = self._attack_on_alert(c, key)
                 alert_id = store.add_alert(
                     key,
                     verdict,
                     node.get("score") or 0,
                     json.dumps(
                         {
-                            "process": c.process,
-                            "pid": c.pid,
-                            "remote_port": c.remote_port,
-                            "local": c.local,
-                            "names": snap.dns.get(c.remote_ip, [])[:3],
+                            k: v
+                            for k, v in {
+                                "process": c.process,
+                                "pid": c.pid,
+                                "device": c.device,
+                                "device_name": c.device_name,
+                                "inbound": c.inbound or None,
+                                "query": c.proto == "dns" or None,
+                                "remote_port": c.remote_port,
+                                "local": c.local,
+                                "names": snap.dns.get(c.remote_ip, [])[:3],
+                                "attack": techniques or None,
+                                "mode": self.mode,
+                            }.items()
+                            if v is not None or k in ("process", "pid", "remote_port", "local", "names")
                         }
                     ),
                 )
@@ -433,7 +520,7 @@ class NetWatch:
                 new_alerts += 1
 
         for row in grouped.values():  # analyst marks are shown in the table
-            row["suppressed"] = self._suppressed(row["key"], row["process"], suppressed)
+            row["suppressed"] = self._suppressed(row["key"], row["process"], suppressed, row.get("device"))
         rows = list(grouped.values())
         rank = {"malicious": 0, "suspicious": 1, "pending": 2, "unknown": 3, "benign": 4, "private": 5}
         rows.sort(key=lambda r: (rank.get(r["verdict"], 3), -(r["score"] or 0), r["remote_ip"]))
@@ -445,8 +532,21 @@ class NetWatch:
         return {
             "connections": len(live),
             "public_ips": len(public),
+            "domains": len(queried),
             "investigated": len(seeds),
             "deferred": max(0, len(due) - len(seeds)),
             "alerts": new_alerts,
             "errors": report.errors if report else [],
         }
+
+    def _attack_on_alert(self, c: Connection, key: str) -> list[str]:
+        """Outbound traffic to a flagged host suggests C2 over that port's protocol (ATT&CK)."""
+        if c.inbound or c.proto == "dns" or not key.startswith("ip:"):
+            return []
+        from .attack import from_connection
+
+        tid = from_connection(c.remote_port)
+        self.engine.link_technique(Indicator.from_key(key), tid, "suggests_technique", "netwatch")
+        if (who := self._who(c)) is not None:
+            self.engine.link_technique(who[0], tid, "suggests_technique", "netwatch")
+        return [tid]
