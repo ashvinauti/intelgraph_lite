@@ -24,7 +24,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import scoring
+from . import attack, scoring
 from .config import Config
 from .extract import derive, extract, is_public
 from .fetch import Fetcher
@@ -35,7 +35,7 @@ from .store import Store
 from .trace import Tracer
 
 # Kinds that are context, never looked up.
-_PASSIVE = frozenset({Kind.ORG, Kind.TAG, Kind.REPORT, Kind.PROCESS, Kind.HOST})
+_PASSIVE = frozenset({Kind.ORG, Kind.TAG, Kind.REPORT, Kind.PROCESS, Kind.HOST, *attack.KINDS})
 
 
 @dataclass
@@ -113,9 +113,22 @@ class Engine:
         return self._tracer
 
     def watcher(self, interval: float | None = None) -> NetWatch:
-        """The live network watcher, created on first use."""
+        """The live network watcher, created on first use (gateway mode if configured)."""
         if self._netwatch is None:
-            self._netwatch = NetWatch(self, interval=interval or self.config.watch_interval)
+            kwargs: dict[str, Any] = {}
+            if self.config.gateway:
+                from .gateway import GatewayCollector
+                from .netwatch import GATEWAY
+
+                gw = GatewayCollector(self.config)
+                gw.start()
+                kwargs = {"collector": gw.collect, "origin": GATEWAY, "gateway": gw}
+            self._netwatch = NetWatch(
+                self,
+                interval=interval or self.config.watch_interval,
+                max_new=self.config.watch_max_new,
+                **kwargs,
+            )
         elif interval:
             self._netwatch.interval = max(5.0, float(interval))
         return self._netwatch
@@ -138,6 +151,8 @@ class Engine:
         budget = self.config.budget if budget is None else budget
         deadline = self.config.deadline if deadline is None else deadline
         started = time.monotonic()
+        # ATT&CK IDs found in text are recorded by ingest(); there is nothing to look up.
+        seeds = [s for s in seeds if s.kind not in attack.KINDS]
         calls_before = self.fetcher.network_calls
         report = Report(seeds=[s.key for s in seeds])
 
@@ -224,7 +239,7 @@ class Engine:
         doc = Indicator(Kind.REPORT, report_name)
         self.store.upsert_node(doc, {"indicators": len(indicators)})
         for ind in indicators:
-            self.store.upsert_node(ind)
+            self.store.upsert_node(ind, self._attack_attrs(ind))
             self.store.add_relation(Relation(doc, "mentions", ind), "ingest")
         return indicators
 
@@ -294,9 +309,22 @@ class Engine:
     def _save_relation(self, rel: Relation, source: str, touched: set[str]) -> None:
         for end in (rel.src, rel.dst):
             if end.key not in touched:
-                self.store.upsert_node(end)
+                self.store.upsert_node(end, self._attack_attrs(end))
                 touched.add(end.key)
         self.store.add_relation(rel, source)
+        if rel.rel == "tagged" and rel.dst.kind is Kind.TAG:
+            # A tag can name a behaviour (c2, phishing) or ATT&CK malware / a group.
+            for extra in attack.from_tag(rel.src, rel.dst.value):
+                self._save_relation(extra, "attack", touched)
+
+    def link_technique(self, src: Indicator, tid: str, rel: str, source: str) -> None:
+        """Record that ``src`` is linked to an ATT&CK technique (see ``attack.BASIS``)."""
+        if (tech := attack.technique_node(tid)) is not None:
+            self._save_relation(Relation(src, rel, tech, pivot=False), source, set())
+
+    @staticmethod
+    def _attack_attrs(ind: Indicator) -> dict[str, Any] | None:
+        return attack.catalogue().attrs(ind) if ind.kind in attack.KINDS else None
 
     def _bad_neighbours(self, key: str) -> list[tuple[str, str]]:
         out = []

@@ -287,6 +287,14 @@ class Store:
         )
         return [dict(r) for r in rows]
 
+    def edges_to_kind(self, kind: str, limit: int = 100_000) -> list[dict[str, Any]]:
+        """Every edge pointing at a node of ``kind`` (a range scan on the dst index)."""
+        rows = self._query(
+            "SELECT src, dst, rel, source FROM edges WHERE dst >= ? AND dst < ? LIMIT ?",
+            (f"{kind}:", f"{kind};", limit),
+        )
+        return [dict(r) for r in rows]
+
     def neighbourhood(self, key: str, depth: int = 1, limit: int = 200) -> dict[str, Any]:
         """Nodes within ``depth`` hops of ``key`` (both directions), capped at ``limit``."""
         rows = self._query(

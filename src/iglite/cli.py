@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import __version__, config, export
+from . import __version__, attack, config, export
 from .engine import Engine
 from .extract import classify, extract
 from .model import KINDS, Indicator
@@ -117,6 +117,79 @@ def cmd_show(engine: Engine, args: argparse.Namespace) -> int:
     for e in engine.store.edges_of(key):
         arrow = f"--{e['rel']}--> {e['dst']}" if e["src"] == key else f"<--{e['rel']}-- {e['src']}"
         print(f"           {arrow}  ({e['source']})")
+    if techniques := attack.techniques_of(engine.store, key):
+        print("\n           MITRE ATT&CK:")
+        _print_techniques(techniques)
+    return 0
+
+
+def _print_techniques(techniques: list[dict[str, Any]], indent: str = "           ") -> None:
+    for t in techniques:
+        via = f" via {', '.join(dict.fromkeys(t['via']))}" if t.get("via") else ""
+        tactics = ", ".join(t["tactics"]) or "-"
+        print(f"{indent}{t['id']:<10} {t['name'][:48]:<48} [{tactics}]  {'/'.join(t['basis'])}{via}")
+
+
+def cmd_attack(engine: Engine, args: argparse.Namespace) -> int:
+    what = args.what
+    if what == "update":
+        import urllib.request
+
+        print(f"Downloading MITRE ATT&CK Enterprise from {attack.STIX_URL} ...", flush=True)
+        req = urllib.request.Request(attack.STIX_URL, headers={"User-Agent": f"iglite/{__version__}"})
+        with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310 - fixed https URL
+            data = attack.build(json.loads(resp.read()))
+        path = attack.save(data)
+        print(
+            f"ATT&CK v{data['version']}: {len(data['techniques'])} techniques, {len(data['software'])} software, "
+            f"{len(data['groups'])} groups -> {path}"
+        )
+        return 0
+    if what == "navigator":
+        layer = json.dumps(attack.navigator_layer(engine.store, associated=args.associated), indent=2)
+        if args.output:
+            Path(args.output).write_text(layer, encoding="utf-8")
+            print(f"wrote {args.output} (open it at https://mitre-attack.github.io/attack-navigator/)")
+        else:
+            print(layer)
+        return 0
+    if args.indicator:
+        key = _resolve_key(args.indicator)
+        techniques = attack.techniques_of(engine.store, key, associated=args.associated)
+        print(f"{key}: {len(techniques)} ATT&CK technique(s)")
+        _print_techniques(techniques, "  ")
+        return 0
+    if what != "matrix":
+        tech = attack.technique_node(what)
+        if tech is None:
+            raise SystemExit("usage: iglite attack [matrix | T1234[.001] | navigator | update]")
+        d = attack.detail(engine.store, tech.value, associated=args.associated)
+        print(f"{d['id']}  {d['name']}  [{', '.join(d['tactics']) or 'not in the catalogue'}]")
+        if d.get("url"):
+            print(f"  {d['url']}")
+        for r in d["indicators"]:
+            score = "" if r["score"] is None else r["score"]
+            print(
+                _paint(r["verdict"], f"  {r['verdict'] or '-':<10} {score!s:>3}  {r['key']}")
+                + f"  ({', '.join(dict.fromkeys(r['basis']))})"
+            )
+        if not d["indicators"]:
+            print("  no indicators linked yet")
+        return 0
+    s = attack.summary(engine.store, associated=args.associated)
+    print(
+        f"MITRE ATT&CK v{s['version']}: {s['techniques']} technique(s) across {s['indicators']} indicator(s)"
+    )
+    if not s["techniques"]:
+        print("Nothing mapped yet. Techniques come from feeds (OTX), tags, ingested reports and live alerts.")
+    for tactic in s["tactics"]:
+        if not tactic["techniques"]:
+            continue
+        print(f"\n{tactic['name']} ({tactic['id']})")
+        for t in tactic["techniques"]:
+            mix = ", ".join(f"{n} {v}" for v, n in sorted(t["verdicts"].items()))
+            line = f"  {t['id']:<10} {t['name'][:46]:<46} {t['count']:>4}  ({mix}; {'/'.join(t['basis'])})"
+            print(_paint(t["top_verdict"], line))
     return 0
 
 
@@ -191,6 +264,15 @@ def _print_triage(t: dict[str, Any]) -> None:
     print(f"  suggested: {(t.get('action') or '').replace('_', ' ')}")
 
 
+def _origin(ctx: dict[str, Any]) -> str:
+    """Who made the connection: a program (this computer) or a LAN device (gateway mode)."""
+    if ctx.get("device"):
+        name = f" ({ctx['device_name']})" if ctx.get("device_name") else ""
+        arrow = " inbound" if ctx.get("inbound") else " dns query" if ctx.get("query") else ""
+        return f"{ctx['device']}{name}{arrow}"
+    return ctx.get("process") or "?"
+
+
 def cmd_alerts(engine: Engine, args: argparse.Namespace) -> int:
     alerts = engine.store.alerts(limit=args.limit)
     triage = engine.store.latest_triage(alert_ids=[a["id"] for a in alerts])
@@ -202,7 +284,7 @@ def cmd_alerts(engine: Engine, args: argparse.Namespace) -> int:
         status = "" if a["status"] == "open" else f" [{a['status'].replace('_', ' ')}]"
         print(
             _paint(a["verdict"], f"#{a['id']:<4} {when}  {a['verdict']:<10} {a['score']:>3}  {a['key']}")
-            + f"  <- {c.get('process') or '?'}:{c.get('remote_port')}{status}"
+            + f"  <- {_origin(c)}:{c.get('remote_port')}{status}"
         )
         if t := triage.get(a["id"]):
             _print_triage(t)
@@ -272,7 +354,15 @@ def cmd_suppress(engine: Engine, args: argparse.Namespace) -> int:
         return 0
     if not args.value:
         raise SystemExit(f"usage: iglite suppress {args.action} <value>")
-    value = _resolve_key(args.value) if args.action == "indicator" else args.value.lower()
+    if args.action == "indicator":
+        value = _resolve_key(args.value)
+    elif args.action == "device":
+        ind = classify(args.value)
+        if ind is None or ind.kind.value != "ip":
+            raise SystemExit("error: a device is its LAN IP address, e.g. 192.168.1.23")
+        value = ind.value
+    else:
+        value = args.value.lower()
     rule = engine.store.add_suppression(args.action, value, args.note or "")
     print(f"#{rule}: no alerts for {args.action} {value}")
     return 0
@@ -288,10 +378,35 @@ def cmd_prune(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_gateway(engine: Engine, args: argparse.Namespace) -> None:
+    cfg = engine.config
+    if args.syslog:
+        cfg.gateway_syslog = args.syslog
+    if args.netflow:
+        cfg.gateway_netflow = args.netflow
+    if args.conntrack:
+        cfg.gateway_conntrack = True
+    cfg.gateway_files = [*cfg.gateway_files, *(args.tail or [])]
+    cfg.gateway_leases = [*cfg.gateway_leases, *(args.leases or [])]
+    cfg.lan_networks = [*cfg.lan_networks, *(args.lan or [])]
+    if args.include_blocked:
+        cfg.gateway_include_blocked = True
+    if args.max_new:
+        cfg.watch_max_new = args.max_new
+    if cfg.gateway:
+        try:
+            watch = engine.watcher(args.interval)
+        except OSError as exc:  # port in use, or < 1024 without privileges
+            raise SystemExit(f"error: cannot open a gateway listener: {exc}")
+        inputs = ", ".join(watch.gateway.inputs) if watch.gateway else ""
+        print(f"Gateway mode: monitoring the network behind this router/firewall via {inputs}")
+
+
 def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
     from .api import serve
 
-    if args.watch:
+    _apply_gateway(engine, args)
+    if args.watch or engine.config.gateway:
         engine.watcher(args.interval).start()
         print(f"Watching live connections every {engine.watcher().interval:.0f}s")
     serve(engine, args.host, args.port)
@@ -300,30 +415,62 @@ def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
 
 def _print_connections(rows: list[dict[str, Any]], show_all: bool) -> None:
     shown = [r for r in rows if show_all or r["verdict"] not in ("private",)]
-    print(f"{'VERDICT':<11}{'SCORE':>5}  {'PROCESS':<22}{'REMOTE':<42}{'CONN':>4}  NAMES")
+    who = "DEVICE" if any(r.get("device") for r in rows) else "PROCESS"
+    print(f"{'VERDICT':<11}{'SCORE':>5}  {who:<22}{'REMOTE':<42}{'CONN':>4}  NAMES")
     for r in shown:
-        remote = f"{r['remote_ip']}:{r['remote_port']}"
-        proc = f"{r['process'] or '?'} ({r['pid']})" if r["pid"] else (r["process"] or "?")
+        remote = f"{r['remote_ip']}:{r['remote_port']}" + (" (in)" if r.get("inbound") else "")
+        if r.get("device"):
+            proc = f"{r['device']} {r['device_name']}" if r.get("device_name") else r["device"]
+        else:
+            proc = f"{r['process'] or '?'} ({r['pid']})" if r["pid"] else (r["process"] or "?")
         score = "" if r["score"] is None else r["score"]
         line = f"{r['verdict']:<11}{score!s:>5}  {proc[:21]:<22}{remote[:41]:<42}{r['count']:>4}  {', '.join(r['names'])}"
         print(_paint(r["verdict"], line))
 
 
+def cmd_blocklist(engine: Engine, args: argparse.Namespace) -> int:
+    text = export.blocklist(
+        engine.store,
+        args.kind,
+        suspicious=args.suspicious,
+        min_score=args.min_score,
+        shared_infra=engine.shared_infra,
+        comments=args.comments,
+    )
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"wrote {len(text.splitlines())} {args.kind}(s) to {args.output}")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def cfg_listens(engine: Engine) -> bool:
+    cfg = engine.config
+    return bool(cfg.gateway_syslog or cfg.gateway_netflow or cfg.gateway_files)
+
+
 def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     import time
 
+    _apply_gateway(engine, args)
     watch = engine.watcher(args.interval)
     since = max((a["id"] for a in engine.store.alerts(limit=1)), default=0)
     if not args.once:
         print(f"Watching live connections every {watch.interval:.0f}s. Ctrl+C to stop.\n")
+    elif cfg_listens(engine):  # syslog/NetFlow/log events arrive over time: listen for one interval
+        print(f"Listening for {min(watch.interval, 30):.0f}s...", flush=True)
+        time.sleep(min(watch.interval, 30))
     while True:
         result = watch.scan()
         if args.once:
             _print_connections(watch.rows, args.all)
             print(
                 f"\n{result['connections']} connection(s), {result['public_ips']} public IP(s), "
-                f"{result['investigated']} looked up"
+                f"{result['domains']} queried domain(s), {result['investigated']} looked up"
             )
+            if watch.gateway is not None:
+                print(json.dumps(watch.gateway.status(), indent=2))
             return 0
         for alert in reversed(engine.store.alerts(since)):
             since = max(since, alert["id"])
@@ -333,12 +480,13 @@ def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
                 _paint(
                     alert["verdict"],
                     f"ALERT {alert['verdict'].upper()} {alert['score']:>3}  "
-                    f"{alert['key']}:{ctx.get('remote_port')}{names}  <- {ctx.get('process') or '?'}",
+                    f"{alert['key']}:{ctx.get('remote_port')}{names}  <- {_origin(ctx)}",
                 )
             )
         stamp = time.strftime("%H:%M:%S")
+        extra = f", {result['domains']} domains" if result["domains"] else ""
         print(
-            f"[{stamp}] {result['connections']} connections, {result['public_ips']} public IPs, "
+            f"[{stamp}] {result['connections']} connections, {result['public_ips']} public IPs{extra}, "
             f"{result['investigated']} looked up, {watch.status()['flagged']} flagged",
             flush=True,
         )
@@ -498,6 +646,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("sources", help="show sources and whether they are enabled").set_defaults(func=cmd_sources)
 
+    sp = sub.add_parser("attack", help="MITRE ATT&CK techniques seen in your data")
+    sp.add_argument(
+        "what",
+        nargs="?",
+        default="matrix",
+        help="matrix (default), a technique ID such as T1071.001, navigator (layer JSON), or update",
+    )
+    sp.add_argument("--indicator", help="techniques linked to one indicator")
+    sp.add_argument(
+        "--associated", action="store_true", help="include known techniques of linked malware and groups"
+    )
+    sp.add_argument("-o", "--output", help="with navigator: write the layer to this file")
+    sp.set_defaults(func=cmd_attack)
+
     for name, text in (
         ("fp", "mark an indicator as a false positive"),
         ("confirm", "confirm an indicator is malicious"),
@@ -525,8 +687,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("suppress", help="alert suppression rules")
     sp.add_argument(
         "action",
-        choices=["process", "indicator", "list", "remove"],
-        help="add a rule for a process or indicator, list rules, or remove one by id",
+        choices=["process", "indicator", "device", "list", "remove"],
+        help="add a rule for a process, indicator or LAN device, list rules, or remove one by id",
     )
     sp.add_argument("value", nargs="?")
     sp.add_argument("--note")
@@ -537,12 +699,44 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=float, default=90)
     sp.set_defaults(func=cmd_prune)
 
+    def gateway(sp: argparse.ArgumentParser) -> None:
+        g = sp.add_argument_group(
+            "gateway mode", "monitor every device behind a router/firewall instead of this computer"
+        )
+        g.add_argument(
+            "--syslog", metavar="[HOST:]PORT", help="receive router/firewall syslog (UDP), e.g. 5514"
+        )
+        g.add_argument(
+            "--netflow", metavar="[HOST:]PORT", help="receive NetFlow v5/v9/IPFIX (UDP), e.g. 2055"
+        )
+        g.add_argument("--conntrack", action="store_true", help="read the NAT table (run on the gateway)")
+        g.add_argument(
+            "--tail", action="append", metavar="FILE", help="tail Zeek, Suricata eve.json or syslog files"
+        )
+        g.add_argument("--leases", action="append", metavar="FILE", help="DHCP leases file for device names")
+        g.add_argument(
+            "--lan", action="append", metavar="CIDR", help="inside networks (default: private ranges)"
+        )
+        g.add_argument("--include-blocked", action="store_true", help="also check flows the firewall blocked")
+        g.add_argument("--max-new", type=int, help="new IPs/domains looked up per snapshot (default 25)")
+
     sp = sub.add_parser("serve", help="run the JSON API and dashboard")
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8765)
     sp.add_argument("--watch", action="store_true", help="also monitor live network connections")
     sp.add_argument("--interval", type=float, help="seconds between network snapshots (default 30)")
+    gateway(sp)
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser(
+        "blocklist", help="malicious IPs/domains/URLs as a feed for your firewall or DNS filter"
+    )
+    sp.add_argument("kind", choices=export.BLOCKLIST_KINDS)
+    sp.add_argument("--suspicious", action="store_true", help="include suspicious, not just malicious")
+    sp.add_argument("--min-score", type=int, default=0)
+    sp.add_argument("--comments", action="store_true", help="add a '#' header line")
+    sp.add_argument("-o", "--output")
+    sp.set_defaults(func=cmd_blocklist)
 
     def ai(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--model", help="Claude model (default claude-opus-5-5)")
@@ -565,10 +759,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-hops", type=int, default=20)
     sp.set_defaults(func=cmd_trace)
 
-    sp = sub.add_parser("watch", help="monitor this machine's live network connections")
+    sp = sub.add_parser("watch", help="monitor live network connections (this computer, or a whole network)")
     sp.add_argument("--interval", type=float, help="seconds between snapshots (default 30, min 5)")
     sp.add_argument("--once", action="store_true", help="take one snapshot, print it and exit")
     sp.add_argument("--all", action="store_true", help="with --once, include private/local peers")
+    gateway(sp)
     sp.set_defaults(func=cmd_watch)
     return p
 
