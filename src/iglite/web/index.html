@@ -254,6 +254,20 @@
   .chat-input { display: flex; gap: 8px; align-items: flex-end; }
   .chat-input textarea { flex: 1; min-height: 46px; max-height: 200px; }
 
+  /* ATT&CK matrix */
+  .matrix { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+  .matrix .col { min-width: 0; }
+  .matrix .col h3 { font-size: 11.5px; margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text-secondary); }
+  .matrix .col h3 small { display: block; font-weight: 400; color: var(--text-muted); }
+  .tcell { display: block; width: 100%; text-align: left; margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer;
+           border: 1px solid var(--line); border-left: 4px solid var(--c, var(--st-neutral)); background: var(--surface-1); font-size: 12px; }
+  .tcell:hover, .tcell[aria-pressed="true"] { border-color: var(--accent); }
+  .tcell.assoc { border-style: dashed; border-left-style: solid; opacity: .85; }
+  .tcell .id { font: 11px ui-monospace, monospace; color: var(--text-muted); }
+  .tcell .n { float: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .basis { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); margin-right: 3px; }
+  .tech-list li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+
   /* toasts */
   #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
   .toast { background: var(--surface-1); border: 1px solid var(--line); border-left: 4px solid var(--c, var(--st-neutral));
@@ -271,6 +285,7 @@
     <a href="#live" data-view="live">Live network<span class="count" id="flag-count" hidden></span></a>
     <a href="#routes" data-view="routes">Routes</a>
     <a href="#graph" data-view="graph">Graph</a>
+    <a href="#attack" data-view="attack">ATT&amp;CK</a>
     <a href="#indicators" data-view="indicators">Indicators</a>
     <a href="#analyst" data-view="analyst">Analyst</a>
   </nav>
@@ -319,7 +334,7 @@
         </div>
       </div>
     </div>
-    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>6</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
+    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>7</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
   </section>
 
   <!-- LIVE NETWORK -->
@@ -375,6 +390,23 @@
     </div>
   </section>
 
+  <!-- MITRE ATT&CK -->
+  <section class="view" id="view-attack">
+    <div class="toolbar">
+      <label class="check" title="Also show the known techniques of malware and threat groups that feed tags name. These are what that malware can do, not what was seen."><input type="checkbox" id="at-assoc"> Include techniques of linked malware and groups</label>
+      <label class="check"><input type="checkbox" id="at-all"> All tactics</label>
+      <input type="search" class="grow" id="at-q" placeholder="Filter techniques by ID or name, e.g. T1071 or phishing">
+      <a class="ghost" id="at-nav" href="/api/attack/navigator" download="iglite-attack-layer.json" title="Open in the MITRE ATT&CK Navigator">Navigator layer</a>
+    </div>
+    <p class="muted" id="at-status" style="margin:0 0 10px"></p>
+    <div class="card"><div class="matrix" id="at-matrix"></div></div>
+    <div class="card" style="margin-top:16px" id="at-detail-card" hidden>
+      <div class="card-head"><h2 id="at-title">Technique</h2><a id="at-link" target="_blank" rel="noopener noreferrer" class="muted" style="font-size:12px">attack.mitre.org</a></div>
+      <ul class="links" id="at-detail"></ul>
+    </div>
+    <p class="muted" style="font-size:11.5px;margin-top:10px"><b>Reported</b>: a threat feed or the report author mapped it. <b>Observed</b>: your IDS saw it. <b>Inferred</b>: guessed from a feed tag or from traffic to a flagged host (port 443 → Web Protocols). <b>Report</b>: named in a report you ingested. <b>Associated</b>: known behaviour of linked malware or a group. MITRE ATT&amp;CK® is a registered trademark of The MITRE Corporation.</p>
+  </section>
+
   <!-- ANALYST -->
   <section class="view" id="view-analyst">
     <div class="chat">
@@ -398,7 +430,7 @@
     <div class="toolbar">
       <input type="search" class="grow" id="i-q" placeholder="Search values">
       <select id="i-verdict"><option value="">All verdicts</option><option>malicious</option><option>suspicious</option><option>benign</option><option>unknown</option></select>
-      <select id="i-kind"><option value="">All kinds</option><option>ip</option><option>domain</option><option>url</option><option>hash</option><option>cve</option><option>email</option><option>process</option><option>host</option><option>org</option><option>tag</option><option>report</option></select>
+      <select id="i-kind"><option value="">All kinds</option><option>ip</option><option>domain</option><option>url</option><option>hash</option><option>cve</option><option>email</option><option>process</option><option>host</option><option>org</option><option>tag</option><option>report</option><option>technique</option><option>software</option><option>group</option></select>
       <a class="ghost" id="i-export" href="/api/export/stix" download="iglite-stix.json">Export STIX</a>
       <a class="ghost" href="/api/export/csv" download="iglite.csv">CSV</a>
     </div>
@@ -509,7 +541,7 @@ applyTheme(store.get("iglite-theme"));
 $("theme").onclick = () => { const next = isDark() ? "light" : "dark"; applyTheme(next); store.set("iglite-theme", next); };
 
 /* ---------- routing & shortcuts ---------- */
-const VIEWS = ["overview", "live", "routes", "graph", "indicators", "analyst"];
+const VIEWS = ["overview", "live", "routes", "graph", "attack", "indicators", "analyst"];
 let view = "overview";
 function route() {
   view = (location.hash || "#overview").slice(1);
@@ -523,9 +555,9 @@ window.addEventListener("hashchange", route);
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { Drawer.close(); Tip.hide(); return; }
   if (e.target.matches("input, textarea, select") || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key >= "1" && e.key <= "6") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
+  if (e.key >= "1" && e.key <= "7") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
   if (e.key === "/") {
-    const box = { live: "live-q", routes: "r-target", graph: "g-add", indicators: "i-q", overview: "inv-text", analyst: "a-q" }[view];
+    const box = { live: "live-q", routes: "r-target", graph: "g-add", attack: "at-q", indicators: "i-q", overview: "inv-text", analyst: "a-q" }[view];
     if (box) { $(box).focus(); e.preventDefault(); }
   }
 });
@@ -757,12 +789,16 @@ async function fetchAlerts() {
             el("button", { class: "ghost small", title: "Confirm this is a real threat", onclick: stop(() => Feedback.mark(a.key, "confirmed")) }, "Confirm")));
   }));
   if (!recentAlerts.length) $("alert-feed").append(el("li", { class: "muted", style: "display:block;cursor:default" },
-    "No alerts yet. Start monitoring to check this machine's connections against your sources."));
+    watch.mode === "gateway" ? "No alerts yet. Every device's traffic through the gateway is checked against your sources."
+      : "No alerts yet. Start monitoring to check this machine's connections against your sources."));
 }
+const deviceLabel = (ip, name) => name ? `${name} (${ip})` : ip;
 const describeAlert = a => {
   const c = a.context || {};
-  return [c.process ? `${c.process}${c.pid ? " (" + c.pid + ")" : ""}` : null, c.remote_port ? "port " + c.remote_port : null,
-          c.names && c.names.length ? c.names.join(", ") : null].filter(Boolean).join(" · ") || "flagged indicator";
+  const who = c.device ? `${deviceLabel(c.device, c.device_name)}${c.inbound ? ", inbound" : c.query ? ", DNS lookup" : ""}`
+    : c.process ? `${c.process}${c.pid ? " (" + c.pid + ")" : ""}` : null;
+  return [who, c.remote_port && !c.query ? "port " + c.remote_port : null, c.names && c.names.length ? c.names.join(", ") : null,
+          c.attack && c.attack.length ? "ATT&CK " + c.attack.join(", ") : null].filter(Boolean).join(" · ") || "flagged indicator";
 };
 function toast(a) {
   const t = el("div", { class: "toast", style: `--c:var(${VCOLOR[a.verdict] || "--st-neutral"})`, role: "status",
@@ -800,8 +836,13 @@ function paintWatch() {
     sel.value = v;
   }
   const last = watch.last_scan ? `Last scan ${timeAgo(watch.last_scan)}` : "Not scanned yet";
-  $("live-status").textContent = `${last} · ${watch.connections ?? 0} connections · ${watch.flagged ?? 0} flagged` +
-    (watch.running ? ` · every ${watch.interval}s` : "") + (watch.last_error ? ` · error: ${watch.last_error}` : "");
+  const gw = watch.gateway;
+  $("live-status").textContent = (gw ? `Gateway mode (${gw.inputs.join(", ")}) · ${watch.devices ?? 0} devices · ` : "") +
+    `${last} · ${watch.connections ?? 0} connections · ${watch.flagged ?? 0} flagged` +
+    (watch.running ? ` · every ${watch.interval}s` : "") + (watch.last_error ? ` · error: ${watch.last_error}` : "") +
+    (gw && gw.errors.length ? ` · input error: ${gw.errors[gw.errors.length - 1]}` : "") +
+    (gw && gw.rejected_senders ? ` · ${gw.rejected_senders} packets from unlisted senders ignored` : "");
+  $("live-q").placeholder = gw ? "Filter by device, IP or domain" : "Filter by process, IP or domain";
 }
 async function setWatch(action) {
   const btns = [$("live-toggle"), $("live-scan")]; btns.forEach(b => b.disabled = true);
@@ -822,9 +863,11 @@ const Live = {
   rows: [], sort: { key: "verdict", dir: "asc" },
   columns: [
     { key: "verdict", label: "Verdict", render: r => badge(r.verdict, r.score), sortValue: r => VRANK[r.verdict] * 1000 - (r.score || 0) },
-    { key: "process", label: "Process", render: r => el("span", {}, r.process || el("span", { class: "muted" }, "unknown"),
-        r.pid ? el("span", { class: "muted" }, ` ${r.pid}`) : null) },
-    { key: "remote_ip", label: "Remote", render: r => el("span", { class: "mono nowrap" }, `${r.remote_ip}:${r.remote_port}`) },
+    { key: "process", label: "Process / device", sortValue: r => r.device_name || r.device || r.process || "~",
+      render: r => r.device ? el("span", {}, r.device_name ? el("span", {}, r.device_name, " ") : null, el("span", { class: r.device_name ? "muted mono" : "mono" }, r.device))
+        : el("span", {}, r.process || el("span", { class: "muted" }, "unknown"), r.pid ? el("span", { class: "muted" }, ` ${r.pid}`) : null) },
+    { key: "remote_ip", label: "Remote", render: r => el("span", { class: "mono nowrap", title: r.inbound ? "The remote host connected in" : null },
+        r.proto === "dns" ? `${r.remote_ip} (DNS)` : `${r.inbound ? "← " : ""}${r.remote_ip}:${r.remote_port}`) },
     { key: "names", label: "Names", render: r => el("span", { class: "mono secondary" }, r.names.join(", ")), sortValue: r => r.names[0] || "~" },
     { key: "state", label: "State" },
     { key: "count", label: "Conns", num: true },
@@ -832,6 +875,7 @@ const Live = {
         el("button", { class: "ghost small", title: "Traceroute to this address", onclick: ev => { ev.stopPropagation(); Routes.start(r.remote_ip); } }, "Trace"), " ",
         el("button", { class: "ghost small", title: "Show in graph", onclick: ev => { ev.stopPropagation(); Graph.focus(r.key); } }, "Graph"), " ",
         r.process && !r.suppressed ? el("button", { class: "ghost small", title: `Never alert for connections made by ${r.process}`, onclick: ev => { ev.stopPropagation(); Feedback.suppress("process", r.process); } }, "Mute") : null,
+        r.device && !r.suppressed ? el("button", { class: "ghost small", title: `Never alert for traffic from ${deviceLabel(r.device, r.device_name)}`, onclick: ev => { ev.stopPropagation(); Feedback.suppress("device", r.device); } }, "Mute device") : null,
         r.suppressed ? el("span", { class: "muted", title: "A suppression rule matches: no alerts" }, "muted") : null) },
   ],
   async refresh() {
@@ -842,7 +886,7 @@ const Live = {
     const q = $("live-q").value.trim().toLowerCase(), flagged = $("live-flagged").checked, local = $("live-private").checked;
     const rows = this.rows.filter(r => (local || r.verdict !== "private") &&
       (!flagged || r.verdict === "malicious" || r.verdict === "suspicious") &&
-      (!q || [r.process, r.remote_ip, ...r.names].some(s => s && s.toLowerCase().includes(q))));
+      (!q || [r.process, r.device, r.device_name, r.remote_ip, ...r.names].some(s => s && s.toLowerCase().includes(q))));
     $("live-table").dataset.empty = this.rows.length ? "No connections match the filters." : "No snapshot yet. Press “Scan now” or start monitoring.";
     renderTable($("live-table"), this.columns, rows, this.sort, k => this.toggleSort(k), r => Drawer.open(r.key), Drawer.key);
   },
@@ -1007,6 +1051,69 @@ $("i-q").oninput = () => { clearTimeout(iTimer); iTimer = setTimeout(() => Indic
 $("i-verdict").onchange = $("i-kind").onchange = () => Indicators.reset();
 $("i-more").onclick = () => Indicators.load();
 
+/* ---------- MITRE ATT&CK ---------- */
+const BASIS_TITLE = { reported: "A threat feed or report author mapped it", observed: "Your IDS saw it (signature metadata)",
+  inferred: "Guessed from a feed tag or from traffic to a flagged host", report: "Named in a report you ingested",
+  associated: "Known behaviour of linked malware or a threat group, not seen directly" };
+const basisChips = basis => basis.map(b => el("span", { class: "basis", title: BASIS_TITLE[b] || "" }, b));
+const AttackView = {
+  data: null, selected: null,
+  async refresh() {
+    const assoc = $("at-assoc").checked;
+    $("at-nav").href = "/api/attack/navigator" + (assoc ? "?associated=1" : "");
+    try { this.data = await api("/api/attack" + (assoc ? "?associated=1" : "")); } catch (e) { $("at-status").textContent = e.message; return; }
+    this.render();
+    if (this.selected) this.show(this.selected);
+  },
+  render() {
+    const d = this.data, q = $("at-q").value.trim().toLowerCase();
+    $("at-status").textContent = `MITRE ATT&CK v${d.version} · ${d.techniques} technique(s) linked to ${d.indicators} indicator(s)` +
+      (d.techniques ? "" : ". Techniques appear as feeds report them (OTX), tags name a behaviour or malware, reports mention them, and live alerts fire.");
+    const match = t => !q || t.id.toLowerCase().includes(q) || t.name.toLowerCase().includes(q);
+    const all = $("at-all").checked;
+    const shown = d.tactics.filter(tac => all || tac.techniques.some(match));
+    if (!shown.length) { fill($("at-matrix"), el("p", { class: "empty", style: "grid-column:1/-1" }, d.techniques ? "No technique matches the filter." : "No techniques yet.")); return; }
+    fill($("at-matrix"), shown.map(tac => {
+      const techs = tac.techniques.filter(match);
+      return el("div", { class: "col" },
+        el("h3", { title: tac.id }, tac.name, el("small", {}, techs.length ? `${techs.length} technique(s)` : "none")),
+        techs.map(t => el("button", { class: "tcell" + (t.basis.length === 1 && t.basis[0] === "associated" ? " assoc" : ""),
+          style: `--c:var(${VCOLOR[t.top_verdict] || "--st-neutral"})`, "aria-pressed": String(this.selected === t.id),
+          title: `${t.id} ${t.name}\n${t.count} indicator(s) · ${t.basis.join(", ")}\n` + Object.entries(t.verdicts).map(([v, n]) => `${n} ${v}`).join(", "),
+          onclick: () => this.show(t.id) },
+          el("span", { class: "n" }, t.count), el("div", { class: "id" }, t.id), el("div", {}, t.name))));
+    }));
+  },
+  async show(id) {
+    this.selected = id;
+    document.querySelectorAll(".tcell").forEach(b => b.setAttribute("aria-pressed", String(b.querySelector(".id").textContent === id)));
+    const d = await api(`/api/attack/technique?associated=${$("at-assoc").checked ? 1 : 0}&id=` + encodeURIComponent(id));
+    $("at-detail-card").hidden = false;
+    $("at-title").textContent = `${d.id} · ${d.name}` + (d.tactics.length ? ` · ${d.tactics.join(", ")}` : "");
+    $("at-link").href = d.url || "https://attack.mitre.org/";
+    fill($("at-detail"), d.indicators.length ? d.indicators.map(r => el("li", { onclick: () => Drawer.open(r.key) },
+      LOOKUP_KINDS.has(r.kind) ? badge(r.verdict || "unscored", r.score) : el("span", { class: "basis" }, r.kind === "host" ? "device" : r.kind), el("span", { class: "mono" }, r.key), el("span", { style: "margin-left:auto" }, basisChips([...new Set(r.basis)]))))
+      : el("li", { class: "muted", style: "cursor:default" }, "No indicators linked."));
+  },
+  list(techs) {
+    return el("ul", { class: "links tech-list" }, techs.slice(0, 40).map(t => el("li", { onclick: () => { location.hash = "#attack"; this.show(t.id); } },
+      el("span", { class: "mono" }, t.id), el("span", {}, t.name), el("span", { class: "muted" }, t.tactics.join(", ")),
+      el("span", { style: "margin-left:auto" }, basisChips(t.basis), t.via && t.via.length ? el("span", { class: "muted", style: "font-size:11px" }, ` via ${[...new Set(t.via)].join(", ")}`) : null))),
+      techs.length > 40 ? el("li", { class: "muted", style: "cursor:default" }, `and ${techs.length - 40} more`) : null);
+  },
+  entry(e, kind) {
+    return el("div", { class: "ok", role: "note" },
+      el("b", {}, kind === "technique" ? `ATT&CK technique ${e.id}: ${e.name}` : `ATT&CK ${kind} ${e.id}: ${e.name}`),
+      kind === "technique" && e.tactics.length ? el("div", {}, `Tactics: ${e.tactics.join(", ")}`) : null,
+      kind !== "technique" && e.aliases && e.aliases.length > 1 ? el("div", {}, `Also known as ${e.aliases.filter(a => a !== e.name).slice(0, 8).join(", ")}`) : null,
+      kind !== "technique" ? el("div", {}, `${e.techniques.length} known technique(s)`) : null,
+      el("div", {}, el("a", { href: e.url, target: "_blank", rel: "noopener noreferrer" }, "Read on attack.mitre.org ↗")));
+  },
+};
+$("at-assoc").onchange = () => AttackView.refresh();
+$("at-all").onchange = () => AttackView.data && AttackView.render();
+$("at-q").oninput = () => AttackView.data && AttackView.render();
+
 /* ---------- detail drawer ---------- */
 const Drawer = {
   key: null,
@@ -1045,7 +1152,7 @@ const Drawer = {
     const copy = el("button", { class: "ghost", onclick: async ev => {
       try { await navigator.clipboard.writeText(n.value); ev.target.textContent = "Copied"; } catch (e) { ev.target.textContent = "Copy failed"; } } }, "Copy");
     fill($("drawer"),
-      this.head(n.kind === "host" ? "this computer" : n.kind),
+      this.head(n.kind === "host" ? (n.value === "this-computer" ? "this computer" : n.value === "gateway" ? "gateway" : "device") : n.kind),
       el("div", { style: "display:flex;gap:14px;align-items:center;margin-top:10px" },
         el("div", { class: "big-score", title: "Score 0–100" }, a.score), el("div", {}, badge(a.verdict), el("div", { class: "mono", style: "margin-top:4px" }, n.value))),
       el("div", { class: "meter", title: `score ${a.score} of 100` }, el("div", { style: `width:${a.score}%;--c:var(${VCOLOR[a.verdict] || "--st-neutral"})` })),
@@ -1061,12 +1168,16 @@ const Drawer = {
         LOOKUP_KINDS.has(n.kind) && a.override !== "confirmed" ? el("button", { class: "ghost", title: "This is a real threat", onclick: () => Feedback.mark(key, "confirmed") }, "Confirm malicious") : null,
         LOOKUP_KINDS.has(n.kind) ? el("button", { class: "ghost", title: "Keep scoring it, but never raise live alerts for it", onclick: () => Feedback.suppress("indicator", key) }, "Never alert") : null,
         n.kind === "process" ? el("button", { class: "ghost", title: "Never raise live alerts for this program", onclick: () => Feedback.suppress("process", n.value) }, "Mute this program") : null,
+        n.kind === "host" && !["this-computer", "gateway"].includes(n.value) ? el("button", { class: "ghost", title: "Never raise live alerts for this device's traffic", onclick: () => Feedback.suppress("device", n.value) }, "Mute this device") : null,
         el("button", { class: "ghost", onclick: () => Analyst.send(`Explain ${key}: is it dangerous, what is it connected to, and what should I do about it?`) }, "Ask analyst"),
         el("button", { class: "ghost", onclick: () => Graph.focus(key) }, "Show in graph"),
         el("button", { class: "ghost", onclick: () => { Graph.setRoot(key); Graph.focus(key, false); } }, "Make graph root"),
         copy),
+      info.attack_entry ? AttackView.entry(info.attack_entry, n.kind) : null,
       tpanel ? el("h3", {}, "AI triage") : null,
       tpanel,
+      info.attack && info.attack.length ? el("h3", {}, `MITRE ATT&CK (${info.attack.length})`) : null,
+      info.attack && info.attack.length ? AttackView.list(info.attack) : null,
       el("h3", {}, "Why this score"),
       a.reasons.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", { class: "static" }, "Source"), el("th", { class: "num static" }, "Effect"), el("th", { class: "static" }, "Evidence"))),
         el("tbody", {}, a.reasons.map(r => el("tr", { style: "cursor:default" }, el("td", {}, r.source),
@@ -1086,7 +1197,12 @@ const Drawer = {
 };
 
 /* ---------- graph ---------- */
-const GLYPH = { ip: "IP", domain: "D", url: "U", hash: "#", cve: "CV", email: "@", process: "P", org: "O", tag: "T", report: "R", asn: "AS", host: "⌂" };
+const GLYPH = { ip: "IP", domain: "D", url: "U", hash: "#", cve: "CV", email: "@", process: "P", org: "O", tag: "T", report: "R", asn: "AS", host: "⌂",
+  technique: "TT", software: "S", group: "G" };
+const isOrigin = n => n.kind === "host" && (n.value === "this-computer" || n.value === "gateway");
+const nodeLabel = n => n.kind === "host" ? (n.value === "this-computer" ? "This computer" : n.value === "gateway" ? "Gateway"
+    : (n.attrs && n.attrs.name ? `${n.attrs.name} ${n.value}` : n.value))
+  : n.attrs && n.attrs["attack.name"] ? `${n.value} ${n.attrs["attack.name"]}` : n.value;
 const Graph = {
   nodes: new Map(), edges: new Map(), hidden: new Set(), labels: true, selected: null, root: null,
   mode: store.get("iglite-layout") || "path",
@@ -1112,7 +1228,8 @@ const Graph = {
       const old = this.nodes.get(n.key);
       if (old) { Object.assign(old, { verdict: n.verdict, score: n.score }); continue; }
       const t = Math.random() * Math.PI * 2, r = n.key === root ? 0 : 30 + Math.random() * 40;
-      this.nodes.set(n.key, { key: n.key, kind: n.kind, value: n.value, verdict: n.verdict, score: n.score,
+      const attrs = n.attrs ? { name: n.attrs.name, "attack.name": n.attrs["attack.name"] } : {};
+      this.nodes.set(n.key, { key: n.key, kind: n.kind, value: n.value, verdict: n.verdict, score: n.score, attrs,
         x: cx + Math.cos(t) * r, y: cy + Math.sin(t) * r, vx: 0, vy: 0, fixed: false });
     }
     for (const e of g.edges) this.edges.set(`${e.src}|${e.rel}|${e.dst}`, e);
@@ -1202,14 +1319,14 @@ const Graph = {
     }
     for (const n of this.nodes.values()) {
       if (!this.visible(n)) { n._el = null; continue; }
-      const r = n.kind === "host" ? 16 : Math.min(16, 7 + Math.sqrt(this.degree(n.key)) * 2); n.r = r;
+      const r = isOrigin(n) ? 16 : Math.min(16, 7 + Math.sqrt(this.degree(n.key)) * 2); n.r = r;
       const g = svg("g", { class: "node" + (n.key === this.selected ? " sel" : "") + (n.key === this.effectiveRoot() && this.mode === "path" ? " root" : "") });
       const c = svg("circle", { r });
-      c.style.fill = n.kind === "host" ? "var(--text-primary)" : `var(${VCOLOR[n.verdict] || "--st-neutral"})`;
+      c.style.fill = isOrigin(n) ? "var(--text-primary)" : `var(${VCOLOR[n.verdict] || "--st-neutral"})`;
       const glyph = svg("text", { class: "glyph" }, GLYPH[n.kind] || "?");
       if (n.verdict === "malicious") glyph.style.fill = "#fff";
-      if (n.kind === "host") glyph.style.fill = "var(--surface-1)";
-      const label = svg("text", { x: r + 4, y: 4 }, n.kind === "host" ? "This computer" : n.value.length > 30 ? n.value.slice(0, 28) + "…" : n.value);
+      if (isOrigin(n)) glyph.style.fill = "var(--surface-1)";
+      const text = nodeLabel(n), label = svg("text", { x: r + 4, y: 4 }, text.length > 30 ? text.slice(0, 28) + "…" : text);
       label.style.display = this.labels ? "" : "none";
       g.append(c, glyph, label); n._el = g;
       this.bindNode(g, n); gn.append(g);
@@ -1277,8 +1394,9 @@ const Graph = {
     for (const e of this.edges.values()) if (e._el && (e.src === n.key || e.dst === n.key)) { near.add(e.src); near.add(e.dst); rels.push(e.rel); }
     for (const x of this.nodes.values()) x._el && x._el.classList.toggle("dim", !near.has(x.key));
     for (const e of this.edges.values()) if (e._el) { const on = e.src === n.key || e.dst === n.key; e._el.classList.toggle("hl", on); e._el.classList.toggle("dim", !on); }
-    Tip.show(ev, n.kind === "host" ? el("b", {}, "This computer") : el("div", {}, badge(n.verdict, n.score)),
+    Tip.show(ev, isOrigin(n) ? el("b", {}, nodeLabel(n)) : el("div", {}, badge(n.verdict, n.score)),
       el("div", { class: "mono", style: "margin-top:4px" }, n.key),
+      n.attrs && (n.attrs["attack.name"] || n.attrs.name) ? el("div", { style: "margin-top:2px" }, n.attrs["attack.name"] || n.attrs.name) : null,
       rels.length ? el("div", { class: "muted", style: "margin-top:2px" }, [...new Set(rels)].join(", ")) : null,
       el("div", { class: "muted", style: "margin-top:2px" }, "Click for details · double-click to expand"));
   },
@@ -1324,7 +1442,7 @@ const Graph = {
 })();
 
 /* ---------- AI analyst ---------- */
-const IND_RE = /\b(?:ip|domain|url|hash|cve|email|process|org|tag|asn|host|report):[^\s,;()<>\]"'`]+/g;
+const IND_RE = /\b(?:ip|domain|url|hash|cve|email|process|org|tag|asn|host|report|technique|software|group):[^\s,;()<>\]"'`]+/g;
 function inline(text) {
   // **bold**, `code` and kind:value indicator links, built as DOM nodes (never innerHTML).
   const out = [];
@@ -1446,9 +1564,10 @@ async function refreshView() {
     else if (view === "live") await Live.refresh();
     else if (view === "routes") await Routes.list();
     else if (view === "analyst") await Analyst.init();
+    else if (view === "attack") await AttackView.refresh();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
     else if (view === "graph" && !Graph.nodes.size) {
-      await Graph.load("host:this-computer", true, 3);
+      await Graph.load(watch.mode === "gateway" ? "host:gateway" : "host:this-computer", true, 3);
       if (!Graph.nodes.size) {
         const top = await api("/api/indicators?limit=8&verdict=malicious");
         for (const n of (top.length ? top : await api("/api/indicators?limit=8"))) await Graph.load(n.key, false);

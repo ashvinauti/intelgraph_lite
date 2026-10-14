@@ -31,6 +31,8 @@ _DOMAIN = re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-
 _HASH = re.compile(r"\b(?:[A-Fa-f0-9]{64}|[A-Fa-f0-9]{40}|[A-Fa-f0-9]{32})\b")
 _CVE = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.I)
 _ASN = re.compile(r"^AS(\d{1,10})$", re.I)
+# MITRE ATT&CK technique IDs (T1001-T1999, optional .NNN sub-technique).
+_TECHNIQUE = re.compile(r"\bT1\d{3}(?:\.\d{3})?\b")
 
 # Things that look like domains in prose but are almost always file names.
 _FILE_SUFFIXES = frozenset(
@@ -91,6 +93,8 @@ def classify(raw: str) -> Indicator | None:
         return None
     if _CVE.fullmatch(value):
         return Indicator(Kind.CVE, value.upper())
+    if _TECHNIQUE.fullmatch(value.upper()):
+        return Indicator(Kind.TECHNIQUE, value.upper())
     if m := _ASN.match(value):
         return Indicator(Kind.ASN, f"AS{m.group(1)}")
     if value.lower().startswith(("http://", "https://", "ftp://")):
@@ -125,6 +129,7 @@ def extract(text: str) -> list[Indicator]:
         (_URL, lambda v: classify(v)),
         (_EMAIL, lambda v: classify(v)),
         (_CVE, lambda v: Indicator(Kind.CVE, v.upper())),
+        (_TECHNIQUE, lambda v: Indicator(Kind.TECHNIQUE, v)),
         (_HASH, lambda v: Indicator(Kind.HASH, v.lower())),
         (_IPV4, lambda v: Indicator(Kind.IP, ip) if (ip := _norm_ip(v)) else None),
         (_IPV6, lambda v: Indicator(Kind.IP, ip) if (ip := _norm_ip(v)) else None),

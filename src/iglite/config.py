@@ -86,6 +86,18 @@ class Config:
     blocklists: dict[str, str] = field(default_factory=dict)  # name -> path or URL
     allowlists: dict[str, str] = field(default_factory=dict)
     watch_interval: float = 30.0  # seconds between live network snapshots
+    watch_max_new: int = 25  # new IPs/domains looked up per snapshot (bounds API use)
+    # Gateway mode: watch a whole network from its router/firewall (see gateway.py).
+    gateway_syslog: str | None = None  # "[host:]port" to receive syslog on, e.g. "0.0.0.0:5514"
+    gateway_netflow: str | None = None  # "[host:]port" for NetFlow v5/v9/IPFIX, e.g. "0.0.0.0:2055"
+    gateway_conntrack: bool = False  # read the kernel NAT table (when running on the gateway)
+    gateway_files: list[str] = field(default_factory=list)  # logs to tail: Zeek, Suricata eve.json, syslog
+    gateway_leases: list[str] = field(default_factory=list)  # DHCP lease files, for device names
+    gateway_senders: list[str] = field(default_factory=list)  # exporters allowed; default: private IPs
+    gateway_include_blocked: bool = False  # also check flows the firewall blocked
+    gateway_window: float = 300.0  # seconds a flow stays in the live table after it was last seen
+    lan_networks: list[str] = field(default_factory=list)  # inside addresses; default: non-public
+    devices: dict[str, str] = field(default_factory=dict)  # LAN ip -> friendly name
     # False-positive controls
     evidence_half_life_days: float = 180.0  # bad evidence halves in weight this often
     alert_min_score: int = 60  # live-monitoring alerts need at least this score
@@ -100,6 +112,13 @@ class Config:
     ai_max_steps: int = 10  # model turns per question
     api_token: str | None = None
     keys: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def gateway(self) -> bool:
+        """True when any gateway input is configured: monitor the network, not this computer."""
+        return bool(
+            self.gateway_syslog or self.gateway_netflow or self.gateway_conntrack or self.gateway_files
+        )
 
     @property
     def db_path(self) -> str:

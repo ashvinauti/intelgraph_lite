@@ -132,9 +132,13 @@ TOOLS: list[dict[str, Any]] = [
                         "cve",
                         "email",
                         "process",
+                        "host",
                         "org",
                         "tag",
                         "report",
+                        "technique",
+                        "software",
+                        "group",
                     ],
                 },
                 "text": {"type": "string", "description": "Substring to match in the value; empty for none."},
@@ -184,6 +188,17 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": _schema({"target": {"type": "string"}}, ["target"]),
     },
     {
+        "name": "attack_techniques",
+        "description": "MITRE ATT&CK techniques linked to the data. With an indicator: that indicator's "
+        "techniques and the basis for each (reported by a feed, observed, inferred from tags or traffic, "
+        "mentioned in a report, or associated via linked malware/group). Without one: the matrix of "
+        "techniques seen, by tactic, with how many indicators of each verdict.",
+        "input_schema": _schema(
+            {"indicator": {"type": "string", "description": "Indicator or key; empty for the whole matrix."}},
+            ["indicator"],
+        ),
+    },
+    {
         "name": "database_stats",
         "description": "Counts of stored indicators by verdict and kind, links, alerts, and which intel sources are enabled.",
         "input_schema": _schema({}, []),
@@ -230,6 +245,13 @@ def _registrable(domain: str) -> str:
     return ".".join(domain.split(".")[-2:])
 
 
+def _techniques(engine: Engine, key: str) -> list[dict[str, Any]]:
+    from . import attack
+
+    keep = ("id", "name", "tactics", "basis", "via")
+    return [{k: t[k] for k in keep} for t in attack.techniques_of(engine.store, key)][:25]
+
+
 class TriageTools:
     """Extra read-only tools for false-positive triage, mixed into Toolbox."""
 
@@ -248,9 +270,12 @@ class TriageTools:
             item = asdict(e)
             item["age_days"] = None if e.last_seen is None else round((now - e.last_seen) / 86400)
             evidence.append(item)
-        process = (alert["context"] or {}).get("process")
+        context = alert["context"] or {}
+        process = context.get("process")
+        device = context.get("device")
+        field, who = ("device", device) if device else ("process", process)
         same_process = [
-            a for a in self.engine.store.alerts(limit=500) if (a["context"] or {}).get("process") == process
+            a for a in self.engine.store.alerts(limit=500) if (a["context"] or {}).get(field) == who
         ]
         return {
             "alert": alert,
@@ -277,11 +302,13 @@ class TriageTools:
             ][:10],
             "process_alert_history": {
                 "process": process,
+                "device": device,
                 "alerts": len(same_process),
                 "marked_false_positive": sum(a["status"] == "false_positive" for a in same_process),
                 "confirmed": sum(a["status"] == "confirmed" for a in same_process),
             },
             "suppression_rules": self.engine.store.suppressions(),
+            "attack_techniques": _techniques(self.engine, key),
         }
 
     def t_similar_marked(self, indicator: str) -> Any:
@@ -385,6 +412,7 @@ class Toolbox(TriageTools):
             "assessment": self.engine.assess(key).as_dict(),
             "evidence": [asdict(e) for e in self.engine.store.evidence(key)][:30],
             "edges": self.engine.store.edges_of(key)[:60],
+            "attack_techniques": _techniques(self.engine, key),
         }
 
     def t_search_indicators(
@@ -429,6 +457,34 @@ class Toolbox(TriageTools):
         if d["status"] == "error":
             raise ToolError(d["error"])
         return {k: d[k] for k in ("target", "ip", "reached", "hops", "destination")}
+
+    def t_attack_techniques(self, indicator: str = "") -> Any:
+        from . import attack
+
+        if str(indicator).strip():
+            key = _key(indicator)
+            keep = ("id", "name", "tactics", "basis", "via")
+            return {
+                "indicator": key,
+                "techniques": [{k: t[k] for k in keep} for t in attack.techniques_of(self.engine.store, key)][
+                    :60
+                ],
+            }
+        s = attack.summary(self.engine.store)
+        return {
+            "attack_version": s["version"],
+            "tactics": [
+                {
+                    "tactic": t["name"],
+                    "techniques": [
+                        {k: r[k] for k in ("id", "name", "count", "verdicts", "basis")}
+                        for r in t["techniques"][:15]
+                    ],
+                }
+                for t in s["tactics"]
+                if t["techniques"]
+            ],
+        }
 
     def t_database_stats(self) -> Any:
         from .sources import describe

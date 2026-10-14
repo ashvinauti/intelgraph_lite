@@ -45,6 +45,13 @@ iglite trace example.com
 iglite watch                     # live, every 30 s
 iglite watch --once              # one snapshot table
 iglite serve --watch             # dashboard + monitoring together
+
+# Or monitor every device on the network from the router/firewall (see Gateway mode)
+iglite serve --host 0.0.0.0 --syslog 5514 --netflow 2055
+
+# MITRE ATT&CK techniques behind what you've seen
+iglite attack                    # matrix by tactic
+iglite attack navigator -o layer.json
 ```
 
 ## Live network monitoring
@@ -72,6 +79,163 @@ fires when one comes back suspicious or malicious.
 
 Run it as a normal user. On Linux, root is needed to see other users'
 processes. Only monitor machines and networks you're responsible for.
+
+## Gateway mode: the whole network from your router or firewall
+
+Instead of watching one computer, IntelGraph Lite can watch every device behind
+your home router or company firewall: phones, TVs, IoT gadgets and servers
+that can't run software of their own. It doesn't sit in the traffic path and it
+doesn't capture packets. It reads what the gateway already records:
+
+| Input | Flag | Works with |
+|-------|------|------------|
+| Firewall / router **syslog** (UDP) | `--syslog 5514` | OpenWrt, UFW and iptables/nftables `LOG`, pfSense/OPNsense `filterlog`, FortiGate, Sophos, SonicWall, Check Point and other `key=value` logs, Cisco ASA, Juniper SRX, MikroTik, Palo Alto `TRAFFIC` |
+| DNS logs (in the same syslog, or a file) | `--syslog` / `--tail` | dnsmasq, **Pi-hole**, Unbound: which device looked up which domain |
+| **NetFlow v5/v9, IPFIX** (UDP) | `--netflow 2055` | Most business routers and firewalls, MikroTik, OpenWrt with `softflowd` |
+| The NAT table, when running **on** a Linux/OpenWrt gateway | `--conntrack` | `/proc/net/nf_conntrack` or `conntrack -L` |
+| Log files | `--tail FILE` | **Zeek** `conn.log`/`dns.log` (TSV or JSON), **Suricata** `eve.json` (flows, DNS, and alerts with their ATT&CK IDs), or any file the formats above are written to |
+| Device names | `--leases FILE`, `[devices]` | dnsmasq/OpenWrt and ISC DHCP leases; DHCP `DHCPACK` syslog lines are picked up automatically |
+
+Each flow becomes *(LAN device, remote address, port)*. The public side is
+looked up through your sources exactly as in host mode. The Live network tab
+then lists **devices** instead of programs, alerts say which device it was
+("pixel-7 (192.168.1.23) · port 443"), and you can mute a device just like a
+program (`iglite suppress device 192.168.1.40`). Domains that devices looked
+up in DNS are checked too, so a C2 domain can alert before any connection is
+made.
+
+* **Inside vs. outside.** By default every private address is "inside". If
+  your company uses public address space internally, list it with
+  `--lan 203.0.113.0/24` (or `lan_networks` in `iglite.toml`).
+* **Blocked traffic is ignored.** A blocked internet scan is the firewall doing
+  its job, not an incident. `--include-blocked` checks it anyway.
+* **Trusted senders only.** The UDP listeners accept packets from private
+  addresses only. Pin them to your gateway with `gateway_senders = ["192.168.1.1"]`.
+* **Bounded cost.** At most `watch_max_new` (default 25) new IPs or domains
+  are looked up per snapshot, each one at most hourly, and results are
+  cached. On a busy network, rely on free local feeds (`[blocklists]`) and keep
+  rate-limited APIs such as VirusTotal for on-demand lookups.
+* **Rolling window.** Flows stay in the live table for `gateway_window`
+  seconds (default 300) after they were last seen.
+
+### Home network
+
+**Option A: a small always-on box (Raspberry Pi, NAS, old laptop).** Run
+IntelGraph Lite there and point the router at it.
+
+```bash
+export IGLITE_API_TOKEN=pick-a-long-random-token   # required to listen on the network
+iglite serve --host 0.0.0.0 --syslog 5514 --netflow 2055
+```
+
+Then, on the router:
+
+* **OpenWrt.** For flows: `opkg install softflowd`, then
+  `softflowd -i br-lan -n 192.168.1.10:2055 -v 9`. For DNS and device names,
+  forward the system log to the box:
+  `uci set dhcp.@dnsmasq[0].logqueries=1; uci set system.@system[0].log_ip=192.168.1.10; uci set system.@system[0].log_port=5514; uci set system.@system[0].log_proto=udp; uci commit; /etc/init.d/dnsmasq restart; /etc/init.d/log restart`.
+* **pfSense / OPNsense.** Send firewall logs to the box via remote syslog
+  (`192.168.1.10:5514`), and turn on logging for your LAN *pass* rule so
+  allowed connections are logged too.
+* **MikroTik.** `/ip traffic-flow set enabled=yes` and
+  `/ip traffic-flow target add dst-address=192.168.1.10 port=2055 version=9`.
+* **ISP router with no logging?** Use **Pi-hole** as the network's DNS
+  server. Every device's lookups then reach IntelGraph Lite:
+  `iglite serve --host 0.0.0.0 --tail /var/log/pihole/pihole.log --leases /etc/pihole/dhcp.leases`.
+
+**Option B: on the router itself.** This works on OpenWrt 23.05 or newer with
+spare RAM and USB storage. Python 3.11 is the only requirement.
+
+```bash
+opkg update && opkg install python3 python3-sqlite3 conntrack
+uci set dhcp.@dnsmasq[0].logqueries=1; uci set system.@system[0].log_ip=127.0.0.1
+uci set system.@system[0].log_port=5514; uci set system.@system[0].log_proto=udp; uci commit
+/etc/init.d/dnsmasq restart; /etc/init.d/log restart
+iglite --db /mnt/usb/iglite.db serve --host 0.0.0.0 --conntrack --syslog 127.0.0.1:5514 --leases /tmp/dhcp.leases
+```
+
+Most consumer routers have too little memory and flash for this, so Option A
+is the usual choice.
+
+### Company network
+
+Put IntelGraph Lite on a small VM or server in the management network:
+
+* **Next-generation firewall syslog.** Example for FortiGate:
+  `config log syslogd setting` → `set status enable`, `set server 10.0.0.10`,
+  `set port 5514`. On Palo Alto, use a syslog server profile and a
+  log-forwarding profile for traffic logs. On Cisco ASA, use
+  `logging host inside 10.0.0.10 udp/5514` and `logging trap informational`.
+  Sophos, SonicWall and Check Point `key=value` logs work too.
+* **NetFlow/IPFIX** from core routers: `--netflow 2055`.
+* **Zeek/Suricata on a SPAN or TAP port** (for example Security Onion):
+  `--tail /nsm/zeek/logs/current/conn.log --tail /nsm/zeek/logs/current/dns.log --tail /var/log/suricata/eve.json`.
+  Suricata alerts carry ATT&CK technique IDs, which appear as *observed*
+  techniques.
+* Pin the exporters (`gateway_senders`) and list internal ranges (`lan_networks`).
+* Monitoring other people's traffic is regulated in many countries. Follow
+  your organisation's policy and tell users where the law requires it.
+
+### Closing the loop: feed your firewall a blocklist
+
+IntelGraph Lite doesn't block anything itself. It publishes plain-text feeds
+that the gateway pulls and enforces:
+
+```
+GET /api/blocklist/ip.txt       # malicious IPs
+GET /api/blocklist/domain.txt   # malicious domains (Pi-hole / AdGuard / DNS filter)
+GET /api/blocklist/url.txt      # malicious URLs (web proxy)
+    ?suspicious=1  ?min_score=80  ?token=...   # firewalls can't send headers, so ?token= works here
+```
+
+Use these with pfSense/OPNsense *URL Table* aliases, FortiGate *External
+Threat Feeds*, Palo Alto *External Dynamic Lists*, or Pi-hole *adlists*.
+`iglite blocklist ip -o ips.txt` writes the same list to a file. False
+positives you marked, suppressed indicators, private addresses and IPs on
+shared CDN/cloud infrastructure are always left out. Blocking one Cloudflare
+IP would break thousands of unrelated sites. IntelGraph Lite serves plain
+HTTP, so put it behind a TLS reverse proxy (Caddy, nginx) if the firewall
+pulls across an untrusted network.
+
+## MITRE ATT&CK
+
+Every indicator can be linked to the
+[ATT&CK](https://attack.mitre.org/) techniques behind it. The **ATT&CK** tab
+shows a matrix of the techniques seen, by tactic, colored by verdict. Click a
+technique to see its indicators. Each link records its *basis*, so a fact is
+never confused with a guess:
+
+| Basis | Where it comes from |
+|-------|---------------------|
+| **reported** | A threat feed mapped it: OTX pulses list ATT&CK IDs. |
+| **observed** | Your IDS saw it: Suricata alert metadata (gateway mode). |
+| **inferred** | Guessed from a feed tag (`c2` → T1071, `phishing` → T1566, `malware_download` → T1105, `tor` → T1090.003, ...) or from live traffic to a flagged host (port 443 → T1071.001 Web Protocols, 53 → T1071.004 DNS, an unusual port → T1571 Non-Standard Port). |
+| **report** | A report you ingested names the technique ID (`T1566.001`). |
+| **associated** | A tag names ATT&CK malware or a group (`emotet` → S0367, `apt28` → G0007). That software's known techniques are *associated*, and are shown only when you ask (`--associated`, or the checkbox). |
+
+```bash
+iglite attack                           # matrix of techniques seen, by tactic
+iglite attack T1071.001                 # one technique and its indicators
+iglite attack --indicator 45.155.205.20 # techniques for one indicator
+iglite attack navigator -o layer.json   # open in the ATT&CK Navigator
+iglite attack update                    # refresh the catalogue from MITRE
+```
+
+* **Offline.** A compact copy of Enterprise ATT&CK (v20: tactics, techniques,
+  malware and groups) ships with the package, about 70 KB. `iglite attack update`
+  downloads the latest release to `~/.iglite/attack.json.gz`. The download is
+  about 55 MB and needs about 600 MB of memory to convert, so on a router or
+  small board, run it on a PC and copy the file across.
+* **Exports.** STIX bundles include `attack-pattern` objects with MITRE's own
+  STIX IDs, linked by `indicates` relationships, so OpenCTI and MISP merge them
+  with the ATT&CK data they already have. The Navigator layer opens in
+  [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/).
+* **AI agents.** The analyst can query the matrix (`attack_techniques`). The
+  triage agent sees each alert's techniques and their basis.
+
+ATT&CK® is a registered trademark of The MITRE Corporation. The bundled data
+is © MITRE and used under the
+[ATT&CK terms of use](https://attack.mitre.org/resources/legal-and-branding/terms-of-use/).
 
 ## Reducing false positives
 
@@ -209,14 +373,15 @@ Windows and macOS include one.
 `iglite serve` opens an interactive dashboard:
 
 * **Overview**: totals by verdict, a live network-activity chart (connections and flagged over time), recent alerts, and a box for investigating pasted indicators or reports.
-* **Live network**: live connections with process, remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
+* **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
 * **Graph**: two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
+* **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
 * **Indicators**: a searchable, sortable list with STIX export.
 * **Analyst**: chat with the optional AI analyst (see below).
 * **Details panel**: why an indicator got its score, its connections and attributes, and a button to investigate again.
 
-Keyboard: `1`–`6` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`7` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -273,6 +438,15 @@ Everything is optional. Copy [`iglite.example.toml`](iglite.example.toml) to
 | `offline` | false | Cache and local lists only (also `--offline`, `IGLITE_OFFLINE=1`) |
 | `trust.<source>` | per source | 0–1 weight of that source's verdicts |
 | `ttl.<source>` | per source | Seconds a cached answer stays fresh |
+| `watch_max_new` | 25 | New IPs/domains looked up per live snapshot |
+| `gateway_syslog`, `gateway_netflow` | off | `"[host:]port"` to receive syslog / NetFlow on (gateway mode) |
+| `gateway_conntrack` | false | Read the NAT table when running on the gateway |
+| `gateway_files`, `gateway_leases` | `[]` | Log files to tail; DHCP lease files for device names |
+| `gateway_senders` | private IPs | Exporters allowed to send syslog/NetFlow |
+| `lan_networks` | private ranges | What counts as inside the network |
+| `gateway_include_blocked` | false | Also check flows the firewall blocked |
+| `gateway_window` | 300 | Seconds a flow stays in the live table |
+| `[devices]` | none | `"192.168.1.40" = "Office printer"` friendly names |
 
 Environment: `IGLITE_DB` (default `~/.iglite/iglite.db`), `IGLITE_API_TOKEN`
 (required to serve on a non-localhost interface), and the API keys above.
@@ -282,13 +456,17 @@ Environment: `IGLITE_DB` (default `~/.iglite/iglite.db`), `IGLITE_API_TOKEN`
 ```bash
 docker build -t iglite .
 docker run -p 8765:8765 -e IGLITE_API_TOKEN=change-me -v iglite:/data iglite
+
+# gateway mode: receive syslog and NetFlow from the router/firewall
+docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=change-me -v iglite:/data \
+  iglite iglite serve --host 0.0.0.0 --syslog 5514 --netflow 2055
 ```
 
 ## Develop
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 105 offline tests, ~3 s
+.venv/bin/pytest            # 135 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 
