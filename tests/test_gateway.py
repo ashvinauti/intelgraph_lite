@@ -470,3 +470,120 @@ def test_flows_stay_in_the_table_for_the_window():
     assert [(c.state, c.count) for c in later.connections] == [("RECENT", 2)]
     assert later.queries == {}  # last asked at 1000, older than 60 s
     assert gw.collect(now=1100.0).connections == []
+
+
+# -- SSH, pf state table and proxy logs -------------------------------------------------------
+
+PF_STATES = f"""\
+all tcp 198.51.100.5:62000 ({LAN}:50000) -> {BAD}:443       ESTABLISHED:ESTABLISHED
+all udp {LAN}:5353 -> 8.8.8.8:53       MULTIPLE:SINGLE
+all tcp 192.168.1.50:22 <- {BAD2}:40000       ESTABLISHED:ESTABLISHED
+all tcp fd00::23[50001] -> 2606:4700::1111[443]       ESTABLISHED:ESTABLISHED
+all tcp {LAN}:50002 -> 45.155.205.21:443       TIME_WAIT:TIME_WAIT
+all icmp {LAN}:7 -> 8.8.4.4:7       0:0
+"""
+
+
+def test_pf_state_table():
+    from iglite.gateway import parse_pf_states
+
+    flows = [(f.src, f.dst, f.sport, f.dport, f.proto) for f in parse_pf_states(PF_STATES)]
+    assert flows == [
+        (LAN, BAD, 50000, 443, "tcp"),  # the LAN address from the NAT parentheses, not the public one
+        (LAN, "8.8.8.8", 5353, 53, "udp"),
+        (BAD2, "192.168.1.50", 40000, 22, "tcp"),  # "<-": the remote host connected in
+        ("fd00::23", "2606:4700::1111", 50001, 443, "tcp"),
+        (LAN, "8.8.4.4", 7, 7, "icmp"),
+    ]
+    lan = Lan()
+    assert lan.orient(parse_pf_states(PF_STATES)[2]) == ("192.168.1.50", BAD2, 22, True)
+
+
+def test_squid_proxy_log():
+    connect = (
+        f"1760000000.123    120 {LAN} TCP_TUNNEL/200 4512 CONNECT evil-c2.example:443 - HIER_DIRECT/{BAD} -"
+    )
+    assert parse_text(connect) == [
+        DnsEvent(LAN, "evil-c2.example", (BAD,)),
+        Flow(LAN, BAD, None, 443, "tcp", "pass"),
+    ]
+    plain = f"1760000001.5 80 {LAN} TCP_MISS/200 900 GET http://evil-c2.example/a.bin - HIER_DIRECT/{BAD} text/html"
+    assert parse_text(plain)[1] == Flow(LAN, BAD, None, 80, "tcp", "pass")
+    denied = f"1760000002.0 0 {LAN} TCP_DENIED/403 0 CONNECT bad.example:443 - HIER_NONE/- text/html"
+    assert parse_text(denied) == [DnsEvent(LAN, "bad.example", ())]  # no server reached, no flow
+
+
+class FakeSsh:
+    """Stands in for the router: runs a Python one-liner instead of ``ssh``."""
+
+    def __init__(self, stdout: str, code: int = 0, stderr: str = ""):
+        self.stdout, self.code, self.stderr = stdout, code, stderr
+
+    def argv(self, command):
+        import sys
+
+        script = f"import sys; sys.stdout.write({self.stdout!r}); sys.stderr.write({self.stderr!r}); sys.exit({self.code})"
+        return [sys.executable, "-c", script]
+
+
+def _ssh(monkeypatch, fake):
+    from iglite.gateway import SshSource
+
+    src = SshSource("root@192.168.1.1")
+    monkeypatch.setattr(src, "argv", fake.argv)
+    return src
+
+
+def test_ssh_target_and_command_line():
+    from iglite.gateway import SSH_STATE_CMD, SshSource
+
+    argv = SshSource("root@192.168.1.1", port=2222, key="~/.ssh/router").argv(SSH_STATE_CMD)
+    assert argv[0] == "ssh" and "BatchMode=yes" in argv and argv[argv.index("-p") + 1] == "2222"
+    assert argv[-3:] == ["--", "root@192.168.1.1", SSH_STATE_CMD]  # "--": the target can't be an option
+    assert not argv[argv.index("-i") + 1].startswith("~")
+    for bad in ("-oProxyCommand=evil", "root@host;reboot", "a b", ""):
+        with pytest.raises(ValueError):
+            SshSource(bad)
+
+
+def test_ssh_snapshot_reads_conntrack_or_pf_and_leases(monkeypatch):
+    from iglite.gateway import _LEASES_MARK
+
+    ct = f"tcp 6 100 ESTABLISHED src={LAN} dst={BAD} sport=1 dport=443 src={BAD} dst=198.51.100.5 sport=443 dport=1\n"
+    leases = f"1760000000 aa:bb:cc:dd:ee:ff {LAN} pixel-7 *\n"
+    flows, found = _ssh(monkeypatch, FakeSsh(ct + _LEASES_MARK + "\n" + leases)).snapshot()
+    assert [(f.src, f.dst, f.dport) for f in flows] == [(LAN, BAD, 443)] and found == [Lease(LAN, "pixel-7")]
+    flows, _ = _ssh(monkeypatch, FakeSsh(PF_STATES + _LEASES_MARK + "\n")).snapshot()
+    assert len(flows) == 5
+    with pytest.raises(RuntimeError, match="Permission denied"):
+        _ssh(monkeypatch, FakeSsh("", 255, "root@192.168.1.1: Permission denied (publickey).\n")).snapshot()
+
+
+def test_ssh_feeds_the_collector(monkeypatch):
+    from iglite.gateway import _LEASES_MARK
+
+    gw = GatewayCollector(Config(gateway_ssh="root@192.168.1.1", gateway_ssh_logs=False))
+    gw.started = True
+    ct = f"tcp 6 100 ESTABLISHED src={LAN} dst={BAD} sport=1 dport=443 src={BAD} dst=198.51.100.5 sport=443 dport=1\n"
+    monkeypatch.setattr(gw.ssh, "argv", FakeSsh(ct + _LEASES_MARK + f"\n1 aa {LAN} pixel-7 *\n").argv)
+    (conn,) = gw.collect().connections
+    assert (conn.device, conn.device_name, conn.remote_ip) == (LAN, "pixel-7", BAD)
+    assert gw.inputs == ["ssh root@192.168.1.1"]
+    monkeypatch.setattr(
+        gw.ssh, "argv", FakeSsh("", 255, "ssh: connect to host 192.168.1.1 port 22: No route\n").argv
+    )
+    gw.collect()  # a failed login is reported, not raised
+    assert "No route" in gw.status()["errors"][-1]
+
+
+def test_ssh_log_stream(monkeypatch):
+    lines = "dnsmasq[1]: query[A] evil-c2.example from 192.168.1.23\n" * 3
+    src = _ssh(monkeypatch, FakeSsh(lines, 255, "Connection reset\n"))
+    got, errors, stop = [], [], threading.Event()
+
+    def on_error(msg):
+        errors.append(msg)
+        stop.set()  # one round is enough for the test
+
+    src.follow(got.append, stop, on_error)
+    assert len(got) == 3 and "Connection reset" in errors[0]
