@@ -9,11 +9,17 @@ Endpoints
     GET  /api/indicator?key=        node, assessment, evidence, edges
     GET  /api/graph?key=&depth=&limit=
     GET  /api/export/{json,csv,stix}
+    GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
+    GET  /api/attack/technique?id=  one technique and its indicators
+    GET  /api/attack/navigator      ATT&CK Navigator layer
+    GET  /api/blocklist/{ip,domain,url}.txt?suspicious=0&min_score=0
+                                    plain-text feed for a firewall / DNS filter to pull
     POST /api/extract      {"text": "..."}
     POST /api/investigate  {"indicators": [...], "text": "...", "depth": 1, "budget": 50}
 
 Binds to 127.0.0.1 by default. Set IGLITE_API_TOKEN to require
-``Authorization: Bearer <token>`` on every /api request.
+``Authorization: Bearer <token>`` on every /api request. Blocklist feeds also
+accept ``?token=``, because firewalls that pull URL lists can't send headers.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from importlib import resources
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__, export
+from . import __version__, attack, export
 from .engine import Engine
 from .extract import classify, extract
 from .model import KINDS
@@ -67,10 +73,12 @@ def make_handler(engine: Engine) -> type[BaseHTTPRequestHandler]:
         def _json(self, data: Any, status: int = 200) -> None:
             self._send(status, json.dumps(data, default=str).encode(), "application/json")
 
-        def _authorised(self) -> bool:
+        def _authorised(self, q: dict[str, str], path: str) -> bool:
             if not token:
                 return True
             given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not given and path.startswith("/api/blocklist/"):
+                given = q.get("token", "")
             return hmac.compare_digest(given.encode(), token.encode())
 
         def _body(self) -> dict[str, Any]:
@@ -97,12 +105,14 @@ def make_handler(engine: Engine) -> type[BaseHTTPRequestHandler]:
             if not url.path.startswith("/api/"):
                 self._json({"error": "not found"}, 404)
                 return
-            if not self._authorised():
+            if not self._authorised(q, url.path):
                 self._json({"error": "unauthorised"}, 401)
                 return
             route = ROUTES.get((method, url.path))
             if route is None and method == "GET" and url.path.startswith("/api/export/"):
                 route, q["format"] = _export, url.path.rsplit("/", 1)[1]
+            if route is None and method == "GET" and url.path.startswith("/api/blocklist/"):
+                route, q["kind"] = _blocklist, url.path.rsplit("/", 1)[1].removesuffix(".txt")
             if route is None:
                 self._json({"error": "not found"}, 404)
                 return
@@ -185,10 +195,15 @@ def _suppressions(engine: Engine, q: dict, body: dict) -> Any:
 
 def _suppression_add(engine: Engine, q: dict, body: dict) -> Any:
     kind, value = body.get("kind"), str(body.get("value") or "").strip()
-    if kind not in ("indicator", "process") or not value:
-        raise ApiError(HTTPStatus.BAD_REQUEST, "kind must be indicator or process, with a value")
+    if kind not in ("indicator", "process", "device") or not value:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "kind must be indicator, process or device, with a value")
     if kind == "indicator":
         value = _key({"key": value})
+    elif kind == "device":
+        ind = classify(value)
+        if ind is None or ind.kind.value != "ip":
+            raise ApiError(HTTPStatus.BAD_REQUEST, "a device is its LAN IP address")
+        value = ind.value
     return {
         "id": engine.store.add_suppression(
             kind, value.lower() if kind == "process" else value, str(body.get("note") or "")[:500]
@@ -226,7 +241,40 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
         "assessment": engine.assess(key).as_dict(),
         "evidence": [asdict(e) for e in engine.store.evidence(key)],
         "edges": engine.store.edges_of(key)[:500],
+        "attack": attack.techniques_of(engine.store, key),
+        "attack_entry": _attack_entry(key),
     }
+
+
+def _attack_entry(key: str) -> dict[str, Any] | None:
+    """Catalogue entry when the node itself is an ATT&CK technique, software or group."""
+    kind, _, value = key.partition(":")
+    if kind == "technique":
+        return attack.catalogue().technique(value)
+    if kind in ("software", "group"):
+        return attack.catalogue().entity(kind, value)
+    return None
+
+
+def _flag(q: dict[str, str], name: str) -> bool:
+    return q.get(name, "").lower() in ("1", "true", "yes", "on")
+
+
+def _attack(engine: Engine, q: dict, body: dict) -> Any:
+    return attack.summary(engine.store, associated=_flag(q, "associated"))
+
+
+def _attack_technique(engine: Engine, q: dict, body: dict) -> Any:
+    tech = attack.technique_node(q.get("id", ""))
+    if tech is None:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "id must be a technique ID such as T1071.001")
+    return attack.detail(engine.store, tech.value, associated=_flag(q, "associated") or "associated" not in q)
+
+
+def _attack_navigator(engine: Engine, q: dict, body: dict) -> Any:
+    return json.dumps(
+        attack.navigator_layer(engine.store, associated=_flag(q, "associated"))
+    ), "application/json"
 
 
 def _graph(engine: Engine, q: dict, body: dict) -> Any:
@@ -239,6 +287,20 @@ def _export(engine: Engine, q: dict, body: dict) -> Any:
         raise ApiError(HTTPStatus.NOT_FOUND, "unknown export format")
     ctype = "text/csv" if fmt == "csv" else "application/json"
     return export.FORMATS[fmt](engine.store, None), ctype
+
+
+def _blocklist(engine: Engine, q: dict, body: dict) -> Any:
+    if q.get("kind") not in export.BLOCKLIST_KINDS:
+        raise ApiError(HTTPStatus.NOT_FOUND, "blocklists: ip.txt, domain.txt, url.txt")
+    text = export.blocklist(
+        engine.store,
+        q["kind"],
+        suspicious=_flag(q, "suspicious"),
+        min_score=_int(q, "min_score", 0, 100),
+        shared_infra=engine.shared_infra,
+        comments=_flag(q, "comments"),
+    )
+    return text, "text/plain; charset=utf-8"
 
 
 def _watch_status(engine: Engine, q: dict, body: dict) -> Any:
@@ -268,7 +330,10 @@ def _connections(engine: Engine, q: dict, body: dict) -> Any:
     rules: dict[str, set[str]] = {}
     for rule in engine.store.suppressions():  # current rules, not those at scan time
         rules.setdefault(rule["kind"], set()).add(rule["value"])
-    rows = [{**r, "suppressed": watch._suppressed(r["key"], r["process"], rules)} for r in watch.rows[:1000]]
+    rows = [
+        {**r, "suppressed": watch._suppressed(r["key"], r["process"], rules, r.get("device"))}
+        for r in watch.rows[:1000]
+    ]
     return {"status": watch.status(), "connections": rows}
 
 
@@ -411,6 +476,9 @@ ROUTES = {
     ("GET", "/api/indicators"): _indicators,
     ("GET", "/api/indicator"): _indicator,
     ("GET", "/api/graph"): _graph,
+    ("GET", "/api/attack"): _attack,
+    ("GET", "/api/attack/technique"): _attack_technique,
+    ("GET", "/api/attack/navigator"): _attack_navigator,
     ("POST", "/api/extract"): _extract,
     ("POST", "/api/investigate"): _investigate,
     ("GET", "/api/watch"): _watch_status,

@@ -136,6 +136,7 @@ def test_watcher_alerts_once_and_links_process(make_engine, lists, monkeypatch):
     assert result == {
         "connections": 3,
         "public_ips": 1,
+        "domains": 0,
         "investigated": 1,
         "deferred": 0,
         "alerts": 1,

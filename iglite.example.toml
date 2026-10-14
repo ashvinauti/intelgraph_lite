@@ -17,6 +17,19 @@ alert_min_score = 60            # live alerts need at least this score (70 = mal
 
 # Seconds between live network snapshots (`iglite watch`, `serve --watch`).
 watch_interval = 30
+watch_max_new = 25    # new IPs/domains looked up per snapshot
+
+# Gateway mode: monitor every device behind a router/firewall (see README).
+# Any of these switches it on; the CLI flags --syslog/--netflow/--conntrack/--tail do the same.
+# gateway_syslog = "0.0.0.0:5514"           # router/firewall syslog (UDP)
+# gateway_netflow = "0.0.0.0:2055"          # NetFlow v5/v9 / IPFIX (UDP)
+# gateway_conntrack = true                  # when running on the Linux/OpenWrt gateway itself
+# gateway_files = ["/var/log/pihole/pihole.log", "/var/log/suricata/eve.json"]
+# gateway_leases = ["/tmp/dhcp.leases"]     # DHCP leases, for device names
+# gateway_senders = ["192.168.1.1"]         # exporters allowed (default: any private address)
+# lan_networks = ["10.0.0.0/8"]             # inside addresses (default: all private ranges)
+# gateway_include_blocked = false           # also check flows the firewall blocked
+# gateway_window = 300                      # seconds a flow stays in the live table
 
 # AI agents (optional). Provider: "anthropic" (Claude; `pip install .[ai]` +
 # ANTHROPIC_API_KEY in .env) or "ollama" (local model; nothing leaves the PC).
@@ -37,6 +50,10 @@ disabled = []
 feodo = "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"
 urlhaus_online = "https://urlhaus.abuse.ch/downloads/text_online/"
 # internal = "~/intel/our-blocklist.txt"
+
+# Friendly names for LAN devices in gateway mode (DHCP names are learned automatically).
+[devices]
+# "192.168.1.40" = "Office printer"
 
 # Known-good infrastructure, to counter false positives.
 [allowlists]

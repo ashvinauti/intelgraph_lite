@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from urllib.parse import quote
 
+from .. import attack
 from ..extract import classify
 from ..model import Evidence, Finding, Indicator, Kind, Relation, Verdict
 from .base import Context, Source, latest, parse_time
@@ -70,6 +71,11 @@ class OTX(Source):
         }
         for tag in sorted((tags | families) - {""})[:10]:
             finding.relations.append(Relation(ind, "tagged", Indicator(Kind.TAG, tag), pivot=False))
+        # Pulse authors map their reports to ATT&CK; keep those techniques as reported.
+        for tid in attack.ids_in(a for p in pulses for a in p.get("attack_ids") or [])[:20]:
+            finding.relations.append(
+                Relation(ind, "uses_technique", Indicator(Kind.TECHNIQUE, tid), pivot=False)
+            )
         return finding
 
 
@@ -209,7 +215,8 @@ class URLhaus(Source):
             for u in (data.get("urls") or [])[:10]:
                 if (url := classify(u.get("url", ""))) is not None:
                     finding.relations.append(Relation(url, "serves", ind, pivot=False))
-        for tag in (data.get("tags") or [])[:10]:
+        threat = [data["threat"]] if isinstance(data.get("threat"), str) else []
+        for tag in dict.fromkeys([*threat, *(data.get("tags") or [])[:10]]):
             finding.relations.append(
                 Relation(ind, "tagged", Indicator(Kind.TAG, str(tag).lower()), pivot=False)
             )

@@ -31,7 +31,10 @@ class Kind(enum.StrEnum):
     TAG = "tag"
     REPORT = "report"
     PROCESS = "process"
-    HOST = "host"  # this computer, the origin of live connections and routes
+    HOST = "host"  # this computer or a LAN device: the origin of live connections and routes
+    TECHNIQUE = "technique"  # MITRE ATT&CK technique, e.g. T1071.001
+    SOFTWARE = "software"  # MITRE ATT&CK malware, e.g. S0367 (Emotet)
+    GROUP = "group"  # MITRE ATT&CK threat group, e.g. G0007 (APT28)
 
 
 class Verdict(enum.StrEnum):

@@ -37,8 +37,10 @@ ACTIONS = ("mark_false_positive", "confirm_malicious", "suppress_process", "moni
 
 TRIAGE_PROMPT = """\
 You are the false-positive triage agent built into IntelGraph Lite, a threat-intelligence tool \
-running on the user's own computer. An alert fired because one of this computer's network \
-connections reached an indicator that the evidence engine scored as suspicious or malicious. Your \
+run by the user. An alert fired because a monitored network connection reached an indicator that \
+the evidence engine scored as suspicious or malicious. The connection came from a program on the \
+user's computer or, in gateway mode, from a device on the network behind their router or firewall \
+(alert context "device"; a "query" alert means the device looked the domain up in DNS). Your \
 job: decide whether the alert is a false positive, using the tools, and submit a verdict.
 
 Work through these questions (use alert_context first; it answers most of them):
@@ -47,9 +49,11 @@ each sighting (age_days)? Sightings that are months or years old on an IP are we
 get reassigned.
 2. Shared infrastructure: is the IP on a CDN or large cloud platform (Cloudflare, Google, \
 Microsoft, Akamai...)? One bad tenant can get a shared IP flagged.
-3. Context: which program made the connection, on which port, to which domain names? Is the \
-program a well-known, expected one for that destination (a browser to a CDN, an updater to its \
-vendor)? Has this program's earlier alerts been marked false positive?
+3. Context: which program or device made the connection, on which port, to which domain names? \
+Is the program a well-known, expected one for that destination (a browser to a CDN, an updater to \
+its vendor)? Have earlier alerts from this program or device been marked false positive? The \
+attack_techniques list shows MITRE ATT&CK techniques and their basis; "inferred" ones are guesses \
+from the port or tags, "reported" and "observed" ones come from a feed or an IDS.
 4. The user's own decisions: use similar_marked and feedback_history. Past false-positive marks \
 on the same network, domain or owner, and sources with a high false-positive rate, are strong \
 evidence of a false positive. Past confirmations point the other way.
