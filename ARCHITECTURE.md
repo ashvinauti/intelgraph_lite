@@ -96,7 +96,8 @@ snapshots are missed.
 router / firewall ──syslog (UDP)──▶ ┐
                   ──NetFlow/IPFIX──▶ │ GatewayCollector     LineParser: netfilter, filterlog, key=value,
 Zeek / Suricata / Pi-hole ──files──▶ │   threads + buffer    ASA, SRX, MikroTik, PAN-OS, dnsmasq, Unbound,
-NAT table (on the gateway) ────────▶ ┘   (≤ 20k flows)       Zeek TSV/JSON, Suricata eve; NetFlowParser
+NAT table (on the gateway) ────────▶ │   (≤ 20k flows)       Zeek TSV/JSON, Suricata eve, Squid; NetFlowParser
+router over SSH (state + log) ─────▶ ┘                       conntrack / pfctl -ss, DHCP leases
         │ Lan.orient(flow) → (device, remote, port, inbound)   internal / transit / blocked flows dropped
         │ rolling window (gateway_window), DNS answers (ip → names), DHCP names
         ▼
@@ -249,7 +250,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (135 tests, offline) | ~10 s |
+| Full test suite (141 tests, offline) | ~10 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 

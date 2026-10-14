@@ -93,6 +93,8 @@ doesn't capture packets. It reads what the gateway already records:
 | DNS logs (in the same syslog, or a file) | `--syslog` / `--tail` | dnsmasq, **Pi-hole**, Unbound: which device looked up which domain |
 | **NetFlow v5/v9, IPFIX** (UDP) | `--netflow 2055` | Most business routers and firewalls, MikroTik, OpenWrt with `softflowd` |
 | The NAT table, when running **on** a Linux/OpenWrt gateway | `--conntrack` | `/proc/net/nf_conntrack` or `conntrack -L` |
+| **SSH into the router**, nothing installed on it | `--ssh root@192.168.1.1` | OpenWrt, DD-WRT, Asuswrt-Merlin, Ubiquiti EdgeRouter/UniFi gateways and other Linux routers (conntrack); pfSense/OPNsense (`pfctl -ss`) |
+| **Web proxy** logs | `--tail FILE` | Squid `access.log` (native format): which device visited which site |
 | Log files | `--tail FILE` | **Zeek** `conn.log`/`dns.log` (TSV or JSON), **Suricata** `eve.json` (flows, DNS, and alerts with their ATT&CK IDs), or any file the formats above are written to |
 | Device names | `--leases FILE`, `[devices]` | dnsmasq/OpenWrt and ISC DHCP leases; DHCP `DHCPACK` syslog lines are picked up automatically |
 
@@ -117,6 +119,45 @@ made.
   rate-limited APIs such as VirusTotal for on-demand lookups.
 * **Rolling window.** Flows stay in the live table for `gateway_window`
   seconds (default 300) after they were last seen.
+
+### Connect over SSH (no router configuration)
+
+If your router lets you log in over SSH, IntelGraph Lite can read it directly.
+You don't need syslog or NetFlow, and nothing is installed on the router:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/router            # once: make a key for the router
+# add ~/.ssh/router.pub to the router (OpenWrt: System → Administration → SSH-Keys)
+ssh -i ~/.ssh/router root@192.168.1.1 exit        # once: log in by hand to trust its host key
+iglite serve --ssh root@192.168.1.1 --ssh-key ~/.ssh/router
+```
+
+Each scan reads the router's connection table and DHCP leases. Its system log
+(DNS lookups, firewall entries) streams in over the same login. On OpenWrt,
+switch on DNS query logging so lookups reach the log:
+`uci set dhcp.@dnsmasq[0].logqueries=1; uci commit dhcp; /etc/init.d/dnsmasq restart`.
+
+* **Read-only.** It only runs fixed `cat`/`grep`/`conntrack -L`/`pfctl -ss`
+  and `logread -f`/`tail -F` commands. It changes nothing on the router.
+* **Key login only.** SSH runs in `BatchMode`, so it never asks for or stores
+  a password. On Windows 10/11, the built-in OpenSSH client works.
+* **Same network.** Keep the router's SSH port closed to the internet. To
+  monitor from elsewhere, connect to your home network over a VPN
+  (WireGuard, Tailscale) first.
+* Login failures appear on the Live network tab and in `iglite watch --once`
+  (for example "Permission denied (publickey)").
+
+Settings: `gateway_ssh = "root@192.168.1.1"`, `gateway_ssh_port`,
+`gateway_ssh_key`, `gateway_ssh_logs = false` to read only the connection table.
+
+### Web proxy
+
+If your devices go through a web proxy (Squid, or a proxy server at work),
+tail its access log: `--tail /var/log/squid/access.log`. Each request gives
+the device, the site's name and the server address it reached. IntelGraph
+Lite checks those exactly like DNS and connection data. To make IntelGraph
+Lite's *own* lookups go out through a proxy, set `HTTPS_PROXY` (for example
+`HTTPS_PROXY=http://proxy.corp:3128`).
 
 ### Home network
 
@@ -441,6 +482,8 @@ Everything is optional. Copy [`iglite.example.toml`](iglite.example.toml) to
 | `watch_max_new` | 25 | New IPs/domains looked up per live snapshot |
 | `gateway_syslog`, `gateway_netflow` | off | `"[host:]port"` to receive syslog / NetFlow on (gateway mode) |
 | `gateway_conntrack` | false | Read the NAT table when running on the gateway |
+| `gateway_ssh`, `gateway_ssh_port`, `gateway_ssh_key` | off, 22, agent | Read the router over SSH (`user@host`, key login) |
+| `gateway_ssh_logs` | true | Also follow the router's log over SSH |
 | `gateway_files`, `gateway_leases` | `[]` | Log files to tail; DHCP lease files for device names |
 | `gateway_senders` | private IPs | Exporters allowed to send syslog/NetFlow |
 | `lan_networks` | private ranges | What counts as inside the network |
@@ -466,7 +509,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 135 offline tests, ~10 s
+.venv/bin/pytest            # 141 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

@@ -386,6 +386,12 @@ def _apply_gateway(engine: Engine, args: argparse.Namespace) -> None:
         cfg.gateway_netflow = args.netflow
     if args.conntrack:
         cfg.gateway_conntrack = True
+    if args.ssh:
+        cfg.gateway_ssh = args.ssh
+    if args.ssh_port:
+        cfg.gateway_ssh_port = args.ssh_port
+    if args.ssh_key:
+        cfg.gateway_ssh_key = args.ssh_key
     cfg.gateway_files = [*cfg.gateway_files, *(args.tail or [])]
     cfg.gateway_leases = [*cfg.gateway_leases, *(args.leases or [])]
     cfg.lan_networks = [*cfg.lan_networks, *(args.lan or [])]
@@ -398,6 +404,8 @@ def _apply_gateway(engine: Engine, args: argparse.Namespace) -> None:
             watch = engine.watcher(args.interval)
         except OSError as exc:  # port in use, or < 1024 without privileges
             raise SystemExit(f"error: cannot open a gateway listener: {exc}")
+        except ValueError as exc:  # a malformed --ssh target
+            raise SystemExit(f"error: {exc}")
         inputs = ", ".join(watch.gateway.inputs) if watch.gateway else ""
         print(f"Gateway mode: monitoring the network behind this router/firewall via {inputs}")
 
@@ -447,7 +455,7 @@ def cmd_blocklist(engine: Engine, args: argparse.Namespace) -> int:
 
 def cfg_listens(engine: Engine) -> bool:
     cfg = engine.config
-    return bool(cfg.gateway_syslog or cfg.gateway_netflow or cfg.gateway_files)
+    return bool(cfg.gateway_syslog or cfg.gateway_netflow or cfg.gateway_files or cfg.gateway_ssh)
 
 
 def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
@@ -710,6 +718,13 @@ def build_parser() -> argparse.ArgumentParser:
             "--netflow", metavar="[HOST:]PORT", help="receive NetFlow v5/v9/IPFIX (UDP), e.g. 2055"
         )
         g.add_argument("--conntrack", action="store_true", help="read the NAT table (run on the gateway)")
+        g.add_argument(
+            "--ssh", metavar="USER@ROUTER", help="read the router over SSH (key login), e.g. root@192.168.1.1"
+        )
+        g.add_argument("--ssh-port", type=int, help="SSH port on the router (default 22)")
+        g.add_argument(
+            "--ssh-key", metavar="FILE", help="private key for the router (default: ssh agent / ~/.ssh)"
+        )
         g.add_argument(
             "--tail", action="append", metavar="FILE", help="tail Zeek, Suricata eve.json or syslog files"
         )
