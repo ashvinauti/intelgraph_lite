@@ -120,6 +120,58 @@ made.
 * **Rolling window.** Flows stay in the live table for `gateway_window`
   seconds (default 300) after they were last seen.
 
+### The Network tab
+
+In gateway mode the dashboard's **Network** tab shows the network rather than
+one computer:
+
+* **Devices.** One card per device: its name (from DHCP, or one you give it),
+  IP address, how many connections, servers and sites, and whether anything it
+  touched is flagged. Flagged devices come first. Click a card to see the
+  device's alerts, MITRE ATT&CK techniques, connections and recent DNS lookups.
+  From there you can rename it, mute it, show it in the graph or ask the AI
+  analyst about it.
+* **Live DNS lookups.** Every lookup on the network as it happens, with the
+  device that made it and the domain's verdict. Filter it to flagged lookups or
+  pause it.
+* **Totals.** Devices, devices active now, flagged devices, open alerts and
+  lookups per minute.
+
+Names you give devices are kept across restarts and win over DHCP names.
+
+### Ubuntu laptop or PC as the gateway (one command)
+
+No spare router? Any Ubuntu machine with an ethernet port and a Wi-Fi card that
+supports access-point mode (`iw list` lists `* AP`) can be the gateway. It
+shares its wired connection to your router as a Wi-Fi hotspot, and IntelGraph
+Lite watches everything that goes through it:
+
+```
+your router ──ethernet──► Ubuntu machine (hotspot + IntelGraph Lite) ──Wi-Fi──► your devices
+```
+
+```bash
+git clone https://github.com/ashvinauti/intelgraph_lite.git && cd intelgraph_lite
+sudo scripts/gateway-hotspot.sh --ssid HomeSecure --password 'a-strong-password'
+```
+
+The script:
+1. Creates the hotspot.
+2. Turns on DNS and DHCP logging.
+3. Lets hotspot traffic past Docker's firewall rules, if Docker is installed.
+4. Installs IntelGraph Lite as the `iglite-gateway` service, which starts on boot.
+5. Keeps the machine awake with the lid closed.
+
+At the end it prints the dashboard address and API token. Use `--dry-run` to
+see every step first, and `--uninstall` to undo it.
+
+**No changes on any device.** Give the hotspot the same Wi-Fi name and
+password as your router, then turn off the router's own Wi-Fi. Every device
+then joins the hotspot by itself.
+
+A laptop hotspot suits about 5 to 15 devices in nearby rooms. For a whole
+house, use a router you can SSH into (below) or an access point.
+
 ### Connect over SSH (no router configuration)
 
 If your router lets you log in over SSH, IntelGraph Lite can read it directly.
@@ -415,6 +467,7 @@ Windows and macOS include one.
 
 * **Overview**: totals by verdict, a live network-activity chart (connections and flagged over time), recent alerts, and a box for investigating pasted indicators or reports.
 * **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
+* **Network** (gateway mode): every device on the network as a card, a detail panel per device, and a live feed of DNS lookups.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
 * **Graph**: two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
@@ -422,7 +475,7 @@ Windows and macOS include one.
 * **Analyst**: chat with the optional AI analyst (see below).
 * **Details panel**: why an indicator got its score, its connections and attributes, and a button to investigate again.
 
-Keyboard: `1`–`7` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`8` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -509,7 +562,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 141 offline tests, ~10 s
+.venv/bin/pytest            # 144 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

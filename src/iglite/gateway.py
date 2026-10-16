@@ -42,7 +42,7 @@ import struct
 import subprocess
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -757,6 +757,9 @@ class GatewayCollector:
         self.lan = Lan(cfg.lan_networks)
         self.senders = [ipaddress.ip_network(s, strict=False) for s in cfg.gateway_senders]
         self.devices: dict[str, str] = {str(k): str(v) for k, v in (cfg.devices or {}).items()}
+        self._named = set(self.devices)  # names you set (config or dashboard) win over DHCP
+        # Live feed for the dashboard: (time, device, domain), newest last.
+        self.lookups: deque[tuple[float, str, str]] = deque(maxlen=2000)
         self.stats = _Stats()
         self._lock = threading.Lock()
         self._flows: dict[tuple, int] = {}
@@ -905,11 +908,14 @@ class GatewayCollector:
         for path in self.cfg.gateway_leases:
             try:
                 text = Path(path).expanduser().read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:  # no device has joined yet; DHCP log lines name them later
+                continue
             except OSError as exc:
                 self._error(f"{path}: {exc.strerror or exc}")
                 continue
             for lease in parse_leases(text):
-                self.devices.setdefault(lease.ip, lease.name)
+                if lease.ip not in self._named:
+                    self.devices[lease.ip] = lease.name
 
     def _error(self, msg: str) -> None:
         self.stats.errors = [*self.stats.errors[-4:], msg[:200]]
@@ -928,7 +934,7 @@ class GatewayCollector:
         self.stats.events += 1
         with self._lock:
             if isinstance(event, Lease):
-                if event.ip not in (self.cfg.devices or {}):  # names you set win over DHCP
+                if event.ip not in self._named:  # names you set win over DHCP
                     self.devices[event.ip] = event.name
                 return
             if isinstance(event, DnsEvent):
@@ -970,8 +976,30 @@ class GatewayCollector:
                 inside = self.lan.inside(event.client)
             except ValueError:
                 inside = False
+            if inside:
+                self.lookups.append((time.time(), event.client, dom.value))
             if inside and (len(self._queries) < MAX_FLOWS or dom.value in self._queries):
                 self._queries.setdefault(dom.value, set()).add(event.client)
+
+    def set_name(self, ip: str, name: str | None) -> None:
+        """Name a device yourself (kept over DHCP names); ``None`` forgets your name."""
+        with self._lock:
+            if name:
+                self.devices[ip] = name
+                self._named.add(ip)
+            else:
+                self._named.discard(ip)
+                self.devices.pop(ip, None)
+
+    def learn_name(self, ip: str, name: str) -> None:
+        """A remembered DHCP name; anything learned since, or set by you, takes precedence."""
+        with self._lock:
+            self.devices.setdefault(ip, name)
+
+    def recent_lookups(self, since: float = 0.0, limit: int = 200) -> list[tuple[float, str, str]]:
+        with self._lock:
+            items = [x for x in self.lookups if x[0] > since]
+        return items[-limit:]
 
     # -- snapshot ------------------------------------------------------------------
 
