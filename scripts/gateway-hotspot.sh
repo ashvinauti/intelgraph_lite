@@ -69,6 +69,18 @@ fi
 [ -n "$SSID" ] || { echo "--ssid is required" >&2; usage 1; }
 [ "${#PASSWORD}" -ge 8 ] || { echo "--password must be at least 8 characters" >&2; exit 1; }
 
+# An updated nmcli talking to a NetworkManager that hasn't been restarted since the update
+# rejects new settings ("unknown property"). Catch that before changing anything.
+if [ "$DRY" = 0 ] && command -v nmcli >/dev/null; then
+  CLI_V="$(nmcli --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  NM_V="$(nmcli -g VERSION general 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  if [ -n "$CLI_V" ] && [ -n "$NM_V" ] && [ "$CLI_V" != "$NM_V" ]; then
+    echo "NetworkManager $NM_V is still running, but nmcli is $CLI_V (an update was installed)." >&2
+    echo "Run:  sudo systemctl restart NetworkManager   (or reboot), then run this script again." >&2
+    exit 1
+  fi
+fi
+
 # -- interfaces ---------------------------------------------------------------------------
 if [ -z "$WIFI" ]; then
   WIFI="$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}' || true)"
