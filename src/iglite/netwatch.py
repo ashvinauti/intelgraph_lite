@@ -298,6 +298,14 @@ class NetWatch:
         self.collector = collector
         self.origin = origin
         self.gateway = gateway  # the GatewayCollector in gateway mode, for its status
+        if gateway is not None:  # device names survive restarts: yours win, DHCP names fill gaps
+            for n in engine.store.search(kind=Kind.HOST.value, limit=5000):
+                if not (name := n["attrs"].get("name")):
+                    continue
+                if n["attrs"].get("name_source") == "user":
+                    gateway.set_name(n["value"], name)
+                else:
+                    gateway.learn_name(n["value"], name)
         self._checked: dict[str, float] = {}  # indicator key -> last investigated
         # key -> (verdict, when) already alerted; survives restarts via the store.
         self._alerted = engine.store.recent_alert_verdicts(time.time() - self.REALERT_AFTER)
@@ -538,6 +546,129 @@ class NetWatch:
             "alerts": new_alerts,
             "errors": report.errors if report else [],
         }
+
+    # -- devices (gateway mode) ---------------------------------------------------
+
+    def devices(self) -> list[dict[str, Any]]:
+        """One summary per LAN device: activity in the current window, worst verdict, alerts."""
+        rank = {"malicious": 0, "suspicious": 1, "pending": 2, "unknown": 3, "benign": 4, "private": 5}
+        out: dict[str, dict[str, Any]] = {}
+        for r in self.rows:
+            ip = r.get("device")
+            if not ip:
+                continue
+            d = out.setdefault(
+                ip,
+                {
+                    "ip": ip,
+                    "name": r.get("device_name"),
+                    "connections": 0,
+                    "remotes": set(),
+                    "lookups": set(),
+                    "flagged": 0,
+                    "worst": "private",
+                    "score": None,
+                    "active": False,
+                },
+            )
+            d["name"] = d["name"] or r.get("device_name")
+            if r["proto"] == "dns":
+                d["lookups"].add(r["remote_ip"])
+            else:
+                d["connections"] += r["count"]
+                d["remotes"].add(r["remote_ip"])
+                d["lookups"].update(r.get("names") or [])
+            d["active"] = d["active"] or r.get("state") in ("NEW", "QUERY")
+            if r["verdict"] in _FLAGGED:
+                d["flagged"] += 1
+            if rank.get(r["verdict"], 3) < rank.get(d["worst"], 3):
+                d["worst"] = r["verdict"]
+            if r.get("score") is not None and r["verdict"] in _FLAGGED:
+                d["score"] = max(d["score"] or 0, r["score"])
+        store = self.engine.store
+        nodes = {n["value"]: n for n in store.nodes(f"host:{ip}" for ip in out)}
+        alerts: dict[str, int] = {}
+        for a in store.alerts(limit=1000):
+            if (dev := (a["context"] or {}).get("device")) and a["status"] == "open":
+                alerts[dev] = alerts.get(dev, 0) + 1
+        result = []
+        for ip, d in out.items():
+            node = nodes.get(ip) or {}
+            result.append(
+                {
+                    **d,
+                    "name": (node.get("attrs") or {}).get("name") or d["name"],
+                    "remotes": len(d["remotes"]),
+                    "lookups": len(d["lookups"]),
+                    "open_alerts": alerts.get(ip, 0),
+                    "first_seen": node.get("first_seen"),
+                    "last_seen": node.get("last_seen"),
+                    "key": f"host:{ip}",
+                }
+            )
+        result.sort(key=lambda d: (rank.get(d["worst"], 3), -d["open_alerts"], -d["connections"], d["ip"]))
+        return result
+
+    def device(self, ip: str) -> dict[str, Any]:
+        """Everything about one device: its connections, recent lookups, alerts and techniques."""
+        from .attack import techniques_of
+
+        store = self.engine.store
+        key = f"host:{ip}"
+        node = store.node(key) or {"attrs": {}}
+        rows = [r for r in self.rows if r.get("device") == ip]
+        lookups = self.gateway.recent_lookups(limit=2000) if self.gateway is not None else []
+        mine = [(t, name) for t, dev, name in lookups if dev == ip][-100:]
+        verdicts = {n["value"]: n for n in store.nodes(f"domain:{name}" for _, name in mine)}
+        return {
+            "ip": ip,
+            "key": key,
+            "name": node["attrs"].get("name"),
+            "named_by_you": node["attrs"].get("name_source") == "user",
+            "first_seen": node.get("first_seen"),
+            "last_seen": node.get("last_seen"),
+            "connections": rows,
+            "lookups": [
+                {
+                    "at": t,
+                    "domain": name,
+                    "verdict": (verdicts.get(name) or {}).get("verdict"),
+                    "score": (verdicts.get(name) or {}).get("score"),
+                }
+                for t, name in reversed(mine)
+            ],
+            "alerts": [a for a in store.alerts(limit=1000) if (a["context"] or {}).get("device") == ip][:50],
+            "attack": techniques_of(store, key, associated=False),
+        }
+
+    def rename(self, ip: str, name: str | None) -> None:
+        """Give a device a name of your own (kept across restarts and over DHCP names)."""
+        host = Indicator(Kind.HOST, ip)
+        self.engine.store.upsert_node(host, {"name": name, "name_source": "user" if name else None})
+        if self.gateway is not None:
+            self.gateway.set_name(ip, name)
+        for r in self.rows:
+            if r.get("device") == ip:
+                r["device_name"] = name
+
+    def lookup_feed(self, since: float = 0.0, limit: int = 200) -> list[dict[str, Any]]:
+        """Recent DNS lookups across the network, newest first, with each domain's verdict."""
+        if self.gateway is None:
+            return []
+        items = self.gateway.recent_lookups(since, limit)
+        nodes = {n["value"]: n for n in self.engine.store.nodes({f"domain:{d}" for _, _, d in items})}
+        names = dict(self.gateway.devices)
+        return [
+            {
+                "at": t,
+                "device": dev,
+                "device_name": names.get(dev),
+                "domain": d,
+                "verdict": (nodes.get(d) or {}).get("verdict") or "pending",
+                "score": (nodes.get(d) or {}).get("score"),
+            }
+            for t, dev, d in reversed(items)
+        ]
 
     def _attack_on_alert(self, c: Connection, key: str) -> list[str]:
         """Outbound traffic to a flagged host suggests C2 over that port's protocol (ATT&CK)."""

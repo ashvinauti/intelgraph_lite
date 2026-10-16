@@ -587,3 +587,120 @@ def test_ssh_log_stream(monkeypatch):
 
     src.follow(got.append, stop, on_error)
     assert len(got) == 3 and "Connection reset" in errors[0]
+
+
+# -- the Network view: devices, lookups, names ------------------------------------------------
+
+
+def test_device_summaries_detail_feed_and_names(make_engine, feeds):
+    engine, gw, watch = _gateway(make_engine, feeds)
+    for line in (
+        "dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-7",
+        "dnsmasq[1]: query[A] evil-c2.example from 10.42.0.23",
+        "dnsmasq[1]: query[A] news.example from 10.42.0.23",
+        f"dnsmasq[1]: reply evil-c2.example is {BAD}",
+        "dnsmasq[1]: query[AAAA] weather.example from 10.42.0.40",
+        f"kernel: ACCEPT SRC=10.42.0.23 DST={BAD} PROTO=TCP SPT=50000 DPT=443",
+        "kernel: ACCEPT SRC=10.42.0.40 DST=8.8.8.8 PROTO=UDP SPT=1 DPT=53",
+    ):
+        gw.feed_line(line)
+    watch.scan()
+
+    devices = {d["ip"]: d for d in watch.devices()}
+    phone, other = devices["10.42.0.23"], devices["10.42.0.40"]
+    assert list(devices) == ["10.42.0.23", "10.42.0.40"]  # flagged first
+    assert (phone["name"], phone["worst"], phone["connections"], phone["remotes"]) == (
+        "pixel-7",
+        "malicious",
+        1,
+        1,
+    )
+    assert phone["lookups"] == 2 and phone["flagged"] == 2 and phone["open_alerts"] == 2 and phone["active"]
+    assert other["flagged"] == 0 and other["name"] is None
+
+    detail = watch.device("10.42.0.23")
+    assert [x["domain"] for x in detail["lookups"]] == ["news.example", "evil-c2.example"]  # newest first
+    assert detail["lookups"][1]["verdict"] == "malicious"
+    assert {a["key"] for a in detail["alerts"]} == {f"ip:{BAD}", "domain:evil-c2.example"}
+    assert [t["id"] for t in detail["attack"]] == ["T1071.001"]
+
+    feed = watch.lookup_feed()
+    assert [(x["device"], x["domain"]) for x in feed][:2] == [
+        ("10.42.0.40", "weather.example"),
+        ("10.42.0.23", "news.example"),
+    ]
+    assert feed[0]["verdict"] in ("pending", "unknown") and feed[0]["device_name"] is None
+
+    # A name you give wins over DHCP, now and after a restart.
+    watch.rename("10.42.0.23", "Ashvin's phone")
+    gw.feed_line("dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-7")
+    gw.feed_line(f"kernel: ACCEPT SRC=10.42.0.23 DST={BAD} PROTO=TCP SPT=50001 DPT=443")
+    watch.scan()
+    assert watch.device("10.42.0.23")["name"] == "Ashvin's phone"
+    gw2 = GatewayCollector(Config())
+    gw2.started = True
+    NetWatch(engine, collector=gw2.collect, origin=GATEWAY, gateway=gw2)
+    assert gw2.devices["10.42.0.23"] == "Ashvin's phone"
+    gw2.feed_line("dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-7")
+    assert gw2.devices["10.42.0.23"] == "Ashvin's phone"
+    watch.rename("10.42.0.23", None)  # clearing falls back to the DHCP name
+    gw.feed_line("dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-7")
+    assert gw.devices["10.42.0.23"] == "pixel-7"
+
+
+def test_network_api(make_engine, feeds):
+    engine, gw, watch = _gateway(make_engine, feeds)
+    engine._netwatch = watch
+    gw.feed_line("dnsmasq[1]: query[A] evil-c2.example from 10.42.0.23")
+    gw.feed_line(f"kernel: ACCEPT SRC=10.42.0.23 DST={BAD} PROTO=TCP SPT=50000 DPT=443")
+    watch.scan()
+    srv = make_server(engine, "127.0.0.1", 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def call(path, body=None):
+        req = urllib.request.Request(
+            base + path, data=json.dumps(body).encode() if body is not None else None
+        )
+        req.add_header("Content-Type", "application/json")
+        try:
+            with opener.open(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    try:
+        status, data = call("/api/devices")
+        assert (
+            status == 200 and data["status"]["mode"] == "gateway" and data["devices"][0]["ip"] == "10.42.0.23"
+        )
+        assert call("/api/device?ip=10.42.0.23")[1]["lookups"][0]["domain"] == "evil-c2.example"
+        assert call("/api/device?ip=nope")[0] == 400
+        assert (
+            call("/api/device/name", {"ip": "10.42.0.23", "name": "  Kids   tablet "})[1]["name"]
+            == "Kids tablet"
+        )
+        assert call("/api/devices")[1]["devices"][0]["name"] == "Kids tablet"
+        assert call("/api/device/name", {"ip": "evil.example", "name": "x"})[0] == 400
+        assert call("/api/lookups?limit=5")[1][0]["device_name"] == "Kids tablet"
+        assert call("/api/lookups?since=abc")[0] == 400
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_dhcp_names_are_remembered_across_restarts(make_engine, feeds):
+    engine, gw, watch = _gateway(make_engine, feeds)
+    gw.feed_line("dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-7")
+    gw.feed_line(f"kernel: ACCEPT SRC=10.42.0.23 DST={BAD} PROTO=TCP SPT=50000 DPT=443")
+    watch.scan()
+    gw2 = GatewayCollector(Config())
+    gw2.started = True
+    NetWatch(engine, collector=gw2.collect, origin=GATEWAY, gateway=gw2)
+    gw2.feed_line("dnsmasq[1]: query[A] news.example from 10.42.0.23")
+    assert gw2.devices["10.42.0.23"] == "pixel-7"
+    gw2.feed_line(
+        "dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-8"
+    )  # a newer DHCP name wins
+    assert gw2.devices["10.42.0.23"] == "pixel-8"

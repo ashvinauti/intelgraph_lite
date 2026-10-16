@@ -107,6 +107,13 @@ NetWatch.scan()  (the same watcher as host mode)
    └─ alerts carry the device, its name, and the ATT&CK technique inferred from the port
 ```
 
+`NetWatch.devices()` folds the current rows into one summary per device for
+the dashboard's Network tab. The collector also keeps the last 2,000 DNS
+lookups as a live feed. Device names you set are stored on the `host:` node
+(`name_source = user`), win over DHCP, and are reloaded at start.
+`scripts/gateway-hotspot.sh` turns an Ubuntu machine into a monitored Wi-Fi
+gateway: a NetworkManager hotspot, dnsmasq logging and a systemd service.
+
 The collector replaces the OS connection table as NetWatch's input, so
 scoring, alerting, suppression, AI triage and the dashboard work unchanged.
 The listeners accept datagrams only from private addresses (or
@@ -250,7 +257,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (141 tests, offline) | ~10 s |
+| Full test suite (144 tests, offline) | ~10 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 
