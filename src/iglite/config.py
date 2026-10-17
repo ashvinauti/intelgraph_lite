@@ -91,6 +91,10 @@ class Config:
     gateway_syslog: str | None = None  # "[host:]port" to receive syslog on, e.g. "0.0.0.0:5514"
     gateway_netflow: str | None = None  # "[host:]port" for NetFlow v5/v9/IPFIX, e.g. "0.0.0.0:2055"
     gateway_conntrack: bool = False  # read the kernel NAT table (when running on the gateway)
+    gateway_ssh: str | None = None  # "user@router": read it over SSH (key auth), nothing installed there
+    gateway_ssh_port: int = 22
+    gateway_ssh_key: str | None = None  # private key file; default: your SSH agent / ~/.ssh keys
+    gateway_ssh_logs: bool = True  # also follow the router's system log over the same SSH login
     gateway_files: list[str] = field(default_factory=list)  # logs to tail: Zeek, Suricata eve.json, syslog
     gateway_leases: list[str] = field(default_factory=list)  # DHCP lease files, for device names
     gateway_senders: list[str] = field(default_factory=list)  # exporters allowed; default: private IPs
@@ -117,7 +121,11 @@ class Config:
     def gateway(self) -> bool:
         """True when any gateway input is configured: monitor the network, not this computer."""
         return bool(
-            self.gateway_syslog or self.gateway_netflow or self.gateway_conntrack or self.gateway_files
+            self.gateway_syslog
+            or self.gateway_netflow
+            or self.gateway_conntrack
+            or self.gateway_ssh
+            or self.gateway_files
         )
 
     @property

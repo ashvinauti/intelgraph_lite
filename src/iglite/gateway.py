@@ -12,9 +12,14 @@ records, so every device behind it is covered (phones, TVs, servers):
 * **NetFlow v5/v9 and IPFIX** (UDP) from routers and firewalls.
 * **conntrack**: when IntelGraph Lite runs *on* a Linux/OpenWrt gateway, the
   kernel's NAT table (``/proc/net/nf_conntrack`` or ``conntrack -L``).
+* **SSH** into the router, with nothing installed on it: each scan reads its
+  connection table (conntrack, or ``pfctl -ss`` on pfSense/OPNsense) and DHCP
+  leases, and its system log is followed live (``logread -f`` / ``tail -F``).
+  Read-only commands, key authentication only.
 * **log files** it tails: Zeek ``conn.log`` / ``dns.log`` (TSV or JSON),
   Suricata ``eve.json`` (flow, dns and alert events - alerts carry ATT&CK
-  technique IDs), or any file the syslog formats above are written to.
+  technique IDs), a Squid web proxy ``access.log``, or any file the syslog
+  formats above are written to.
 
 Each flow is reduced to (LAN device, remote address, port). The device is the
 side inside the network, the remote is the public side; LAN-to-LAN traffic is
@@ -37,14 +42,15 @@ import struct
 import subprocess
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from .attack import ids_in
-from .extract import classify
+from .extract import classify, public_ip
 from .model import Kind
 from .netwatch import Connection, Snapshot
 
@@ -124,7 +130,7 @@ class Lan:
         addr = ipaddress.ip_address(ip)
         if self.networks:
             return any(addr in n for n in self.networks if n.version == addr.version)
-        return not addr.is_global
+        return not public_ip(ip)
 
     def orient(self, flow: Flow) -> tuple[str, str, int | None, bool] | None:
         """(device, remote, remote port, inbound) or None for internal / transit / non-public."""
@@ -132,9 +138,9 @@ class Lan:
             src_in, dst_in = self.inside(flow.src), self.inside(flow.dst)
         except ValueError:
             return None
-        if src_in and not dst_in and ipaddress.ip_address(flow.dst).is_global:
+        if src_in and not dst_in and public_ip(flow.dst):
             return flow.src, flow.dst, flow.dport, False
-        if dst_in and not src_in and ipaddress.ip_address(flow.src).is_global:
+        if dst_in and not src_in and public_ip(flow.src):
             return flow.dst, flow.src, flow.dport, True
         return None
 
@@ -161,6 +167,11 @@ _DNSMASQ_REPLY = re.compile(r"(?:reply|cached|forwarded-answer)\s+(\S+)\s+is\s+(
 _UNBOUND_QUERY = re.compile(r"info: ([\da-fA-F.:]+) (\S+?)\.? (?:A|AAAA|CNAME|MX|TXT|HTTPS|ANY|SRV) IN")
 _DHCP_ACK = re.compile(r"DHCPACK\([^)]*\)\s+([\d.]+)\s+(?:[0-9a-fA-F:]{17})\s+(\S+)")
 _VERDICT_WORDS = re.compile(r"\b(BLOCK|DROP|DENY|REJECT|ACCEPT|ALLOW|PASS)\b", re.I)
+# Squid native access.log: time elapsed client code/status bytes method url user hierarchy/peer type
+_SQUID = re.compile(
+    r"^\d+\.\d+\s+\d+\s+(?P<client>[\da-fA-F.:]+)\s+(?P<code>[A-Z_]+)/\d+\s+\d+\s+(?P<method>[A-Z]+)\s+"
+    r"(?P<url>\S+)\s+\S+\s+[A-Z_]+/(?P<peer>\S+)"
+)
 
 
 def _first(d: dict[str, str], keys: Iterable[str]) -> str | None:
@@ -237,9 +248,32 @@ def parse_paloalto(line: str) -> Flow | None:
     return Flow(src_ip, dst_ip, _port(f[t + 21]), _port(f[t + 22]), _proto(f[t + 26]), f[t + 27].lower())
 
 
+def parse_squid(line: str) -> list[Event]:
+    """A web proxy request: the device, the site's name, and the server address it reached."""
+    m = _SQUID.match(line.strip())
+    if not m or not (client := _ip(m.group("client"))):
+        return []
+    url = m.group("url")
+    host, port = (url.rsplit(":", 1) + ["443"])[:2] if m.group("method") == "CONNECT" else ("", "")
+    if not host:
+        parts = urlsplit(url)
+        host, port = parts.hostname or "", str(parts.port or (443 if parts.scheme == "https" else 80))
+    peer = _ip(m.group("peer"))
+    events: list[Event] = []
+    if host and not _ip(host):
+        events.append(DnsEvent(client, host.rstrip("."), (peer,) if peer else ()))
+    remote = peer or _ip(host)
+    if remote:
+        action = "block" if "DENIED" in m.group("code") else "pass"
+        events.append(Flow(client, remote, None, _port(port), "tcp", action))
+    return events
+
+
 def parse_text(line: str) -> list[Event]:
     """One syslog / log-file line in any of the supported text formats."""
     line = line[:MAX_LINE]
+    if _SQUID.match(line):
+        return parse_squid(line)
     if "filterlog" in line:
         return [f] if (f := parse_filterlog(line)) else []
     if ",TRAFFIC," in line:
@@ -393,7 +427,8 @@ def parse_conntrack(text: str) -> list[Flow]:
 def read_conntrack() -> str:
     path = Path("/proc/net/nf_conntrack")
     try:
-        return path.read_text()
+        if text := path.read_text().strip():  # present but empty (another namespace): try the tool
+            return text
     except OSError:
         pass
     try:
@@ -406,6 +441,142 @@ def read_conntrack() -> str:
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+_PF_STATE = re.compile(
+    r"^\S+\s+(?P<proto>tcp|udp|icmp6?|ipv6-icmp|sctp)\s+(?P<a>\S+)(?:\s+\((?P<a_orig>\S+)\))?\s+"
+    r"(?P<dir>->|<-)\s+(?P<b>\S+)(?:\s+\((?P<b_orig>\S+)\))?\s+(?P<state>\S+)"
+)
+
+
+def _pf_endpoint(text: str) -> tuple[str | None, int | None]:
+    """'192.168.1.23:50000' or 'fd00::23[50000]' -> (ip, port)."""
+    if text.endswith("]") and "[" in text:
+        host, _, port = text[:-1].rpartition("[")
+        return _ip(host), _port(port)
+    host, sep, port = text.rpartition(":")
+    if sep and "." in host:
+        return _ip(host), _port(port)
+    return _ip(text), None
+
+
+def parse_pf_states(text: str) -> list[Flow]:
+    """pfSense / OPNsense ``pfctl -ss``. NAT shows the LAN address in parentheses."""
+    out = []
+    for line in text.splitlines():
+        m = _PF_STATE.match(line.strip())
+        if not m or m.group("state").split(":")[0] in ("TIME_WAIT", "CLOSED", "FIN_WAIT_2"):
+            continue
+        a_ip, a_port = _pf_endpoint(m.group("a_orig") or m.group("a"))
+        b_ip, b_port = _pf_endpoint(m.group("b_orig") or m.group("b"))
+        if not a_ip or not b_ip:
+            continue
+        proto = "icmp" if m.group("proto").startswith(("icmp", "ipv6")) else m.group("proto")
+        if m.group("dir") == "->":  # a opened a connection to b
+            out.append(Flow(a_ip, b_ip, a_port, b_port, proto, "pass"))
+        else:  # "a <- b": b connected in to a
+            out.append(Flow(b_ip, a_ip, b_port, a_port, proto, "pass"))
+    return out
+
+
+# -- SSH: read the router with nothing installed on it --------------------------------------
+
+_LEASES_MARK = "#iglite-leases"
+# Fixed, read-only commands. The first that works wins: Linux conntrack, then pf (BSD).
+SSH_STATE_CMD = (
+    # "grep ." fails on an empty file, so an empty /proc table falls through to the next reader.
+    "grep . /proc/net/nf_conntrack 2>/dev/null || conntrack -L 2>/dev/null || pfctl -ss 2>/dev/null; "
+    f"echo '{_LEASES_MARK}'; "
+    "cat /tmp/dhcp.leases /var/lib/misc/dnsmasq.leases /tmp/dnsmasq.leases /var/dhcpd/var/db/dhcpd.leases "
+    "2>/dev/null; true"
+)
+SSH_LOG_CMD = (
+    "logread -f 2>/dev/null || exec tail -n 0 -F /tmp/syslog.log /var/log/messages /var/log/syslog "
+    "/var/log/filter.log /var/log/resolver.log 2>/dev/null"
+)
+_SSH_TARGET = re.compile(r"^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._:-]+$")
+
+
+def _ssh_error(target: str, stderr: str | None, default: str) -> str:
+    last = (stderr or "").strip().splitlines()
+    return (last[-1] if last else default).removeprefix(f"{target}: ")
+
+
+class SshSource:
+    """Runs fixed read-only commands on the router over the system's OpenSSH client.
+
+    Key authentication only (``BatchMode``): no password is ever stored or typed
+    here. Log in once by hand first so the router's host key is trusted.
+    """
+
+    def __init__(self, target: str, *, port: int = 22, key: str | None = None) -> None:
+        if not _SSH_TARGET.match(target or "") or target.startswith("-"):
+            raise ValueError(f"not an SSH target: {target!r} (expected user@host)")
+        self.target, self.port, self.key = target, int(port), key
+
+    def argv(self, command: str) -> list[str]:
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30"]
+        cmd += ["-p", str(self.port)]
+        if self.key:
+            cmd += ["-i", str(Path(self.key).expanduser())]
+        return [*cmd, "--", self.target, command]
+
+    def snapshot(self) -> tuple[list[Flow], list[Lease]]:
+        """The router's current connection table and DHCP leases."""
+        try:
+            done = subprocess.run(  # noqa: S603 - fixed argument list, no shell on this side
+                self.argv(SSH_STATE_CMD),
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("the 'ssh' command was not found; install an OpenSSH client")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"ssh {self.target}: timed out")
+        if done.returncode == 255:  # ssh itself failed: unreachable, refused, auth
+            raise RuntimeError(f"ssh {self.target}: {_ssh_error(self.target, done.stderr, 'failed')}")
+        table, _, leases = done.stdout.partition(_LEASES_MARK)
+        flows = parse_conntrack(table) if "src=" in table else parse_pf_states(table)
+        return flows, parse_leases(leases)
+
+    def follow(self, on_line: Any, stop: threading.Event, on_error: Any) -> None:
+        """Stream the router's log into ``on_line`` until ``stop``; reconnects with backoff."""
+        current: list[subprocess.Popen[str]] = []
+
+        def end_on_stop() -> None:  # reading blocks, so stopping means ending the ssh process
+            stop.wait()
+            for proc in current:
+                proc.terminate()
+
+        threading.Thread(target=end_on_stop, name="iglite-ssh-stop", daemon=True).start()
+        delay = 5.0
+        while not stop.is_set():
+            try:
+                proc = subprocess.Popen(  # noqa: S603 - fixed argument list, no shell on this side
+                    self.argv(SSH_LOG_CMD),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    errors="replace",
+                )
+            except FileNotFoundError:
+                on_error("the 'ssh' command was not found; install an OpenSSH client")
+                return
+            current[:] = [proc]
+            started = time.time()
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                on_line(line)
+            proc.wait()
+            if stop.is_set():
+                return
+            err = _ssh_error(self.target, proc.stderr.read() if proc.stderr else "", "connection closed")
+            on_error(f"ssh {self.target} log stream ended: {err}")
+            delay = 5.0 if time.time() - started > 60 else min(delay * 2, 300.0)
+            stop.wait(delay)
 
 
 # -- DHCP leases ------------------------------------------------------------------------
@@ -586,6 +757,9 @@ class GatewayCollector:
         self.lan = Lan(cfg.lan_networks)
         self.senders = [ipaddress.ip_network(s, strict=False) for s in cfg.gateway_senders]
         self.devices: dict[str, str] = {str(k): str(v) for k, v in (cfg.devices or {}).items()}
+        self._named = set(self.devices)  # names you set (config or dashboard) win over DHCP
+        # Live feed for the dashboard: (time, device, domain), newest last.
+        self.lookups: deque[tuple[float, str, str]] = deque(maxlen=2000)
         self.stats = _Stats()
         self._lock = threading.Lock()
         self._flows: dict[tuple, int] = {}
@@ -594,12 +768,18 @@ class GatewayCollector:
         self._answers: OrderedDict[str, list[str]] = OrderedDict()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self.extra_inputs: list[str] = []  # inputs fed in directly (the demo network)
         self._sockets: list[socket.socket] = []
         self.addresses: dict[str, tuple[str, int]] = {}  # bound listener addresses
         # Rolling window of what was seen: flow key -> (count, last seen); (domain, client) -> last seen.
         self._recent: dict[tuple, tuple[int, float]] = {}
         self._recent_queries: dict[tuple[str, str], float] = {}
         self.netflow = NetFlowParser()
+        self.ssh = (
+            SshSource(cfg.gateway_ssh, port=cfg.gateway_ssh_port, key=cfg.gateway_ssh_key)
+            if cfg.gateway_ssh
+            else None
+        )
         self.started = False
 
     # -- inputs ----------------------------------------------------------------
@@ -613,8 +793,10 @@ class GatewayCollector:
             out.append(f"netflow udp {self.cfg.gateway_netflow}")
         if self.cfg.gateway_conntrack:
             out.append("conntrack")
+        if self.ssh is not None:
+            out.append(f"ssh {self.ssh.target}")
         out += [f"file {p}" for p in self.cfg.gateway_files]
-        return out
+        return out + self.extra_inputs
 
     def start(self) -> None:
         if self.started:
@@ -627,6 +809,15 @@ class GatewayCollector:
             self._listen(_bind(self.cfg.gateway_netflow, 2055), self._on_netflow, "netflow")
         for path in self.cfg.gateway_files:
             self._spawn(self._tail, Path(path).expanduser(), name=f"iglite-tail-{Path(path).name}")
+        if self.ssh is not None and self.cfg.gateway_ssh_logs:
+            parser = LineParser()
+            self._spawn(
+                self.ssh.follow,
+                lambda line: self.feed_line(line, parser),
+                self._stop,
+                self._error,
+                name="iglite-ssh-log",
+            )
 
     def stop(self) -> None:
         self._stop.set()
@@ -718,11 +909,14 @@ class GatewayCollector:
         for path in self.cfg.gateway_leases:
             try:
                 text = Path(path).expanduser().read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:  # no device has joined yet; DHCP log lines name them later
+                continue
             except OSError as exc:
                 self._error(f"{path}: {exc.strerror or exc}")
                 continue
             for lease in parse_leases(text):
-                self.devices.setdefault(lease.ip, lease.name)
+                if lease.ip not in self._named:
+                    self.devices[lease.ip] = lease.name
 
     def _error(self, msg: str) -> None:
         self.stats.errors = [*self.stats.errors[-4:], msg[:200]]
@@ -741,7 +935,7 @@ class GatewayCollector:
         self.stats.events += 1
         with self._lock:
             if isinstance(event, Lease):
-                if event.ip not in (self.cfg.devices or {}):  # names you set win over DHCP
+                if event.ip not in self._named:  # names you set win over DHCP
                     self.devices[event.ip] = event.name
                 return
             if isinstance(event, DnsEvent):
@@ -783,8 +977,30 @@ class GatewayCollector:
                 inside = self.lan.inside(event.client)
             except ValueError:
                 inside = False
+            if inside:
+                self.lookups.append((time.time(), event.client, dom.value))
             if inside and (len(self._queries) < MAX_FLOWS or dom.value in self._queries):
                 self._queries.setdefault(dom.value, set()).add(event.client)
+
+    def set_name(self, ip: str, name: str | None) -> None:
+        """Name a device yourself (kept over DHCP names); ``None`` forgets your name."""
+        with self._lock:
+            if name:
+                self.devices[ip] = name
+                self._named.add(ip)
+            else:
+                self._named.discard(ip)
+                self.devices.pop(ip, None)
+
+    def learn_name(self, ip: str, name: str) -> None:
+        """A remembered DHCP name; anything learned since, or set by you, takes precedence."""
+        with self._lock:
+            self.devices.setdefault(ip, name)
+
+    def recent_lookups(self, since: float = 0.0, limit: int = 200) -> list[tuple[float, str, str]]:
+        with self._lock:
+            items = [x for x in self.lookups if x[0] > since]
+        return items[-limit:]
 
     # -- snapshot ------------------------------------------------------------------
 
@@ -800,6 +1016,14 @@ class GatewayCollector:
         if self.cfg.gateway_conntrack:
             for flow in parse_conntrack(read_conntrack()):
                 self.add(flow)
+        if self.ssh is not None:
+            try:
+                flows, leases = self.ssh.snapshot()
+            except RuntimeError as exc:
+                self._error(str(exc))
+            else:
+                for event in (*leases, *flows):
+                    self.add(event)
         now = time.time() if now is None else now
         cutoff = now - max(0.0, float(self.cfg.gateway_window))
         with self._lock:

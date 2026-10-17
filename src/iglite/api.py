@@ -12,6 +12,10 @@ Endpoints
     GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
     GET  /api/attack/technique?id=  one technique and its indicators
     GET  /api/attack/navigator      ATT&CK Navigator layer
+    GET  /api/devices               gateway mode: one summary per LAN device
+    GET  /api/device?ip=            one device: connections, DNS lookups, alerts, techniques
+    POST /api/device/name           {"ip": "...", "name": "..."} name a device (empty name clears)
+    GET  /api/lookups?since=        live feed of DNS lookups across the network
     GET  /api/blocklist/{ip,domain,url}.txt?suspicious=0&min_score=0
                                     plain-text feed for a firewall / DNS filter to pull
     POST /api/extract      {"text": "..."}
@@ -159,7 +163,7 @@ def _key(q: dict[str, str]) -> str:
 
 
 def _health(engine: Engine, q: dict, body: dict) -> Any:
-    return {"status": "ok", "version": __version__}
+    return {"status": "ok", "version": __version__, "demo": engine.demo}
 
 
 def _stats(engine: Engine, q: dict, body: dict) -> Any:
@@ -168,6 +172,18 @@ def _stats(engine: Engine, q: dict, body: dict) -> Any:
 
 def _sources(engine: Engine, q: dict, body: dict) -> Any:
     stats = engine.store.source_feedback_stats()
+    if engine.demo:  # the invented demo sources, not the real ones
+        listed = [
+            {
+                "name": s.name,
+                "status": "enabled",
+                "kinds": sorted(k.value for k in s.kinds),
+                "trust": s.trust,
+                "description": s.description,
+            }
+            for s in engine.sources
+        ]
+        return [{**s, **stats.get(s["name"], {"false_positives": 0, "confirmed": 0})} for s in listed]
     return [
         {**s, **stats.get(s["name"], {"false_positives": 0, "confirmed": 0})} for s in describe(engine.config)
     ]
@@ -301,6 +317,37 @@ def _blocklist(engine: Engine, q: dict, body: dict) -> Any:
         comments=_flag(q, "comments"),
     )
     return text, "text/plain; charset=utf-8"
+
+
+def _device_ip(raw: Any) -> str:
+    ind = classify(str(raw or ""))
+    if ind is None or ind.kind.value != "ip":
+        raise ApiError(HTTPStatus.BAD_REQUEST, "ip must be a device's IP address")
+    return ind.value
+
+
+def _devices(engine: Engine, q: dict, body: dict) -> Any:
+    watch = engine.watcher()
+    return {"status": watch.status(), "devices": watch.devices()}
+
+
+def _device(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.watcher().device(_device_ip(q.get("ip")))
+
+
+def _device_name(engine: Engine, q: dict, body: dict) -> Any:
+    ip = _device_ip(body.get("ip"))
+    name = " ".join(str(body.get("name") or "").split())[:60] or None
+    engine.watcher().rename(ip, name)
+    return {"ip": ip, "name": name}
+
+
+def _lookups(engine: Engine, q: dict, body: dict) -> Any:
+    try:
+        since = float(q.get("since") or 0)
+    except ValueError:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "since must be a number")
+    return engine.watcher().lookup_feed(since, _int(q, "limit", 200, 1000))
 
 
 def _watch_status(engine: Engine, q: dict, body: dict) -> Any:
@@ -484,6 +531,10 @@ ROUTES = {
     ("GET", "/api/watch"): _watch_status,
     ("POST", "/api/watch"): _watch_control,
     ("GET", "/api/connections"): _connections,
+    ("GET", "/api/devices"): _devices,
+    ("GET", "/api/device"): _device,
+    ("POST", "/api/device/name"): _device_name,
+    ("GET", "/api/lookups"): _lookups,
     ("GET", "/api/alerts"): _alerts,
     ("GET", "/api/watch/history"): _history,
     ("POST", "/api/trace"): _trace_start,
