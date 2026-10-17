@@ -141,6 +141,23 @@ def extract(text: str) -> list[Indicator]:
     return list(found.values())
 
 
+# Extra networks to treat as internet addresses. Empty in normal use; the demo adds
+# the documentation ranges (TEST-NET-1/2/3) so it can stage "internet" hosts without
+# naming any real one.
+_EXTRA_PUBLIC: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+
+
+def treat_as_public(networks: list[str]) -> None:
+    """Treat these networks as public internet addresses (demo and tests only)."""
+    _EXTRA_PUBLIC[:] = [ipaddress.ip_network(n) for n in networks]
+
+
+def public_ip(value: str) -> bool:
+    """True for an internet address (or one in a network added by ``treat_as_public``)."""
+    addr = ipaddress.ip_address(value)
+    return addr.is_global or any(addr in n for n in _EXTRA_PUBLIC if n.version == addr.version)
+
+
 def is_public(ind: Indicator) -> bool:
     """False for private, loopback, reserved addresses and internal names.
 
@@ -148,7 +165,7 @@ def is_public(ind: Indicator) -> bool:
     waste a request and leak internal infrastructure.
     """
     if ind.kind is Kind.IP:
-        return ipaddress.ip_address(ind.value).is_global
+        return public_ip(ind.value)
     if ind.kind is Kind.DOMAIN:
         return not ind.value.endswith((".local", ".internal", ".lan", ".corp", ".localhost"))
     return True

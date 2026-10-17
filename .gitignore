@@ -8,3 +8,4 @@ iglite.toml
 .env
 .env.*
 !.env.example
+dist/

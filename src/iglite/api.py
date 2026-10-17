@@ -163,7 +163,7 @@ def _key(q: dict[str, str]) -> str:
 
 
 def _health(engine: Engine, q: dict, body: dict) -> Any:
-    return {"status": "ok", "version": __version__}
+    return {"status": "ok", "version": __version__, "demo": engine.demo}
 
 
 def _stats(engine: Engine, q: dict, body: dict) -> Any:
@@ -172,6 +172,18 @@ def _stats(engine: Engine, q: dict, body: dict) -> Any:
 
 def _sources(engine: Engine, q: dict, body: dict) -> Any:
     stats = engine.store.source_feedback_stats()
+    if engine.demo:  # the invented demo sources, not the real ones
+        listed = [
+            {
+                "name": s.name,
+                "status": "enabled",
+                "kinds": sorted(k.value for k in s.kinds),
+                "trust": s.trust,
+                "description": s.description,
+            }
+            for s in engine.sources
+        ]
+        return [{**s, **stats.get(s["name"], {"false_positives": 0, "confirmed": 0})} for s in listed]
     return [
         {**s, **stats.get(s["name"], {"false_positives": 0, "confirmed": 0})} for s in describe(engine.config)
     ]
