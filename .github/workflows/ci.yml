@@ -19,3 +19,19 @@ jobs:
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: pytest -q
+
+  # One-file build for demos: download "iglite-pyz" from the run and `python iglite.pyz demo`.
+  pyz:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python scripts/build-pyz.py
+      - run: python dist/iglite.pyz --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iglite-pyz
+          path: dist/iglite.pyz

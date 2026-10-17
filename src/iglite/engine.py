@@ -84,6 +84,7 @@ class Engine:
         self._tracer: Tracer | None = None
         self._desk: Any = None
         self._triage: Any = None
+        self.demo = False  # set by ``iglite demo``: simulated network and invented intel
 
     def agent_desk(self) -> Any:
         """The AI analyst's job runner, created on first use (imports nothing until then)."""

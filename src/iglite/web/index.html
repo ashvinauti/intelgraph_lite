@@ -50,6 +50,8 @@
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
           border: 1px solid var(--line); background: var(--surface-1); cursor: pointer; white-space: nowrap; }
   .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-neutral); }
+  #demo-pill[hidden] { display: none; }
+  #demo-pill { background: color-mix(in srgb, var(--st-warning) 18%, transparent); border-color: var(--st-warning); font-weight: 600; }
   .pill.on .dot { background: var(--st-good); animation: pulse 2s infinite; }
   @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--st-good) 45%, transparent); }
                      50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--st-good) 0%, transparent); } }
@@ -307,6 +309,7 @@
     <a href="#indicators" data-view="indicators">Indicators</a>
     <a href="#analyst" data-view="analyst">Analyst</a>
   </nav>
+  <span class="pill" id="demo-pill" hidden title="Simulated network and invented threat intelligence: nothing here is real">Demo data</span>
   <button class="pill" id="watch-pill" title="Start or stop live network monitoring"><span class="dot"></span><span id="watch-label">Monitoring off</span></button>
   <button class="icon-btn" id="theme" title="Toggle light/dark theme">Dark</button>
 </header>
@@ -1757,6 +1760,7 @@ async function poll() {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshView(); Graph.kick(0.05); } });
 Graph.legend();
+api("/api/health").then(h => { $("demo-pill").hidden = !h.demo; }).catch(() => {});
 Triage.refreshStatus();
 route();
 poll();

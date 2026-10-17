@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from .attack import ids_in
-from .extract import classify
+from .extract import classify, public_ip
 from .model import Kind
 from .netwatch import Connection, Snapshot
 
@@ -130,7 +130,7 @@ class Lan:
         addr = ipaddress.ip_address(ip)
         if self.networks:
             return any(addr in n for n in self.networks if n.version == addr.version)
-        return not addr.is_global
+        return not public_ip(ip)
 
     def orient(self, flow: Flow) -> tuple[str, str, int | None, bool] | None:
         """(device, remote, remote port, inbound) or None for internal / transit / non-public."""
@@ -138,9 +138,9 @@ class Lan:
             src_in, dst_in = self.inside(flow.src), self.inside(flow.dst)
         except ValueError:
             return None
-        if src_in and not dst_in and ipaddress.ip_address(flow.dst).is_global:
+        if src_in and not dst_in and public_ip(flow.dst):
             return flow.src, flow.dst, flow.dport, False
-        if dst_in and not src_in and ipaddress.ip_address(flow.src).is_global:
+        if dst_in and not src_in and public_ip(flow.src):
             return flow.dst, flow.src, flow.dport, True
         return None
 
@@ -768,6 +768,7 @@ class GatewayCollector:
         self._answers: OrderedDict[str, list[str]] = OrderedDict()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self.extra_inputs: list[str] = []  # inputs fed in directly (the demo network)
         self._sockets: list[socket.socket] = []
         self.addresses: dict[str, tuple[str, int]] = {}  # bound listener addresses
         # Rolling window of what was seen: flow key -> (count, last seen); (domain, client) -> last seen.
@@ -795,7 +796,7 @@ class GatewayCollector:
         if self.ssh is not None:
             out.append(f"ssh {self.ssh.target}")
         out += [f"file {p}" for p in self.cfg.gateway_files]
-        return out
+        return out + self.extra_inputs
 
     def start(self) -> None:
         if self.started:

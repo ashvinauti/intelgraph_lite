@@ -52,7 +52,54 @@ iglite serve --host 0.0.0.0 --syslog 5514 --netflow 2055
 # MITRE ATT&CK techniques behind what you've seen
 iglite attack                    # matrix by tactic
 iglite attack navigator -o layer.json
+
+# Show it to someone: a simulated network with a minute of incidents, nothing to set up
+iglite demo
 ```
+
+## Demo for other teams
+
+`iglite demo` runs the real dashboard and the real pipeline on a **simulated home
+network**: eight devices browsing, DHCP names, DNS lookups, and a minute of
+scripted incidents. It needs no setup: no keys, no router, no admin rights, no
+internet. The intelligence is invented, every "internet" address is in the
+documentation ranges (TEST-NET) and every name ends in `.example`. It runs on a
+throwaway database, so your own `~/.iglite` is never touched.
+
+```bash
+iglite demo                         # opens http://127.0.0.1:8765/#network
+iglite demo --speed 2               # incidents play twice as fast
+iglite demo --host 0.0.0.0          # let others on your network watch (prints an API token)
+```
+
+**One file to share.** `python scripts/build-pyz.py` builds `dist/iglite.pyz`
+(about 200 KB). Each CI run also uploads it as the **iglite-pyz** artifact. Anyone with
+Python 3.11+ on Windows, macOS or Linux runs it with nothing to install:
+
+```bash
+python iglite.pyz demo              # Windows: py iglite.pyz demo
+python iglite.pyz --help            # it is the full tool, not just the demo
+```
+
+With Docker: `docker run --rm -p 8765:8765 iglite iglite demo --host 0.0.0.0 --no-browser`.
+
+**What happens, and what to point at** (times at `--speed 1`):
+
+| When | What happens | What to show |
+|------|--------------|--------------|
+| start | A threat brief is ingested and investigated | ATT&CK tab: techniques from the report |
+| ~3 s | The iPhone loads a shared CDN whose address one feed listed long ago | It is *not* flagged: the entry is stale and the name is known-good |
+| ~6 s | The Kids-iPad opens a phishing link | Device turns red; alert; T1566.002 |
+| ~12 s | The Smart-Plug beacons to a C2 server on port 4444; the IDS fires | Alert; T1071 *observed* and T1571 |
+| ~20 s | The Work-Laptop downloads a dropper | Alert; T1105; click it for the graph |
+| ~28 s | The LG TV joins a crypto-mining pool | Alert; T1496 |
+| ~36 s | An internet scanner reaches the NAS on SSH | *Suspicious* only: worth a look, not an alert |
+
+Good stops along the way: click a device in the **Network** tab to see its
+connections and lookups; open an alert and read *why* it scored that way; mark
+something a false positive and see it counted against the source that reported it; export STIX or an
+ATT&CK Navigator layer. If `ANTHROPIC_API_KEY` is set, the **Analyst** tab works too
+(`pip install anthropic` for the one-file build).
 
 ## Live network monitoring
 
@@ -562,7 +609,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 144 offline tests, ~10 s
+.venv/bin/pytest            # 147 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 
