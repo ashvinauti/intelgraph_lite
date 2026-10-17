@@ -147,7 +147,7 @@ if [ "$SERVICE" = 1 ]; then
   say "Installing IntelGraph Lite from $REPO into $PREFIX"
   run apt-get install -y -q python3-venv conntrack
   [ -x "$PREFIX/venv/bin/python" ] || run python3 -m venv "$PREFIX/venv"
-  run "$PREFIX/venv/bin/pip" install -q --upgrade "$REPO"
+  run "$PREFIX/venv/bin/pip" install -q --upgrade "${REPO}[ai]"   # [ai]: the AI analyst and triage
   run mkdir -p "$DATA"
   if [ "$DRY" = 1 ] || [ ! -f "$ETC/.env" ]; then
     [ -n "$TOKEN" ] || TOKEN="$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
