@@ -1315,9 +1315,13 @@ const Drawer = {
       try { await navigator.clipboard.writeText(n.value); ev.target.textContent = "Copied"; } catch (e) { ev.target.textContent = "Copy failed"; } } }, "Copy");
     fill($("drawer"),
       this.head(n.kind === "host" ? (n.value === "this-computer" ? "this computer" : n.value === "gateway" ? "gateway" : "device") : n.kind),
-      el("div", { style: "display:flex;gap:14px;align-items:center;margin-top:10px" },
-        el("div", { class: "big-score", title: "Score 0–100" }, a.score), el("div", {}, badge(a.verdict), el("div", { class: "mono", style: "margin-top:4px" }, n.value))),
-      el("div", { class: "meter", title: `score ${a.score} of 100` }, el("div", { style: `width:${a.score}%;--c:var(${VCOLOR[a.verdict] || "--st-neutral"})` })),
+      LOOKUP_KINDS.has(n.kind)
+        ? el("div", { style: "display:flex;gap:14px;align-items:center;margin-top:10px" },
+            el("div", { class: "big-score", title: "Score 0–100" }, a.score), el("div", {}, badge(a.verdict), el("div", { class: "mono", style: "margin-top:4px" }, n.value)))
+        // devices, programs, techniques, tags...: context, not scored, so no score or meter
+        : el("div", { style: "margin-top:10px" }, n.attrs && (n.attrs.name || n.attrs["attack.name"]) ? el("div", { style: "font-size:18px;font-weight:600" }, n.attrs.name || n.attrs["attack.name"]) : null,
+            el("div", { class: "mono", style: "margin-top:4px" }, n.value)),
+      LOOKUP_KINDS.has(n.kind) ? el("div", { class: "meter", title: `score ${a.score} of 100` }, el("div", { style: `width:${a.score}%;--c:var(${VCOLOR[a.verdict] || "--st-neutral"})` })) : null,
       a.override ? el("div", { class: a.override === "false_positive" ? "ok" : "warn", role: "note" },
         el("b", {}, a.override === "false_positive" ? "You marked this a false positive. " : "You confirmed this is malicious. "),
         "Your mark overrides the computed verdict; the evidence below is kept for reference. ",
