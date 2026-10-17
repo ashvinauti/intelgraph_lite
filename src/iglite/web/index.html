@@ -50,6 +50,8 @@
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
           border: 1px solid var(--line); background: var(--surface-1); cursor: pointer; white-space: nowrap; }
   .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-neutral); }
+  #demo-pill[hidden] { display: none; }
+  #demo-pill { background: color-mix(in srgb, var(--st-warning) 18%, transparent); border-color: var(--st-warning); font-weight: 600; }
   .pill.on .dot { background: var(--st-good); animation: pulse 2s infinite; }
   @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--st-good) 45%, transparent); }
                      50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--st-good) 0%, transparent); } }
@@ -254,6 +256,23 @@
   .chat-input { display: flex; gap: 8px; align-items: flex-end; }
   .chat-input textarea { flex: 1; min-height: 46px; max-height: 200px; }
 
+  /* network (gateway) view */
+  .dgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+  .dcard { text-align: left; background: var(--surface-1); border: 1px solid var(--line); border-left: 4px solid var(--c, var(--st-neutral));
+           border-radius: 8px; padding: 10px 12px; cursor: pointer; min-width: 0; }
+  .dcard:hover, .dcard[aria-pressed="true"] { border-color: var(--accent); }
+  .dcard .nm { font-weight: 600; display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dcard .ip { font: 11.5px ui-monospace, monospace; color: var(--text-muted); }
+  .dcard .st { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+  .dcard .fl { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-neutral); flex: none; }
+  .live-dot.on { background: var(--st-good); }
+  .pill-n { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
+  .pill-n.bad { background: color-mix(in srgb, var(--st-critical) 15%, transparent); border-color: var(--st-critical); }
+  ul.feed.lookups li { grid-template-columns: auto 1fr auto; align-items: center; }
+  ul.feed.lookups .who { grid-column: 2 / 4; font-size: 12px; color: var(--text-secondary); }
+  .steps-list li { margin: 4px 0; }
+
   /* ATT&CK matrix */
   .matrix { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); gap: 8px; overflow-x: auto; padding-bottom: 6px; }
   .matrix .col { min-width: 0; }
@@ -283,12 +302,14 @@
   <nav aria-label="Views">
     <a href="#overview" data-view="overview">Overview</a>
     <a href="#live" data-view="live">Live network<span class="count" id="flag-count" hidden></span></a>
+    <a href="#network" data-view="network">Network</a>
     <a href="#routes" data-view="routes">Routes</a>
     <a href="#graph" data-view="graph">Graph</a>
     <a href="#attack" data-view="attack">ATT&amp;CK</a>
     <a href="#indicators" data-view="indicators">Indicators</a>
     <a href="#analyst" data-view="analyst">Analyst</a>
   </nav>
+  <span class="pill" id="demo-pill" hidden title="Simulated network and invented threat intelligence: nothing here is real">Demo data</span>
   <button class="pill" id="watch-pill" title="Start or stop live network monitoring"><span class="dot"></span><span id="watch-label">Monitoring off</span></button>
   <button class="icon-btn" id="theme" title="Toggle light/dark theme">Dark</button>
 </header>
@@ -334,7 +355,7 @@
         </div>
       </div>
     </div>
-    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>7</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
+    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>8</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
   </section>
 
   <!-- LIVE NETWORK -->
@@ -351,6 +372,44 @@
     </div>
     <p class="muted" id="live-status" style="margin:0 0 10px"></p>
     <div class="table-wrap"><table id="live-table"></table></div>
+  </section>
+
+  <!-- NETWORK (gateway mode) -->
+  <section class="view" id="view-network">
+    <div id="nw-empty" class="card" hidden>
+      <h2>Monitor every device on your network</h2>
+      <p>This tab shows each device behind your internet gateway: what it connects to, which sites it looks up, and anything flagged. It needs gateway mode. Start IntelGraph Lite on the machine your traffic goes through, for example:</p>
+      <ul class="steps-list">
+        <li><b>Ubuntu laptop as a Wi-Fi hotspot</b>: <span class="mono">sudo -E iglite serve --conntrack --tail /var/log/hotspot-dns.log</span> (or run <span class="mono">scripts/gateway-hotspot.sh</span> to set everything up)</li>
+        <li><b>Router you can log in to</b>: <span class="mono">iglite serve --ssh root@192.168.1.1</span></li>
+        <li><b>Router or firewall that sends logs</b>: <span class="mono">iglite serve --syslog 5514 --netflow 2055</span></li>
+        <li><b>Pi-hole</b>: <span class="mono">iglite serve --tail /var/log/pihole/pihole.log</span></li>
+      </ul>
+      <p class="muted" style="margin:0">Right now IntelGraph Lite is watching this computer only (see Live network).</p>
+    </div>
+    <div id="nw-main">
+      <div class="toolbar">
+        <input type="search" class="grow" id="nw-q" placeholder="Filter devices by name or IP">
+        <label class="check"><input type="checkbox" id="nw-flagged"> Flagged devices only</label>
+      </div>
+      <p class="muted" id="nw-status" style="margin:0 0 10px"></p>
+      <div class="tiles" id="nw-tiles"></div>
+      <div class="grid two" style="margin-top:16px">
+        <div class="grid">
+          <div class="card">
+            <div class="card-head"><h2>Devices</h2><span class="muted" style="font-size:12px">Click a device for its connections, lookups and alerts</span></div>
+            <div class="dgrid" id="nw-devices"></div>
+          </div>
+          <div class="card" id="nw-detail-card" hidden><div id="nw-detail"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Live DNS lookups</h2>
+            <span class="toolbar" style="margin:0"><label class="check"><input type="checkbox" id="nw-feed-flagged"> Flagged only</label>
+            <button class="ghost small" id="nw-pause" aria-pressed="false">Pause</button></span></div>
+          <ul class="feed lookups" id="nw-feed"></ul>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- ROUTES -->
@@ -452,17 +511,25 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
 };
-let token = null;
-try { token = sessionStorage.getItem("iglite-token"); } catch (e) {}
+let token = null, tokenCancelled = false;
+try { token = sessionStorage.getItem("iglite-token") || null; } catch (e) {}
 
 async function api(path, body) {
+  const used = token;
   const headers = { "Content-Type": "application/json" };
-  if (token) headers.Authorization = "Bearer " + token;
+  if (used) headers.Authorization = "Bearer " + used;
   const res = await fetch(path, body ? { method: "POST", headers, body: JSON.stringify(body) } : { headers });
   if (res.status === 401) {
-    token = prompt("API token");
-    try { sessionStorage.setItem("iglite-token", token || ""); } catch (e) {}
-    if (!token) throw new Error("unauthorised");
+    // Several requests start at once; only the first refusal asks. The rest retry with the
+    // token entered meanwhile instead of opening another box.
+    if (token === used) {
+      if (tokenCancelled) throw new Error("unauthorised");
+      const entered = (prompt(used ? "That API token was not accepted. API token:" : "API token") || "").trim();
+      token = entered || null;
+      tokenCancelled = !entered;
+      try { sessionStorage.setItem("iglite-token", token || ""); } catch (e) {}
+      if (!token) throw new Error("unauthorised");
+    }
     return api(path, body);
   }
   const data = await res.json();
@@ -541,7 +608,7 @@ applyTheme(store.get("iglite-theme"));
 $("theme").onclick = () => { const next = isDark() ? "light" : "dark"; applyTheme(next); store.set("iglite-theme", next); };
 
 /* ---------- routing & shortcuts ---------- */
-const VIEWS = ["overview", "live", "routes", "graph", "attack", "indicators", "analyst"];
+const VIEWS = ["overview", "live", "network", "routes", "graph", "attack", "indicators", "analyst"];
 let view = "overview";
 function route() {
   view = (location.hash || "#overview").slice(1);
@@ -555,9 +622,9 @@ window.addEventListener("hashchange", route);
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { Drawer.close(); Tip.hide(); return; }
   if (e.target.matches("input, textarea, select") || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key >= "1" && e.key <= "7") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
+  if (e.key >= "1" && e.key <= "8") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
   if (e.key === "/") {
-    const box = { live: "live-q", routes: "r-target", graph: "g-add", attack: "at-q", indicators: "i-q", overview: "inv-text", analyst: "a-q" }[view];
+    const box = { live: "live-q", network: "nw-q", routes: "r-target", graph: "g-add", attack: "at-q", indicators: "i-q", overview: "inv-text", analyst: "a-q" }[view];
     if (box) { $(box).focus(); e.preventDefault(); }
   }
 });
@@ -1051,6 +1118,104 @@ $("i-q").oninput = () => { clearTimeout(iTimer); iTimer = setTimeout(() => Indic
 $("i-verdict").onchange = $("i-kind").onchange = () => Indicators.reset();
 $("i-more").onclick = () => Indicators.load();
 
+/* ---------- network: devices behind the gateway ---------- */
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const Network = {
+  devices: [], status: null, selected: null, feed: [], paused: false,
+  async refresh() {
+    let data;
+    try { data = await api("/api/devices"); } catch (e) { $("nw-status").textContent = e.message; return; }
+    this.status = data.status; this.devices = data.devices;
+    const gateway = data.status.mode === "gateway";
+    $("nw-empty").hidden = gateway; $("nw-main").hidden = !gateway;
+    if (!gateway) return;
+    if (!this.paused) await this.pullFeed();
+    this.render();
+    if (this.selected) await this.show(this.selected, false);
+  },
+  async pullFeed() {
+    // Newest 400 lookups with current verdicts: domains get checked a moment after they're seen.
+    this.feed = await api("/api/lookups?limit=400");
+  },
+  label(d) { return d.name || d.device_name || d.ip || d.device; },
+  render() {
+    const st = this.status, gw = st.gateway || {}, ds = this.devices;
+    const flaggedDevices = ds.filter(d => d.flagged), alerts = ds.reduce((n, d) => n + d.open_alerts, 0);
+    const lastMin = this.feed.filter(x => x.at > Date.now() / 1000 - 60).length;
+    $("nw-status").textContent = `Gateway via ${(gw.inputs || []).join(", ")} · ${st.running ? `checking every ${st.interval}s` : "monitoring stopped"}` +
+      (st.last_scan ? ` · last scan ${timeAgo(st.last_scan)}` : "") + ((gw.errors || []).length ? ` · input error: ${gw.errors[gw.errors.length - 1]}` : "");
+    const tiles = [
+      ["Devices", ds.length, null, () => { $("nw-flagged").checked = false; this.render(); }],
+      ["Active now", ds.filter(d => d.active).length, null, null],
+      ["Flagged devices", flaggedDevices.length, flaggedDevices.length ? "malicious" : null, () => { $("nw-flagged").checked = true; this.render(); }],
+      ["Open alerts", alerts, null, () => { location.hash = "#overview"; }],
+      ["Lookups / min", lastMin, null, null],
+    ];
+    fill($("nw-tiles"), tiles.map(([label, value, verdict, go]) => el("button", { class: "tile", onclick: go, style: go ? null : "cursor:default" },
+      el("div", { class: "label" }, verdict ? badge(verdict) : null, label), el("div", { class: "value" }, value.toLocaleString()))));
+    const q = $("nw-q").value.trim().toLowerCase(), onlyFlagged = $("nw-flagged").checked;
+    const shown = ds.filter(d => (!onlyFlagged || d.flagged) && (!q || [d.ip, d.name].some(s => s && s.toLowerCase().includes(q))));
+    fill($("nw-devices"), shown.length ? shown.map(d => el("button", { class: "dcard", "aria-pressed": String(this.selected === d.ip),
+        style: `--c:var(${d.flagged ? VCOLOR[d.worst] : "--st-good"})`, onclick: () => this.show(d.ip), title: `${d.ip}${d.first_seen ? " · first seen " + timeAgo(d.first_seen) : ""}` },
+      el("div", { class: "nm" }, el("span", { class: "live-dot" + (d.active ? " on" : ""), title: d.active ? "active in the last scan" : "seen recently" }), this.label(d)),
+      el("div", { class: "ip" }, d.ip),
+      el("div", { class: "st" }, `${plural(d.connections, "connection")} · ${plural(d.remotes, "server")} · ${plural(d.lookups, "site")}`),
+      el("div", { class: "fl" }, d.flagged ? badge(d.worst, d.score) : el("span", { class: "pill-n" }, "nothing flagged"),
+        d.open_alerts ? el("span", { class: "pill-n bad" }, `${d.open_alerts} alert${d.open_alerts > 1 ? "s" : ""}`) : null)))
+      : el("p", { class: "empty", style: "grid-column:1/-1" }, ds.length ? "No device matches the filter." : "No devices seen yet. Traffic appears within one scan of reaching the gateway."));
+    const feedFlagged = $("nw-feed-flagged").checked;
+    const items = this.feed.filter(x => !feedFlagged || x.verdict === "malicious" || x.verdict === "suspicious").slice(0, 150);
+    fill($("nw-feed"), items.length ? items.map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
+      badge(x.verdict, x.score), el("span", { class: "mono" }, x.domain), el("span", { class: "muted nowrap", style: "font-size:12px" }, clock(x.at)),
+      el("span", { class: "who" }, this.label(x), x.device_name ? el("span", { class: "muted" }, ` ${x.device}`) : null)))
+      : el("li", { class: "muted", style: "display:block;cursor:default" }, feedFlagged ? "No flagged lookups yet." : "No DNS lookups yet. They appear here as devices browse (needs DNS logs: dnsmasq, Pi-hole, Unbound, Zeek or Suricata)."));
+  },
+  async show(ip, scroll = true) {
+    this.selected = ip;
+    document.querySelectorAll(".dcard").forEach(b => b.setAttribute("aria-pressed", String(b.querySelector(".ip").textContent === ip)));
+    let d;
+    try { d = await api("/api/device?ip=" + encodeURIComponent(ip)); } catch (e) { return; }
+    const card = $("nw-detail-card"); card.hidden = false;
+    const name = d.name || ip;
+    const conns = d.connections.filter(r => r.proto !== "dns");
+    fill($("nw-detail"),
+      el("div", { class: "card-head" }, el("h2", { style: "text-transform:none;letter-spacing:0;font-size:15px;color:var(--text-primary)" }, name,
+        d.name ? el("span", { class: "muted mono", style: "font-weight:400;margin-left:8px;font-size:12px" }, ip) : null),
+        el("button", { class: "icon-btn", "aria-label": "Close device", onclick: () => { this.selected = null; card.hidden = true; this.render(); } }, "✕")),
+      el("p", { class: "muted", style: "margin:0 0 8px;font-size:12px" }, d.first_seen ? `First seen ${timeAgo(d.first_seen)} · last ${timeAgo(d.last_seen)}` : ""),
+      el("div", { class: "actions" },
+        el("button", { class: "ghost", onclick: () => this.rename(ip, d.name) }, d.name ? "Rename" : "Name this device"),
+        el("button", { class: "ghost", title: "Never raise alerts for this device's traffic", onclick: () => Feedback.suppress("device", ip) }, "Mute device"),
+        el("button", { class: "ghost", onclick: () => Graph.focus(d.key) }, "Show in graph"),
+        el("button", { class: "ghost", onclick: () => Analyst.send(`What has the device ${name} (${ip}) on my network been doing? Is anything it connects to or looks up dangerous?`) }, "Ask analyst")),
+      d.alerts.length ? el("h3", {}, `Alerts (${d.alerts.length})`) : null,
+      d.alerts.length ? el("ul", { class: "links" }, d.alerts.slice(0, 10).map(a => el("li", { onclick: () => Drawer.open(a.key) },
+        badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted", style: "margin-left:auto" }, a.status === "open" ? timeAgo(a.at) : a.status.replace("_", " "))))) : null,
+      d.attack.length ? el("h3", {}, `MITRE ATT&CK (${d.attack.length})`) : null,
+      d.attack.length ? AttackView.list(d.attack) : null,
+      el("h3", {}, `Connections (${conns.length})`),
+      conns.length ? el("ul", { class: "links" }, conns.slice(0, 40).map(r => el("li", { onclick: () => Drawer.open(r.key) },
+        badge(r.verdict, r.score), el("span", { class: "mono" }, `${r.inbound ? "← " : ""}${r.remote_ip}:${r.remote_port}`),
+        el("span", { class: "muted mono", style: "margin-left:auto" }, (r.names || []).join(", ")))))
+        : el("p", { class: "muted" }, "No connections in the current window."),
+      el("h3", {}, `Recent lookups (${d.lookups.length})`),
+      d.lookups.length ? el("ul", { class: "links" }, d.lookups.slice(0, 40).map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
+        badge(x.verdict || "pending", x.score), el("span", { class: "mono" }, x.domain), el("span", { class: "muted", style: "margin-left:auto" }, clock(x.at)))))
+        : el("p", { class: "muted" }, "No DNS lookups seen from this device yet."));
+    if (scroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  },
+  async rename(ip, current) {
+    const name = prompt(`Name for ${ip} (leave empty to use its DHCP name)`, current || "");
+    if (name === null) return;
+    try { await api("/api/device/name", { ip, name }); } catch (e) { alert(e.message); return; }
+    await this.refresh();
+  },
+};
+$("nw-q").oninput = () => Network.render();
+$("nw-flagged").onchange = () => Network.render();
+$("nw-feed-flagged").onchange = () => Network.render();
+$("nw-pause").onclick = ev => { Network.paused = !Network.paused; ev.target.setAttribute("aria-pressed", String(Network.paused)); ev.target.textContent = Network.paused ? "Resume" : "Pause"; };
+
 /* ---------- MITRE ATT&CK ---------- */
 const BASIS_TITLE = { reported: "A threat feed or report author mapped it", observed: "Your IDS saw it (signature metadata)",
   inferred: "Guessed from a feed tag or from traffic to a flagged host", report: "Named in a report you ingested",
@@ -1153,9 +1318,13 @@ const Drawer = {
       try { await navigator.clipboard.writeText(n.value); ev.target.textContent = "Copied"; } catch (e) { ev.target.textContent = "Copy failed"; } } }, "Copy");
     fill($("drawer"),
       this.head(n.kind === "host" ? (n.value === "this-computer" ? "this computer" : n.value === "gateway" ? "gateway" : "device") : n.kind),
-      el("div", { style: "display:flex;gap:14px;align-items:center;margin-top:10px" },
-        el("div", { class: "big-score", title: "Score 0–100" }, a.score), el("div", {}, badge(a.verdict), el("div", { class: "mono", style: "margin-top:4px" }, n.value))),
-      el("div", { class: "meter", title: `score ${a.score} of 100` }, el("div", { style: `width:${a.score}%;--c:var(${VCOLOR[a.verdict] || "--st-neutral"})` })),
+      LOOKUP_KINDS.has(n.kind)
+        ? el("div", { style: "display:flex;gap:14px;align-items:center;margin-top:10px" },
+            el("div", { class: "big-score", title: "Score 0–100" }, a.score), el("div", {}, badge(a.verdict), el("div", { class: "mono", style: "margin-top:4px" }, n.value)))
+        // devices, programs, techniques, tags...: context, not scored, so no score or meter
+        : el("div", { style: "margin-top:10px" }, n.attrs && (n.attrs.name || n.attrs["attack.name"]) ? el("div", { style: "font-size:18px;font-weight:600" }, n.attrs.name || n.attrs["attack.name"]) : null,
+            el("div", { class: "mono", style: "margin-top:4px" }, n.value)),
+      LOOKUP_KINDS.has(n.kind) ? el("div", { class: "meter", title: `score ${a.score} of 100` }, el("div", { style: `width:${a.score}%;--c:var(${VCOLOR[a.verdict] || "--st-neutral"})` })) : null,
       a.override ? el("div", { class: a.override === "false_positive" ? "ok" : "warn", role: "note" },
         el("b", {}, a.override === "false_positive" ? "You marked this a false positive. " : "You confirmed this is malicious. "),
         "Your mark overrides the computed verdict; the evidence below is kept for reference. ",
@@ -1565,6 +1734,7 @@ async function refreshView() {
     else if (view === "routes") await Routes.list();
     else if (view === "analyst") await Analyst.init();
     else if (view === "attack") await AttackView.refresh();
+    else if (view === "network") await Network.refresh();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
     else if (view === "graph" && !Graph.nodes.size) {
       await Graph.load(watch.mode === "gateway" ? "host:gateway" : "host:this-computer", true, 3);
@@ -1582,6 +1752,7 @@ async function poll() {
       watch = await api("/api/watch"); paintWatch();
       await pollAlerts();
       if (view === "live" && watch.running) await Live.refresh();
+      if (view === "network") await Network.refresh();
       if (view === "overview") { await refreshStats(); await Triage.refreshStatus(); if (watch.running) await Activity.refresh(); }
     } catch (e) {}
   }
@@ -1589,6 +1760,7 @@ async function poll() {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshView(); Graph.kick(0.05); } });
 Graph.legend();
+api("/api/health").then(h => { $("demo-pill").hidden = !h.demo; }).catch(() => {});
 Triage.refreshStatus();
 route();
 poll();

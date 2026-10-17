@@ -52,7 +52,54 @@ iglite serve --host 0.0.0.0 --syslog 5514 --netflow 2055
 # MITRE ATT&CK techniques behind what you've seen
 iglite attack                    # matrix by tactic
 iglite attack navigator -o layer.json
+
+# Show it to someone: a simulated network with a minute of incidents, nothing to set up
+iglite demo
 ```
+
+## Demo for other teams
+
+`iglite demo` runs the real dashboard and the real pipeline on a **simulated home
+network**: eight devices browsing, DHCP names, DNS lookups, and a minute of
+scripted incidents. It needs no setup: no keys, no router, no admin rights, no
+internet. The intelligence is invented, every "internet" address is in the
+documentation ranges (TEST-NET) and every name ends in `.example`. It runs on a
+throwaway database, so your own `~/.iglite` is never touched.
+
+```bash
+iglite demo                         # opens http://127.0.0.1:8765/#network
+iglite demo --speed 2               # incidents play twice as fast
+iglite demo --host 0.0.0.0          # let others on your network watch (prints an API token)
+```
+
+**One file to share.** `python scripts/build-pyz.py` builds `dist/iglite.pyz`
+(about 200 KB). Each CI run also uploads it as the **iglite-pyz** artifact. Anyone with
+Python 3.11+ on Windows, macOS or Linux runs it with nothing to install:
+
+```bash
+python iglite.pyz demo              # Windows: py iglite.pyz demo
+python iglite.pyz --help            # it is the full tool, not just the demo
+```
+
+With Docker: `docker run --rm -p 8765:8765 iglite iglite demo --host 0.0.0.0 --no-browser`.
+
+**What happens, and what to point at** (times at `--speed 1`):
+
+| When | What happens | What to show |
+|------|--------------|--------------|
+| start | A threat brief is ingested and investigated | ATT&CK tab: techniques from the report |
+| ~3 s | The iPhone loads a shared CDN whose address one feed listed long ago | It is *not* flagged: the entry is stale and the name is known-good |
+| ~6 s | The Kids-iPad opens a phishing link | Device turns red; alert; T1566.002 |
+| ~12 s | The Smart-Plug beacons to a C2 server on port 4444; the IDS fires | Alert; T1071 *observed* and T1571 |
+| ~20 s | The Work-Laptop downloads a dropper | Alert; T1105; click it for the graph |
+| ~28 s | The LG TV joins a crypto-mining pool | Alert; T1496 |
+| ~36 s | An internet scanner reaches the NAS on SSH | *Suspicious* only: worth a look, not an alert |
+
+Good stops along the way: click a device in the **Network** tab to see its
+connections and lookups; open an alert and read *why* it scored that way; mark
+something a false positive and see it counted against the source that reported it; export STIX or an
+ATT&CK Navigator layer. If `ANTHROPIC_API_KEY` is set, the **Analyst** tab works too
+(`pip install anthropic` for the one-file build).
 
 ## Live network monitoring
 
@@ -93,6 +140,8 @@ doesn't capture packets. It reads what the gateway already records:
 | DNS logs (in the same syslog, or a file) | `--syslog` / `--tail` | dnsmasq, **Pi-hole**, Unbound: which device looked up which domain |
 | **NetFlow v5/v9, IPFIX** (UDP) | `--netflow 2055` | Most business routers and firewalls, MikroTik, OpenWrt with `softflowd` |
 | The NAT table, when running **on** a Linux/OpenWrt gateway | `--conntrack` | `/proc/net/nf_conntrack` or `conntrack -L` |
+| **SSH into the router**, nothing installed on it | `--ssh root@192.168.1.1` | OpenWrt, DD-WRT, Asuswrt-Merlin, Ubiquiti EdgeRouter/UniFi gateways and other Linux routers (conntrack); pfSense/OPNsense (`pfctl -ss`) |
+| **Web proxy** logs | `--tail FILE` | Squid `access.log` (native format): which device visited which site |
 | Log files | `--tail FILE` | **Zeek** `conn.log`/`dns.log` (TSV or JSON), **Suricata** `eve.json` (flows, DNS, and alerts with their ATT&CK IDs), or any file the formats above are written to |
 | Device names | `--leases FILE`, `[devices]` | dnsmasq/OpenWrt and ISC DHCP leases; DHCP `DHCPACK` syslog lines are picked up automatically |
 
@@ -117,6 +166,97 @@ made.
   rate-limited APIs such as VirusTotal for on-demand lookups.
 * **Rolling window.** Flows stay in the live table for `gateway_window`
   seconds (default 300) after they were last seen.
+
+### The Network tab
+
+In gateway mode the dashboard's **Network** tab shows the network rather than
+one computer:
+
+* **Devices.** One card per device: its name (from DHCP, or one you give it),
+  IP address, how many connections, servers and sites, and whether anything it
+  touched is flagged. Flagged devices come first. Click a card to see the
+  device's alerts, MITRE ATT&CK techniques, connections and recent DNS lookups.
+  From there you can rename it, mute it, show it in the graph or ask the AI
+  analyst about it.
+* **Live DNS lookups.** Every lookup on the network as it happens, with the
+  device that made it and the domain's verdict. Filter it to flagged lookups or
+  pause it.
+* **Totals.** Devices, devices active now, flagged devices, open alerts and
+  lookups per minute.
+
+Names you give devices are kept across restarts and win over DHCP names.
+
+### Ubuntu laptop or PC as the gateway (one command)
+
+No spare router? Any Ubuntu machine with an ethernet port and a Wi-Fi card that
+supports access-point mode (`iw list` lists `* AP`) can be the gateway. It
+shares its wired connection to your router as a Wi-Fi hotspot, and IntelGraph
+Lite watches everything that goes through it:
+
+```
+your router ──ethernet──► Ubuntu machine (hotspot + IntelGraph Lite) ──Wi-Fi──► your devices
+```
+
+```bash
+git clone https://github.com/ashvinauti/intelgraph_lite.git && cd intelgraph_lite
+sudo scripts/gateway-hotspot.sh --ssid HomeSecure --password 'a-strong-password'
+```
+
+The script:
+1. Creates the hotspot.
+2. Turns on DNS and DHCP logging.
+3. Lets hotspot traffic past Docker's firewall rules, if Docker is installed.
+4. Installs IntelGraph Lite as the `iglite-gateway` service, which starts on boot.
+5. Keeps the machine awake with the lid closed.
+
+At the end it prints the dashboard address and API token. Use `--dry-run` to
+see every step first, and `--uninstall` to undo it.
+
+**No changes on any device.** Give the hotspot the same Wi-Fi name and
+password as your router, then turn off the router's own Wi-Fi. Every device
+then joins the hotspot by itself.
+
+A laptop hotspot suits about 5 to 15 devices in nearby rooms. For a whole
+house, use a router you can SSH into (below) or an access point.
+
+### Connect over SSH (no router configuration)
+
+If your router lets you log in over SSH, IntelGraph Lite can read it directly.
+You don't need syslog or NetFlow, and nothing is installed on the router:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/router            # once: make a key for the router
+# add ~/.ssh/router.pub to the router (OpenWrt: System → Administration → SSH-Keys)
+ssh -i ~/.ssh/router root@192.168.1.1 exit        # once: log in by hand to trust its host key
+iglite serve --ssh root@192.168.1.1 --ssh-key ~/.ssh/router
+```
+
+Each scan reads the router's connection table and DHCP leases. Its system log
+(DNS lookups, firewall entries) streams in over the same login. On OpenWrt,
+switch on DNS query logging so lookups reach the log:
+`uci set dhcp.@dnsmasq[0].logqueries=1; uci commit dhcp; /etc/init.d/dnsmasq restart`.
+
+* **Read-only.** It only runs fixed `cat`/`grep`/`conntrack -L`/`pfctl -ss`
+  and `logread -f`/`tail -F` commands. It changes nothing on the router.
+* **Key login only.** SSH runs in `BatchMode`, so it never asks for or stores
+  a password. On Windows 10/11, the built-in OpenSSH client works.
+* **Same network.** Keep the router's SSH port closed to the internet. To
+  monitor from elsewhere, connect to your home network over a VPN
+  (WireGuard, Tailscale) first.
+* Login failures appear on the Live network tab and in `iglite watch --once`
+  (for example "Permission denied (publickey)").
+
+Settings: `gateway_ssh = "root@192.168.1.1"`, `gateway_ssh_port`,
+`gateway_ssh_key`, `gateway_ssh_logs = false` to read only the connection table.
+
+### Web proxy
+
+If your devices go through a web proxy (Squid, or a proxy server at work),
+tail its access log: `--tail /var/log/squid/access.log`. Each request gives
+the device, the site's name and the server address it reached. IntelGraph
+Lite checks those exactly like DNS and connection data. To make IntelGraph
+Lite's *own* lookups go out through a proxy, set `HTTPS_PROXY` (for example
+`HTTPS_PROXY=http://proxy.corp:3128`).
 
 ### Home network
 
@@ -374,6 +514,7 @@ Windows and macOS include one.
 
 * **Overview**: totals by verdict, a live network-activity chart (connections and flagged over time), recent alerts, and a box for investigating pasted indicators or reports.
 * **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
+* **Network** (gateway mode): every device on the network as a card, a detail panel per device, and a live feed of DNS lookups.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
 * **Graph**: two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
@@ -381,7 +522,7 @@ Windows and macOS include one.
 * **Analyst**: chat with the optional AI analyst (see below).
 * **Details panel**: why an indicator got its score, its connections and attributes, and a button to investigate again.
 
-Keyboard: `1`–`7` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`8` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -441,6 +582,8 @@ Everything is optional. Copy [`iglite.example.toml`](iglite.example.toml) to
 | `watch_max_new` | 25 | New IPs/domains looked up per live snapshot |
 | `gateway_syslog`, `gateway_netflow` | off | `"[host:]port"` to receive syslog / NetFlow on (gateway mode) |
 | `gateway_conntrack` | false | Read the NAT table when running on the gateway |
+| `gateway_ssh`, `gateway_ssh_port`, `gateway_ssh_key` | off, 22, agent | Read the router over SSH (`user@host`, key login) |
+| `gateway_ssh_logs` | true | Also follow the router's log over SSH |
 | `gateway_files`, `gateway_leases` | `[]` | Log files to tail; DHCP lease files for device names |
 | `gateway_senders` | private IPs | Exporters allowed to send syslog/NetFlow |
 | `lan_networks` | private ranges | What counts as inside the network |
@@ -466,7 +609,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 135 offline tests, ~10 s
+.venv/bin/pytest            # 147 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 
