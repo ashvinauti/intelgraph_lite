@@ -76,6 +76,13 @@ def test_api_dashboard_and_queries(server):
     assert detail["assessment"]["verdict"] == "malicious" and len(detail["evidence"]) == 2
     status, body = call(server, "/api/graph?key=url:http://evil.example/payload.bin&depth=1")
     assert len(json.loads(body)["nodes"]) == 2
+    # The details panel gets a summary of the node at the other end of every edge.
+    status, body = call(server, "/api/indicator?key=url:http://evil.example/payload.bin")
+    detail = json.loads(body)
+    key = detail["node"]["key"]
+    others = {e["dst"] if e["src"] == key else e["src"] for e in detail["edges"]}
+    assert others and set(detail["neighbours"]) == others
+    assert all({"kind", "verdict", "score", "name"} <= set(v) for v in detail["neighbours"].values())
 
 
 def test_api_investigate_and_validation(server):
