@@ -12,6 +12,8 @@
     /* Status palette: always paired with an icon and a label. */
     --st-critical: #d03b3b; --st-warning: #fab219; --st-good: #0ca30c; --st-neutral: #8a8a84; --st-info: #2a78d6;
     --shadow: 0 6px 24px rgba(0,0,0,.12);
+    /* Graph focus: what points at the selected node vs what it points at (blue/orange stays apart for colour-blind eyes). */
+    --edge-in: #d9661f; --edge-out: var(--accent);
   }
   :root[data-theme="dark"] {
     --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #242422; --line: #30302d; --line-strong: #46463f; --grid: #2a2a27;
@@ -153,9 +155,12 @@
                 border-radius: 8px; background: var(--surface-1); overflow: hidden; touch-action: none; }
   #graph { width: 100%; height: 100%; display: block; cursor: grab; }
   #graph.panning { cursor: grabbing; }
-  #graph path.edge { fill: none; stroke: var(--line-strong); stroke-width: 1.4; }
-  #graph path.edge.route { stroke: var(--series-1); stroke-width: 2; stroke-dasharray: 5 4; }
-  #graph path.edge.hl { stroke: var(--accent); stroke-width: 2.4; stroke-dasharray: none; }
+  #graph path.edge { fill: none; stroke: var(--line-strong); stroke-width: 1.4; marker-end: url(#arr); }
+  #graph path.edge.route { stroke: var(--series-1); stroke-width: 2; stroke-dasharray: 5 4; marker-end: url(#arr-out); }
+  #graph path.edge.hl { stroke: var(--accent); stroke-width: 2.4; stroke-dasharray: none; marker-end: url(#arr-out); }
+  #graph path.edge.out { stroke: var(--edge-out); stroke-width: 2.4; stroke-dasharray: none; marker-end: url(#arr-out); }
+  #graph path.edge.in { stroke: var(--edge-in); stroke-width: 2.4; stroke-dasharray: none; marker-end: url(#arr-in); }
+  #arr path { fill: var(--line-strong); } #arr-out path { fill: var(--edge-out); } #arr-in path { fill: var(--edge-in); }
   #graph g.node { cursor: pointer; }
   #graph g.node circle { stroke: var(--surface-1); stroke-width: 2; }
   #graph g.node.root circle { stroke: var(--text-primary); stroke-width: 2.5; }
@@ -166,6 +171,14 @@
   #graph text.colhead { fill: var(--text-muted); font-size: 11px; font-weight: 600; text-anchor: middle; letter-spacing: .04em; }
   #graph line.colrule { stroke: var(--grid); stroke-width: 1; stroke-dasharray: 2 4; }
   .graph-hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: var(--text-muted); pointer-events: none; }
+  .graph-focus { position: absolute; left: 12px; top: 10px; max-width: min(420px, calc(100% - 24px)); font-size: 12px; background: var(--surface-1);
+                 border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; box-shadow: var(--shadow); }
+  .graph-focus[hidden] { display: none; }
+  .graph-focus .who { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .graph-focus .dirs { display: flex; gap: 12px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+  .swatch { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+  .rel-group { margin: 6px 0 2px; font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: baseline; }
+  .rel-group b { color: var(--text-primary); font-weight: 600; }
   .graph-root { position: absolute; right: 12px; top: 10px; font-size: 12px; background: var(--surface-1); border: 1px solid var(--line);
                 border-radius: 6px; padding: 4px 8px; display: flex; gap: 8px; align-items: center; }
   #tooltip { position: fixed; z-index: 50; pointer-events: none; background: var(--surface-1); border: 1px solid var(--line);
@@ -231,6 +244,8 @@
   ul.links { list-style: none; padding: 0; margin: 0; font-size: 13px; }
   ul.links li { padding: 5px 0; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
   ul.links li:hover { color: var(--accent); }
+  ul.links li .badge { flex: none; }
+  h3 .dir { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
 
   /* analyst chat */
   .chat { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; height: calc(100vh - 100px); min-height: 420px; }
@@ -443,9 +458,14 @@
       <span class="legend" id="g-legend"></span>
     </div>
     <div id="graph-wrap">
-      <svg id="graph" aria-label="Knowledge graph"><g id="viewport"><g id="cols"></g><g id="edges"></g><g id="nodes"></g></g></svg>
+      <svg id="graph" aria-label="Knowledge graph"><defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,1L9,5L0,9z"/></marker>
+        <marker id="arr-out" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,1L9,5L0,9z"/></marker>
+        <marker id="arr-in" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,1L9,5L0,9z"/></marker>
+      </defs><g id="viewport"><g id="cols"></g><g id="edges"></g><g id="nodes"></g></g></svg>
+      <div class="graph-focus" id="g-focus" hidden></div>
       <div class="graph-root" id="g-root"></div>
-      <div class="graph-hint">Click a node for details · double-click to expand · drag to move · scroll to zoom</div>
+      <div class="graph-hint">Click a node to see what connects to it and what it connects to · double-click to expand further · drag to move · scroll to zoom</div>
     </div>
   </section>
 
@@ -1302,11 +1322,29 @@ const Drawer = {
   render(info, triage = null) {
     const n = info.node, a = info.assessment, key = n.key;
     const tpanel = LOOKUP_KINDS.has(n.kind) ? Triage.panel(triage, key, recentAlerts.find(x => x.key === key)) : null;
-    const links = info.edges.map(e => {
-      const out = e.src === key, other = out ? e.dst : e.src;
-      return el("li", { onclick: () => this.open(other) }, el("span", { class: "muted nowrap" }, out ? `${e.rel} →` : `← ${e.rel}`),
-        el("span", { class: "mono" }, other), el("span", { class: "muted", style: "margin-left:auto" }, e.source));
-    });
+    const nb = info.neighbours || {};
+    const outgoing = info.edges.filter(e => e.src === key), incoming = info.edges.filter(e => e.dst === key && e.src !== key);
+    const linkRow = other => {
+      const o = nb[other] || {}, kind = other.slice(0, other.indexOf(":"));
+      return el("li", { onclick: () => this.open(other), title: other },
+        o.verdict && LOOKUP_KINDS.has(kind) ? badge(o.verdict, o.score) : el("span", { class: "muted nowrap", style: "min-width:58px" }, kind === "host" ? "device" : kind),
+        el("span", { class: "mono" }, other.slice(kind.length + 1)),
+        o.name ? el("span", { class: "muted" }, o.name) : null);
+    };
+    // One group per relation ("resolves_to", "connects_to"...), long groups folded.
+    const linkGroups = (edges, out) => {
+      if (!edges.length) return el("p", { class: "muted" }, out ? "It points at nothing yet." : "Nothing points at it yet.");
+      const byRel = new Map();
+      for (const e of edges) (byRel.get(e.rel) || byRel.set(e.rel, []).get(e.rel)).push(e);
+      return el("div", {}, [...byRel].sort((a, b) => b[1].length - a[1].length).map(([rel, es]) => {
+        const others = [...new Set(es.map(e => out ? e.dst : e.src))], srcs = [...new Set(es.map(e => e.source))].join(", ");
+        const ul = el("ul", { class: "links" }, others.slice(0, 8).map(linkRow));
+        const more = others.length > 8 ? el("button", { class: "ghost small", onclick: ev => { ul.append(...others.slice(8).map(linkRow)); ev.target.remove(); } },
+          `Show ${others.length - 8} more`) : null;
+        return el("div", {}, el("div", { class: "rel-group" }, el("b", {}, out ? `${rel} →` : `← ${rel}`), `${others.length}`,
+          el("span", { class: "muted", style: "margin-left:auto" }, srcs)), ul, more);
+      }));
+    };
     const attrs = Object.entries(n.attrs);
     const maxC = Math.max(1, ...a.reasons.map(r => Math.abs(r.contribution)));
     const reInvestigate = async btn => {
@@ -1342,6 +1380,10 @@ const Drawer = {
         el("button", { class: "ghost", onclick: () => Graph.focus(key) }, "Show in graph"),
         el("button", { class: "ghost", onclick: () => { Graph.setRoot(key); Graph.focus(key, false); } }, "Make graph root"),
         copy),
+      el("h3", { title: "Nodes with an edge pointing at this one" }, el("span", { class: "dir", style: "background:var(--edge-in)" }), `Incoming (${incoming.length})`),
+      linkGroups(incoming, false),
+      el("h3", { title: "Nodes this one points at" }, el("span", { class: "dir", style: "background:var(--edge-out)" }), `Outgoing (${outgoing.length})`),
+      linkGroups(outgoing, true),
       info.attack_entry ? AttackView.entry(info.attack_entry, n.kind) : null,
       tpanel ? el("h3", {}, "AI triage") : null,
       tpanel,
@@ -1354,8 +1396,6 @@ const Drawer = {
             el("span", { class: "contrib-bar", style: `width:${Math.round(30 * Math.abs(r.contribution) / maxC)}px;--c:var(${r.contribution >= 0 ? "--st-critical" : "--st-good"})` })),
           el("td", {}, r.detail)))))
         : el("p", { class: "muted" }, LOOKUP_KINDS.has(n.kind) ? "No source has an opinion yet. The score is the neutral starting point." : "Context node. It is not scored itself."),
-      el("h3", {}, `Connections (${info.edges.length})`),
-      links.length ? el("ul", { class: "links" }, links) : el("p", { class: "muted" }, "None recorded."),
       attrs.length ? el("h3", {}, "Attributes") : null,
       attrs.length ? el("dl", { class: "kv" }, attrs.flatMap(([k, v]) => [el("dt", {}, k),
         el("dd", { class: "mono" }, typeof v === "number" && k.endsWith("last_seen") ? timeAgo(v) : typeof v === "object" ? JSON.stringify(v) : String(v))])) : null,
@@ -1382,7 +1422,13 @@ const Graph = {
   async load(key, expand, depth = 1) {
     try {
       const g = await api(`/api/graph?depth=${depth}&limit=${expand ? 120 : 30}&key=` + encodeURIComponent(key));
-      if (g.nodes.length) this.merge(g, g.root);
+      // Only re-lay out when something is new, so clicking around doesn't shuffle the graph.
+      const fresh = g.nodes.some(n => !this.nodes.has(n.key)) || g.edges.some(e => !this.edges.has(`${e.src}|${e.rel}|${e.dst}`));
+      if (g.nodes.length && fresh) this.merge(g, g.root);
+      else if (g.nodes.some(n => { const o = this.nodes.get(n.key); return o && (o.verdict !== n.verdict || o.score !== n.score); })) {
+        for (const n of g.nodes) Object.assign(this.nodes.get(n.key), { verdict: n.verdict, score: n.score });
+        this.build();  // new verdict colours, same positions
+      }
     } catch (e) { /* unknown indicator: ignore */ }
   },
   focus(key, go = true) {
@@ -1501,18 +1547,20 @@ const Graph = {
       this.bindNode(g, n); gn.append(g);
     }
     this.render();
+    this.applyFocus();
   },
   render() {
     $("viewport").setAttribute("transform", `translate(${this.view.x},${this.view.y}) scale(${this.view.k})`);
     for (const e of this.edges.values()) {
       if (!e._el) continue;
       const a = this.nodes.get(e.src), b = this.nodes.get(e.dst);
-      if (this.mode === "path") {
-        const mx = (a.x + b.x) / 2;
-        e._el.setAttribute("d", Math.abs(a.x - b.x) < 1
-          ? `M${a.x},${a.y}C${a.x + 60},${a.y} ${b.x + 60},${b.y} ${b.x},${b.y}`
-          : `M${a.x},${a.y}C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}`);
-      } else e._el.setAttribute("d", `M${a.x},${a.y}L${b.x},${b.y}`);
+      // Second control point; the path ends short of the target circle along it, so the arrowhead stays visible.
+      const mx = (a.x + b.x) / 2, same = Math.abs(a.x - b.x) < 1;
+      const [c2x, c2y] = this.mode !== "path" ? [a.x, a.y] : same ? [b.x + 60, b.y] : [mx, b.y];
+      const dx = b.x - c2x, dy = b.y - c2y, d = Math.hypot(dx, dy) || 1, gap = (b.r || 8) + 2;
+      const ex = b.x - dx / d * gap, ey = b.y - dy / d * gap;
+      e._el.setAttribute("d", this.mode !== "path" ? `M${a.x},${a.y}L${ex},${ey}`
+        : same ? `M${a.x},${a.y}C${a.x + 60},${a.y} ${c2x},${c2y} ${ex},${ey}` : `M${a.x},${a.y}C${mx},${a.y} ${c2x},${c2y} ${ex},${ey}`);
     }
     for (const n of this.nodes.values()) if (n._el) n._el.setAttribute("transform", `translate(${n.x},${n.y})`);
   },
@@ -1552,13 +1600,13 @@ const Graph = {
       if (Math.abs(ev.clientX - start[0]) + Math.abs(ev.clientY - start[1]) > 3) moved = true;
       if (moved) { if (this.mode === "force") n.fixed = true; [n.x, n.y] = this.toWorld(ev); n.tx = n.x; n.ty = n.y; this.render(); this.kick(0.3); }
     });
-    g.addEventListener("pointerup", () => { start = null; if (!moved) Drawer.open(n.key); if (this.mode === "force") n.fixed = moved; });
-    g.addEventListener("dblclick", ev => { ev.stopPropagation(); this.load(n.key, true); });
+    g.addEventListener("pointerup", () => { start = null; if (!moved) { Drawer.open(n.key); this.load(n.key, true); } if (this.mode === "force") n.fixed = moved; });
+    g.addEventListener("dblclick", ev => { ev.stopPropagation(); this.load(n.key, true, 2); });
     g.addEventListener("pointerenter", ev => this.highlight(n, ev));
     g.addEventListener("pointerleave", () => this.highlight(null));
   },
   highlight(n, ev) {
-    if (!n) { Tip.hide(); for (const x of this.nodes.values()) x._el && x._el.classList.remove("dim"); for (const e of this.edges.values()) e._el && e._el.classList.remove("dim", "hl"); return; }
+    if (!n) { Tip.hide(); for (const e of this.edges.values()) e._el && e._el.classList.remove("hl"); this.applyFocus(); return; }
     const near = new Set([n.key]); const rels = [];
     for (const e of this.edges.values()) if (e._el && (e.src === n.key || e.dst === n.key)) { near.add(e.src); near.add(e.dst); rels.push(e.rel); }
     for (const x of this.nodes.values()) x._el && x._el.classList.toggle("dim", !near.has(x.key));
@@ -1567,11 +1615,34 @@ const Graph = {
       el("div", { class: "mono", style: "margin-top:4px" }, n.key),
       n.attrs && (n.attrs["attack.name"] || n.attrs.name) ? el("div", { style: "margin-top:2px" }, n.attrs["attack.name"] || n.attrs.name) : null,
       rels.length ? el("div", { class: "muted", style: "margin-top:2px" }, [...new Set(rels)].join(", ")) : null,
-      el("div", { class: "muted", style: "margin-top:2px" }, "Click for details · double-click to expand"));
+      el("div", { class: "muted", style: "margin-top:2px" }, "Click for its connections · double-click to expand"));
   },
   select(key) {
     this.selected = key;
     for (const n of this.nodes.values()) n._el && n._el.classList.toggle("sel", n.key === key);
+    this.applyFocus();
+  },
+  /* The selected node's view: incoming edges orange, outgoing blue, everything unrelated faded. */
+  applyFocus() {
+    const k = this.selected && this.nodes.has(this.selected) ? this.selected : null, near = new Set([k]);
+    let nin = 0, nout = 0;
+    for (const e of this.edges.values()) {
+      if (!e._el) continue;
+      const out = k && e.src === k, inc = k && e.dst === k && e.src !== k;
+      e._el.classList.toggle("out", !!out); e._el.classList.toggle("in", !!inc); e._el.classList.toggle("dim", !!k && !out && !inc);
+      if (out) { nout++; near.add(e.dst); } if (inc) { nin++; near.add(e.src); }
+    }
+    for (const n of this.nodes.values()) n._el && n._el.classList.toggle("dim", !!k && !near.has(n.key));
+    const box = $("g-focus");
+    if (!k) { box.hidden = true; return; }
+    const n = this.nodes.get(k);
+    fill(box, el("div", { class: "who", title: k }, nodeLabel(n)),
+      el("div", { class: "dirs" },
+        el("span", {}, el("span", { class: "swatch", style: "background:var(--edge-in)" }), `${nin} incoming`),
+        el("span", {}, el("span", { class: "swatch", style: "background:var(--edge-out)" }), `${nout} outgoing`),
+        el("button", { class: "ghost small", title: "Add their connections too", onclick: () => this.load(k, true, 2) }, "Expand"),
+        el("button", { class: "ghost small", onclick: () => Drawer.close() }, "Clear")));
+    box.hidden = false;
   },
   fit() {
     const ns = [...this.nodes.values()].filter(n => n._el); if (!ns.length) return; this.resize();
@@ -1588,9 +1659,13 @@ const Graph = {
 };
 (function bindGraphCanvas() {
   const s = $("graph"); let pan = null;
-  s.addEventListener("pointerdown", ev => { pan = [ev.clientX - Graph.view.x, ev.clientY - Graph.view.y]; s.classList.add("panning"); s.setPointerCapture(ev.pointerId); });
+  let from = null;
+  s.addEventListener("pointerdown", ev => { pan = [ev.clientX - Graph.view.x, ev.clientY - Graph.view.y]; from = [ev.clientX, ev.clientY]; s.classList.add("panning"); s.setPointerCapture(ev.pointerId); });
   s.addEventListener("pointermove", ev => { if (pan) { Graph.view.x = ev.clientX - pan[0]; Graph.view.y = ev.clientY - pan[1]; Graph.render(); } });
-  s.addEventListener("pointerup", () => { pan = null; s.classList.remove("panning"); });
+  s.addEventListener("pointerup", ev => {
+    if (from && Math.abs(ev.clientX - from[0]) + Math.abs(ev.clientY - from[1]) < 4 && Graph.selected) Drawer.close();
+    pan = null; from = null; s.classList.remove("panning");
+  });
   s.addEventListener("wheel", ev => {
     ev.preventDefault();
     const r = s.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;

@@ -252,11 +252,23 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
     node = engine.store.node(key)
     if node is None:
         raise ApiError(HTTPStatus.NOT_FOUND, f"{key} not found")
+    edges = engine.store.edges_of(key)[:500]
+    others = {e["dst"] if e["src"] == key else e["src"] for e in edges}
     return {
         "node": node,
         "assessment": engine.assess(key).as_dict(),
         "evidence": [asdict(e) for e in engine.store.evidence(key)],
-        "edges": engine.store.edges_of(key)[:500],
+        "edges": edges,
+        # The other end of each edge, so the details panel can show verdicts and names.
+        "neighbours": {
+            n["key"]: {
+                "kind": n["kind"],
+                "verdict": n["verdict"],
+                "score": n["score"],
+                "name": (n["attrs"] or {}).get("name") or (n["attrs"] or {}).get("attack.name"),
+            }
+            for n in engine.store.nodes(others)
+        },
         "attack": attack.techniques_of(engine.store, key),
         "attack_entry": _attack_entry(key),
     }
