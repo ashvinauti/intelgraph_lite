@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import __version__, attack, config, export
+from . import __version__, attack, cases, config, export, respond
 from .engine import Engine
 from .extract import classify, extract
 from .model import KINDS, Indicator
@@ -291,6 +291,148 @@ def cmd_alerts(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def _case_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return fn(*args, **kwargs)
+    except (KeyError, ValueError) as exc:
+        raise SystemExit(f"error: {str(exc).strip(chr(39))}")
+
+
+def cmd_case(engine: Engine, args: argparse.Namespace) -> int:
+    store = engine.store
+    action = args.action
+    if action == "list":
+        rows = store.cases(args.status)
+        if not rows:
+            print("No cases yet. `iglite case new TITLE --alert ID` opens one.")
+        for c in rows:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(c["updated"]))
+            print(
+                f"#{c['id']:<4} {c['status']:<13} {c['severity']:<8} {when}  {c['title']}"
+                f"  ({c['alerts']} alerts, {c['indicators']} indicators)"
+            )
+        return 0
+    if action == "new":
+        case_id = _case_call(
+            cases.create,
+            store,
+            " ".join(args.args),
+            severity=args.severity,
+            summary=args.summary or "",
+            alerts=args.alert or [],
+            indicators=[_resolve_key(k) for k in args.indicator or []],
+        )
+        print(f"Opened case #{case_id}")
+        return 0
+    if not args.args or not args.args[0].isdigit():
+        raise SystemExit(f"usage: iglite case {action} CASE_ID ...")
+    case_id, rest = int(args.args[0]), args.args[1:]
+    if action in ("show", "report"):
+        text = _case_call(cases.report, store, case_id)
+        if args.output:
+            Path(args.output).write_text(text, encoding="utf-8")
+            print(f"Wrote {args.output}")
+        else:
+            print(text, end="")
+    elif action == "note":
+        _case_call(cases.note, store, case_id, " ".join(rest))
+        print(f"Note added to case #{case_id}")
+    elif action in ("status", "severity"):
+        if not rest:
+            raise SystemExit(f"usage: iglite case {action} CASE_ID VALUE")
+        _case_call(cases.update, store, case_id, **{action: rest[0]})
+        print(f"Case #{case_id} {action}: {rest[0]}")
+    elif action in ("add", "remove"):
+        if not (args.alert or args.indicator):
+            raise SystemExit(f"usage: iglite case {action} CASE_ID --alert ID | --indicator X")
+        for alert_id in args.alert or []:
+            _case_call(
+                cases.attach_alert if action == "add" else cases.detach_alert, store, case_id, alert_id
+            )
+        for raw in args.indicator or []:
+            fn = cases.add_indicator if action == "add" else cases.remove_indicator
+            _case_call(fn, store, case_id, _resolve_key(raw))
+        print(f"Case #{case_id} updated")
+    return 0
+
+
+def cmd_block(engine: Engine, args: argparse.Namespace) -> int:
+    if args.enforce:
+        engine.config.enforce = args.enforce
+    if args.block_hosts:
+        engine.config.block_hosts = args.block_hosts
+    if args.list or not args.value:
+        rows = engine.store.blocks()
+        if not rows:
+            print("Nothing blocked.")
+        for b in rows:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(b["at"]))
+            what = f"device {b['value']} (quarantined)" if b["kind"] == "device" else b["value"]
+            print(
+                f"{when}  {what}"
+                + (f"  case #{b['case_id']}" if b["case_id"] else "")
+                + (f"  {b['note']}" if b["note"] else "")
+            )
+        print(f"Enforcement: {respond.enforcer(engine.config).name}")
+        return 0
+    fn = respond.unblock if args.undo else respond.block
+    kwargs = {} if args.undo else {"note": args.note or "", "case_id": args.case}
+    res = _case_call(fn, engine, args.value, device=args.device, **kwargs)
+    verb = (
+        ("Released " if res["kind"] == "device" else "Unblocked ")
+        if args.undo
+        else ("Quarantined " if res["kind"] == "device" else "Blocked ")
+    )
+    print(verb + res["value"])
+    status = res["enforcement"]
+    print(("" if status["ok"] else "warning: ") + status["detail"])
+    return 0 if status["ok"] else 1
+
+
+def cmd_path(engine: Engine, args: argparse.Namespace) -> int:
+    from .api import PATH_AVOID
+
+    src, dst = _resolve_key(args.source), _resolve_key(args.target)
+    for k in (src, dst):
+        if engine.store.node(k) is None:
+            raise SystemExit(f"error: {k} is not in the graph")
+    found = engine.store.path(src, dst, max_hops=args.max_hops, avoid=() if args.all else PATH_AVOID)
+    if found is None:
+        print(
+            f"No link between {src} and {dst} within {args.max_hops} hops"
+            + ("" if args.all else " (tags, techniques and the gateway skipped; try --all)")
+        )
+        return 1
+    nodes = {n["key"]: n for n in found["nodes"]}
+    at = src
+    print(_paint(nodes[src].get("verdict") or "", src))
+    for e in found["edges"]:
+        nxt = e["dst"] if e["src"] == at else e["src"]
+        arrow = f"  --{e['rel']}-->" if e["src"] == at else f"  <--{e['rel']}--"
+        print(f"{arrow}  {_paint(nodes.get(nxt, {}).get('verdict') or '', nxt)}   [{e['source']}]")
+        at = nxt
+    return 0
+
+
+def cmd_notify(engine: Engine, args: argparse.Namespace) -> int:
+    n = engine.notifier()
+    if not args.test:
+        st = n.status()
+        print(
+            "Channels: "
+            + (", ".join(st["channels"]) or "none (set IGLITE_NOTIFY_SLACK, _TEAMS, _WEBHOOK or _EMAIL)")
+        )
+        print(f"Sends: {st['min_verdict']} alerts and worse, at most {st['per_hour']} an hour")
+        return 0
+    try:
+        results = n.test()
+    except RuntimeError as exc:
+        raise SystemExit(f"error: {exc}")
+    for r in results:
+        print(f"{r['channel']:<8} {'sent' if r['ok'] else 'FAILED: ' + r['detail']}")
+    return 0 if all(r["ok"] for r in results) else 1
+
+
 def cmd_triage(engine: Engine, args: argparse.Namespace) -> int:
     from .llm import AgentUnavailable
     from .triage import Triager
@@ -408,6 +550,14 @@ def _apply_gateway(engine: Engine, args: argparse.Namespace) -> None:
             raise SystemExit(f"error: {exc}")
         inputs = ", ".join(watch.gateway.inputs) if watch.gateway else ""
         print(f"Gateway mode: monitoring the network behind this router/firewall via {inputs}")
+    if args.enforce:
+        cfg.enforce = args.enforce
+    if args.block_hosts:
+        cfg.block_hosts = args.block_hosts
+    enforcer = respond.enforcer(cfg)
+    if enforcer.name != "none":  # restore blocks after a restart / reboot
+        status = enforcer.apply(engine.store)
+        print(("Blocking: " if status["ok"] else "warning: ") + status["detail"])
 
 
 def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
@@ -693,6 +843,45 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=20)
     sp.set_defaults(func=cmd_alerts)
 
+    sp = sub.add_parser("case", help="cases: group alerts into an incident, with notes and a timeline")
+    sp.add_argument(
+        "action", choices=["list", "new", "show", "report", "note", "status", "severity", "add", "remove"]
+    )
+    sp.add_argument("args", nargs="*", help="new: TITLE · others: CASE_ID [TEXT|VALUE]")
+    sp.add_argument("--alert", type=int, action="append", help="alert id (new, add, remove)")
+    sp.add_argument("--indicator", action="append", help="indicator (new, add, remove)")
+    sp.add_argument("--severity", default="medium", choices=list(cases.SEVERITIES))
+    sp.add_argument("--summary")
+    sp.add_argument("--status", choices=list(cases.STATUSES), help="list: only cases in this state")
+    sp.add_argument("-o", "--output", help="report: write Markdown to this file")
+    sp.set_defaults(func=cmd_case)
+
+    sp = sub.add_parser("block", help="block an IP/domain/URL or quarantine a device (no value: list)")
+    sp.add_argument("value", nargs="?", help="indicator, or a device's LAN IP with --device")
+    sp.add_argument(
+        "--device", action="store_true", help="quarantine a LAN device: cut it off from the internet"
+    )
+    sp.add_argument("--undo", action="store_true", help="unblock / release from quarantine")
+    sp.add_argument("--note")
+    sp.add_argument("--case", type=int, help="record it in this case's timeline")
+    sp.add_argument("--list", action="store_true")
+    sp.add_argument("--enforce", choices=["none", "nftables"], help="enforce now with nftables (root)")
+    sp.add_argument("--block-hosts", metavar="FILE", help="dnsmasq hosts file for blocked domains")
+    sp.set_defaults(func=cmd_block)
+
+    sp = sub.add_parser("path", help="how are two indicators/devices connected? (shortest chain)")
+    sp.add_argument("source")
+    sp.add_argument("target")
+    sp.add_argument("--max-hops", type=int, default=6)
+    sp.add_argument(
+        "--all", action="store_true", help="allow tags, techniques and the gateway as stepping stones"
+    )
+    sp.set_defaults(func=cmd_path)
+
+    sp = sub.add_parser("notify", help="alert notification channels (Slack, Teams, email, webhook)")
+    sp.add_argument("--test", action="store_true", help="send a test notification to every channel")
+    sp.set_defaults(func=cmd_notify)
+
     sp = sub.add_parser("triage", help="AI false-positive triage of alerts or an indicator")
     sp.add_argument("alert", nargs="*", type=int, help="alert id(s), see `iglite alerts`")
     sp.add_argument("--indicator", help="triage an indicator that has no alert")
@@ -741,6 +930,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
         g.add_argument("--include-blocked", action="store_true", help="also check flows the firewall blocked")
         g.add_argument("--max-new", type=int, help="new IPs/domains looked up per snapshot (default 25)")
+        g.add_argument(
+            "--enforce",
+            choices=["none", "nftables"],
+            help="enforce blocks with nftables on this gateway (root)",
+        )
+        g.add_argument("--block-hosts", metavar="FILE", help="dnsmasq hosts file for blocked domains")
 
     sp = sub.add_parser("serve", help="run the JSON API and dashboard")
     sp.add_argument("--host", default="127.0.0.1")

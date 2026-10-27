@@ -182,7 +182,8 @@ def blocklist(
 
     Consumed as-is by pfSense/OPNsense URL table aliases, FortiGate external threat
     feeds, Palo Alto external dynamic lists, Pi-hole/AdGuard adlists and Squid ACLs.
-    Left out on purpose: anything you marked a false positive or suppressed, private
+    Anything you blocked by hand is always included. Left out on purpose otherwise:
+    anything you marked a false positive or suppressed, private
     addresses, and IPs on shared CDN/cloud infrastructure (blocking one Cloudflare IP
     breaks thousands of unrelated sites). ``shared_infra(node)`` names such an IP's operator.
     """
@@ -205,6 +206,12 @@ def blocklist(
                 if kind == "ip" and shared_infra is not None and shared_infra(n):
                     continue
                 values.append(n["value"])
+    # Blocked by hand (dashboard "Block", `iglite block`): always listed, whatever the score.
+    values += [
+        b["value"].split(":", 1)[1]
+        for b in store.blocks()
+        if b["kind"] == "indicator" and b["value"].startswith(f"{kind}:")
+    ]
     lines = sorted(set(values))
     if comments:
         stamp = _iso(datetime.now(UTC).timestamp())

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import cases
 from . import config as config_mod
 from .engine import Engine
 from .extract import classify, treat_as_public
@@ -296,6 +297,16 @@ def build(
     engine.ingest(REPORT, "Threat brief: IoT botnet and phishing (demo)")
     report = [i for i in (classify(DROPPER_URL), classify(C2_IP)) if i is not None]
     engine.investigate(report, depth=1)
+    # The analyst opened a case from the threat brief; matching alerts will file themselves into it.
+    keys = [k for k in (f"ip:{C2_IP}", f"domain:{DROPPER}", f"url:{DROPPER_URL}") if engine.store.node(k)]
+    case_id = cases.create(
+        engine.store,
+        "IoT botnet campaign from this week's threat brief",
+        severity="high",
+        summary="Watching for the C2 server and dropper named in the brief. Any device that touches them joins this case.",
+        indicators=keys,
+    )
+    cases.note(engine.store, case_id, "Brief ingested; its indicators are on watch.")
     gw = GatewayCollector(cfg)
     gw.started = True  # no listeners: the simulation feeds it directly
     gw.extra_inputs = ["simulated home network (demo)"]

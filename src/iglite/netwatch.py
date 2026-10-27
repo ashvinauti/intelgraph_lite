@@ -591,6 +591,7 @@ class NetWatch:
         for a in store.alerts(limit=1000):
             if (dev := (a["context"] or {}).get("device")) and a["status"] == "open":
                 alerts[dev] = alerts.get(dev, 0) + 1
+        quarantined = {b["value"] for b in store.blocks() if b["kind"] == "device"}
         result = []
         for ip, d in out.items():
             node = nodes.get(ip) or {}
@@ -604,6 +605,7 @@ class NetWatch:
                     "first_seen": node.get("first_seen"),
                     "last_seen": node.get("last_seen"),
                     "key": f"host:{ip}",
+                    "quarantined": ip in quarantined,
                 }
             )
         result.sort(key=lambda d: (rank.get(d["worst"], 3), -d["open_alerts"], -d["connections"], d["ip"]))
@@ -625,6 +627,7 @@ class NetWatch:
             "key": key,
             "name": node["attrs"].get("name"),
             "named_by_you": node["attrs"].get("name_source") == "user",
+            "quarantined": any(b["kind"] == "device" and b["value"] == ip for b in store.blocks()),
             "first_seen": node.get("first_seen"),
             "last_seen": node.get("last_seen"),
             "connections": rows,

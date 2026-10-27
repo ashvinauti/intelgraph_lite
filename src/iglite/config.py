@@ -23,6 +23,21 @@ ENV_KEYS = {
     "anthropic": ("ANTHROPIC_API_KEY",),  # the optional AI analyst
 }
 
+# Alert notification destinations (secrets, so environment / .env only).
+NOTIFY_ENV = {
+    "slack": "IGLITE_NOTIFY_SLACK",  # Slack incoming-webhook URL
+    "teams": "IGLITE_NOTIFY_TEAMS",  # Microsoft Teams workflow webhook URL
+    "webhook": "IGLITE_NOTIFY_WEBHOOK",  # any URL: receives the alert as JSON
+    "email": "IGLITE_NOTIFY_EMAIL",  # comma-separated addresses (needs the SMTP settings)
+}
+SMTP_ENV = {
+    "host": "IGLITE_SMTP_HOST",
+    "port": "IGLITE_SMTP_PORT",  # 587 (STARTTLS, default) or 465 (TLS)
+    "user": "IGLITE_SMTP_USER",
+    "password": "IGLITE_SMTP_PASSWORD",
+    "from": "IGLITE_SMTP_FROM",
+}
+
 
 def read_dotenv(path: str | Path) -> dict[str, str]:
     """Parse KEY=VALUE lines; ignores blanks, comments and ``export``; strips quotes."""
@@ -102,6 +117,18 @@ class Config:
     gateway_window: float = 300.0  # seconds a flow stays in the live table after it was last seen
     lan_networks: list[str] = field(default_factory=list)  # inside addresses; default: non-public
     devices: dict[str, str] = field(default_factory=dict)  # LAN ip -> friendly name
+    # Response: enforce blocks on this machine (when it is the gateway). See respond.py.
+    enforce: str = "none"  # none | nftables
+    block_hosts: str | None = (
+        None  # dnsmasq hosts file for blocked domains, e.g. /var/lib/iglite/blocked.hosts
+    )
+    auto_case: bool = True  # file new alerts into an open case that already holds their indicator/device
+    # Alert notifications. Destinations come from the environment (they are secrets); see notify.py.
+    notify_min_verdict: str = "malicious"  # malicious | suspicious
+    notify_per_hour: int = 30
+    dashboard_url: str | None = None  # links in notifications, e.g. http://10.42.0.1:8765
+    notify: dict[str, str] = field(default_factory=dict)  # channel -> destination (from the environment)
+    smtp: dict[str, str] = field(default_factory=dict)
     # False-positive controls
     evidence_half_life_days: float = 180.0  # bad evidence halves in weight this often
     alert_min_score: int = 60  # live-monitoring alerts need at least this score
@@ -154,7 +181,7 @@ def load(path: str | Path | None = None, env: dict[str, str] | None = None) -> C
 
     cfg = Config()
     for name in cfg.__dataclass_fields__:
-        if name in data and name not in ("keys", "api_token"):
+        if name in data and name not in ("keys", "api_token", "notify", "smtp"):
             setattr(cfg, name, data[name])
 
     if "IGLITE_DB" in env:
@@ -172,6 +199,12 @@ def load(path: str | Path | None = None, env: dict[str, str] | None = None) -> C
         cfg.ollama_url = host
     if triage := (env.get("IGLITE_AI_TRIAGE") or "").strip().lower():
         cfg.ai_triage = triage
+    if url := (env.get("IGLITE_DASHBOARD_URL") or "").strip():
+        cfg.dashboard_url = url
+    cfg.notify = {
+        channel: value for channel, var in NOTIFY_ENV.items() if (value := (env.get(var) or "").strip())
+    }
+    cfg.smtp = {key: value for key, var in SMTP_ENV.items() if (value := (env.get(var) or "").strip())}
     cfg.keys = {}
     for src, names in ENV_KEYS.items():
         for name in names:
