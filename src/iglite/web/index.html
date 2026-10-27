@@ -150,6 +150,39 @@
   ul.feed li:hover { background: var(--surface-2); }
   ul.feed .sub { grid-column: 2 / 4; font-size: 12px; color: var(--text-secondary); }
 
+  /* cases */
+  .cases-grid { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(0, 2.4fr); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .cases-grid { grid-template-columns: 1fr; } }
+  ul.case-list { list-style: none; margin: 0; padding: 0; }
+  ul.case-list li { padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 4px; }
+  ul.case-list li:hover, ul.case-list li[aria-current="true"] { background: var(--surface-2); }
+  ul.case-list .t { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+  ul.case-list .m { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .sev { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px;
+         border-radius: 4px; border: 1px solid var(--c); color: var(--text-primary); background: color-mix(in srgb, var(--c) 14%, transparent); flex: none; }
+  .sev.low { --c: var(--st-neutral); } .sev.medium { --c: var(--st-warning); } .sev.high, .sev.critical { --c: var(--st-critical); }
+  .sev.critical { background: var(--st-critical); color: #fff; }
+  .case-title { width: 100%; font-size: 18px; font-weight: 600; border: 1px solid transparent; background: transparent; padding: 4px 6px; border-radius: 6px; }
+  .case-title:hover, .case-title:focus { border-color: var(--line); background: var(--surface-0); }
+  .case-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0 10px; }
+  ul.timeline { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--line); }
+  ul.timeline li { position: relative; padding: 4px 0 8px 8px; font-size: 13px; }
+  ul.timeline li::before { content: ""; position: absolute; left: -20px; top: 9px; width: 10px; height: 10px; border-radius: 50%;
+                           background: var(--surface-1); border: 2px solid var(--c, var(--line-strong)); }
+  ul.timeline li.note { --c: var(--accent); } ul.timeline li.block { --c: var(--st-critical); } ul.timeline li.alert { --c: var(--st-warning); }
+  ul.timeline .when { color: var(--text-muted); font-size: 11.5px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .note-box { display: flex; gap: 8px; margin-top: 8px; } .note-box textarea { min-height: 38px; flex: 1; }
+  .blocked-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: #fff; background: var(--st-critical);
+                  border-radius: 4px; padding: 1px 6px; flex: none; }
+  dialog.modal { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1); color: var(--text-primary);
+                 padding: 16px; width: min(440px, calc(100vw - 32px)); box-shadow: var(--shadow); }
+  dialog.modal::backdrop { background: rgba(0,0,0,.35); }
+  dialog.modal h2 { margin: 0 0 10px; font-size: 15px; }
+  dialog.modal label.opt { display: flex; gap: 8px; align-items: center; padding: 6px 4px; border-radius: 6px; cursor: pointer; }
+  dialog.modal label.opt:hover { background: var(--surface-2); }
+  dialog.modal input[type=text] { width: 100%; }
+  dialog.modal .actions { justify-content: flex-end; }
+
   /* graph */
   #graph-wrap { position: relative; height: calc(100vh - 170px); min-height: 380px; border: 1px solid var(--line);
                 border-radius: 8px; background: var(--surface-1); overflow: hidden; touch-action: none; }
@@ -160,6 +193,13 @@
   #graph path.edge.hl { stroke: var(--accent); stroke-width: 2.4; stroke-dasharray: none; marker-end: url(#arr-out); }
   #graph path.edge.out { stroke: var(--edge-out); stroke-width: 2.4; stroke-dasharray: none; marker-end: url(#arr-out); }
   #graph path.edge.in { stroke: var(--edge-in); stroke-width: 2.4; stroke-dasharray: none; marker-end: url(#arr-in); }
+  #graph path.edge.onpath { stroke: var(--st-critical); stroke-width: 3.2; stroke-dasharray: none; marker-end: url(#arr-path); }
+  #arr-path path { fill: var(--st-critical); }
+  #graph g.node.onpath circle { stroke: var(--st-critical); stroke-width: 3; }
+  .graph-focus .chain { margin-top: 6px; font-size: 12px; line-height: 1.7; }
+  .graph-focus .chain .hop { font-family: ui-monospace, monospace; cursor: pointer; } .graph-focus .chain .hop:hover { color: var(--accent); }
+  .graph-focus .chain .rel { color: var(--text-muted); margin: 0 4px; }
+  .graph-focus input { width: 100%; margin-top: 6px; }
   #arr path { fill: var(--line-strong); } #arr-out path { fill: var(--edge-out); } #arr-in path { fill: var(--edge-in); }
   #graph g.node { cursor: pointer; }
   #graph g.node circle { stroke: var(--surface-1); stroke-width: 2; }
@@ -318,6 +358,7 @@
     <a href="#overview" data-view="overview">Overview</a>
     <a href="#live" data-view="live">Live network<span class="count" id="flag-count" hidden></span></a>
     <a href="#network" data-view="network">Network</a>
+    <a href="#cases" data-view="cases">Cases<span class="count" id="case-count" hidden></span></a>
     <a href="#routes" data-view="routes">Routes</a>
     <a href="#graph" data-view="graph">Graph</a>
     <a href="#attack" data-view="attack">ATT&amp;CK</a>
@@ -370,7 +411,7 @@
         </div>
       </div>
     </div>
-    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>8</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
+    <p class="muted" style="font-size:12px;margin-top:14px">Shortcuts: <kbd>1</kbd>–<kbd>9</kbd> switch tabs · <kbd>/</kbd> search · <kbd>Esc</kbd> close details</p>
   </section>
 
   <!-- LIVE NETWORK -->
@@ -427,6 +468,20 @@
     </div>
   </section>
 
+  <!-- CASES -->
+  <section class="view" id="view-cases">
+    <div class="toolbar">
+      <select id="c-status" aria-label="Show cases"><option value="">All cases</option><option value="open">Open</option><option value="investigating">Investigating</option><option value="closed">Closed</option></select>
+      <button class="primary" id="c-new">New case</button>
+      <span class="grow"></span>
+      <span class="muted" id="c-response" style="font-size:12px"></span>
+    </div>
+    <div class="cases-grid">
+      <div class="card"><h2>Cases</h2><ul class="case-list" id="c-list"></ul></div>
+      <div class="card" id="c-detail"></div>
+    </div>
+  </section>
+
   <!-- ROUTES -->
   <section class="view" id="view-routes">
     <div class="toolbar">
@@ -456,12 +511,14 @@
       <button class="ghost" id="g-labels" aria-pressed="true">Labels</button>
       <button class="ghost" id="g-clear">Clear</button>
       <span class="legend" id="g-legend"></span>
+      <span class="legend" id="g-kinds" title="Hide kinds of nodes that clutter the graph"></span>
     </div>
     <div id="graph-wrap">
       <svg id="graph" aria-label="Knowledge graph"><defs>
         <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,1L9,5L0,9z"/></marker>
         <marker id="arr-out" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,1L9,5L0,9z"/></marker>
         <marker id="arr-in" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,1L9,5L0,9z"/></marker>
+        <marker id="arr-path" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0,1L9,5L0,9z"/></marker>
       </defs><g id="viewport"><g id="cols"></g><g id="edges"></g><g id="nodes"></g></g></svg>
       <div class="graph-focus" id="g-focus" hidden></div>
       <div class="graph-root" id="g-root"></div>
@@ -518,6 +575,7 @@
   </section>
 </main>
 <aside id="drawer" aria-label="Indicator details"></aside>
+<dialog class="modal" id="case-picker" aria-labelledby="cp-title"></dialog>
 </div>
 <div id="toasts" aria-live="polite"></div>
 <div id="tooltip" role="tooltip"></div>
@@ -628,7 +686,7 @@ applyTheme(store.get("iglite-theme"));
 $("theme").onclick = () => { const next = isDark() ? "light" : "dark"; applyTheme(next); store.set("iglite-theme", next); };
 
 /* ---------- routing & shortcuts ---------- */
-const VIEWS = ["overview", "live", "network", "routes", "graph", "attack", "indicators", "analyst"];
+const VIEWS = ["overview", "live", "network", "cases", "routes", "graph", "attack", "indicators", "analyst"];
 let view = "overview";
 function route() {
   view = (location.hash || "#overview").slice(1);
@@ -639,10 +697,20 @@ function route() {
   if (view === "graph") Graph.resize();
 }
 window.addEventListener("hashchange", route);
+// Download links (exports, Navigator layer) need the API token too, which a plain link can't send.
+document.addEventListener("click", async ev => {
+  const a = ev.target.closest && ev.target.closest('a[download][href^="/api/"]');
+  if (!a || !token) return;
+  ev.preventDefault();
+  const res = await fetch(a.getAttribute("href"), { headers: { Authorization: "Bearer " + token } });
+  if (!res.ok) { alert(`Download failed: ${res.status}`); return; }
+  const tmp = el("a", { href: URL.createObjectURL(await res.blob()), download: a.getAttribute("download") });
+  tmp.click(); setTimeout(() => URL.revokeObjectURL(tmp.href), 1000);
+});
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { Drawer.close(); Tip.hide(); return; }
   if (e.target.matches("input, textarea, select") || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key >= "1" && e.key <= "8") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
+  if (e.key >= "1" && e.key <= "9") { location.hash = "#" + VIEWS[+e.key - 1]; e.preventDefault(); }
   if (e.key === "/") {
     const box = { live: "live-q", network: "nw-q", routes: "r-target", graph: "g-add", attack: "at-q", indicators: "i-q", overview: "inv-text", analyst: "a-q" }[view];
     if (box) { $(box).focus(); e.preventDefault(); }
@@ -867,13 +935,15 @@ async function fetchAlerts() {
     return el("li", { class: a.status && a.status !== "open" ? "resolved" : null, onclick: () => Drawer.open(a.key) },
       badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted" }, timeAgo(a.at)),
       el("span", { class: "sub" }, describeAlert(a)),
-      el("span", { class: "sub" }, Triage.chip(a)),
+      el("span", { class: "sub" }, Triage.chip(a),
+        a.case_id ? el("button", { class: "ghost small", style: "margin-left:6px", onclick: stop(() => Cases.go(a.case_id)) }, `Case #${a.case_id}`) : null),
       a.status && a.status !== "open"
         ? el("span", { class: "acts" }, el("span", { class: "muted", style: "font-size:12px" }, STATUS_LABEL[a.status] || a.status),
             el("button", { class: "ghost small", onclick: stop(() => Feedback.mark(a.key, "clear", false)) }, "Undo"))
         : el("span", { class: "acts" },
             el("button", { class: "ghost small", title: "Mark this indicator as a false positive", onclick: stop(() => Feedback.mark(a.key, "false_positive")) }, "False positive"),
-            el("button", { class: "ghost small", title: "Confirm this is a real threat", onclick: stop(() => Feedback.mark(a.key, "confirmed")) }, "Confirm")));
+            el("button", { class: "ghost small", title: "Confirm this is a real threat", onclick: stop(() => Feedback.mark(a.key, "confirmed")) }, "Confirm"),
+            a.case_id ? null : el("button", { class: "ghost small", title: "File this alert in a case", onclick: stop(() => CasePicker.open({ alert: a })) }, "Add to case")));
   }));
   if (!recentAlerts.length) $("alert-feed").append(el("li", { class: "muted", style: "display:block;cursor:default" },
     watch.mode === "gateway" ? "No alerts yet. Every device's traffic through the gateway is checked against your sources."
@@ -1181,7 +1251,8 @@ const Network = {
       el("div", { class: "ip" }, d.ip),
       el("div", { class: "st" }, `${plural(d.connections, "connection")} · ${plural(d.remotes, "server")} · ${plural(d.lookups, "site")}`),
       el("div", { class: "fl" }, d.flagged ? badge(d.worst, d.score) : el("span", { class: "pill-n" }, "nothing flagged"),
-        d.open_alerts ? el("span", { class: "pill-n bad" }, `${d.open_alerts} alert${d.open_alerts > 1 ? "s" : ""}`) : null)))
+        d.open_alerts ? el("span", { class: "pill-n bad" }, `${d.open_alerts} alert${d.open_alerts > 1 ? "s" : ""}`) : null,
+        d.quarantined ? el("span", { class: "blocked-pill", title: "Cut off from the internet" }, "quarantined") : null)))
       : el("p", { class: "empty", style: "grid-column:1/-1" }, ds.length ? "No device matches the filter." : "No devices seen yet. Traffic appears within one scan of reaching the gateway."));
     const feedFlagged = $("nw-feed-flagged").checked;
     const items = this.feed.filter(x => !feedFlagged || x.verdict === "malicious" || x.verdict === "suspicious").slice(0, 150);
@@ -1203,7 +1274,11 @@ const Network = {
         d.name ? el("span", { class: "muted mono", style: "font-weight:400;margin-left:8px;font-size:12px" }, ip) : null),
         el("button", { class: "icon-btn", "aria-label": "Close device", onclick: () => { this.selected = null; card.hidden = true; this.render(); } }, "✕")),
       el("p", { class: "muted", style: "margin:0 0 8px;font-size:12px" }, d.first_seen ? `First seen ${timeAgo(d.first_seen)} · last ${timeAgo(d.last_seen)}` : ""),
+      d.quarantined ? el("div", { class: "warn", role: "note" }, el("b", {}, "Quarantined. "), "This device can reach the gateway but nothing beyond it.") : null,
       el("div", { class: "actions" },
+        el("button", { class: d.quarantined ? "primary" : "ghost", title: d.quarantined ? "Let it reach the internet again" : "Cut it off from the internet (it can still reach the gateway)",
+          onclick: () => Respond.toggle("host:" + ip, d.quarantined, name) }, d.quarantined ? "Release from quarantine" : "Quarantine"),
+        el("button", { class: "ghost", onclick: () => CasePicker.open({ key: "host:" + ip, title: `${name} compromised` }) }, "Add to case"),
         el("button", { class: "ghost", onclick: () => this.rename(ip, d.name) }, d.name ? "Rename" : "Name this device"),
         el("button", { class: "ghost", title: "Never raise alerts for this device's traffic", onclick: () => Feedback.suppress("device", ip) }, "Mute device"),
         el("button", { class: "ghost", onclick: () => Graph.focus(d.key) }, "Show in graph"),
@@ -1314,7 +1389,7 @@ const Drawer = {
     if (view === "live") Live.render(); else if (view === "indicators") Indicators.render();
     Graph.select(key);
   },
-  close() { this.key = null; $("drawer").classList.remove("open"); Graph.select(null); },
+  close() { this.key = null; $("drawer").classList.remove("open"); Graph.path = null; Graph.pathFrom = null; Graph.select(null); },
   head(title) {
     return el("div", { class: "drawer-head" }, el("h2", { class: "secondary", style: "font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin:0" }, title),
       el("button", { class: "icon-btn", onclick: () => this.close(), "aria-label": "Close details" }, "✕"));
@@ -1367,6 +1442,11 @@ const Drawer = {
         el("b", {}, a.override === "false_positive" ? "You marked this a false positive. " : "You confirmed this is malicious. "),
         "Your mark overrides the computed verdict; the evidence below is kept for reference. ",
         el("button", { class: "ghost small", onclick: () => Feedback.mark(key, "clear", false) }, "Undo")) : null,
+      info.blocked ? el("div", { class: "warn", role: "note" }, el("b", {}, n.kind === "host" ? "Quarantined. " : "Blocked. "),
+        n.kind === "host" ? "This device can reach the gateway but nothing beyond it." : "It is in the blocklist feeds and, if the gateway enforces blocks, dropped there.") : null,
+      info.cases && info.cases.length ? el("p", { class: "secondary", style: "margin:8px 0 0;font-size:13px" }, "In ",
+        info.cases.map((c, i) => [i ? ", " : "", el("a", { href: "#cases", onclick: ev => { ev.preventDefault(); Cases.go(c.id); } }, `case #${c.id} ${c.title}`),
+          c.status === "closed" ? " (closed)" : ""])) : null,
       a.contradiction && !a.override ? el("div", { class: "warn", role: "note" }, el("b", {}, "Sources disagree. "), "Trusted sources call this both malicious and benign. Check the evidence before acting.") : null,
       el("div", { class: "actions" },
         LOOKUP_KINDS.has(n.kind) ? el("button", { class: "primary", onclick: ev => reInvestigate(ev.currentTarget) }, "Investigate again") : null,
@@ -1376,6 +1456,12 @@ const Drawer = {
         LOOKUP_KINDS.has(n.kind) ? el("button", { class: "ghost", title: "Keep scoring it, but never raise live alerts for it", onclick: () => Feedback.suppress("indicator", key) }, "Never alert") : null,
         n.kind === "process" ? el("button", { class: "ghost", title: "Never raise live alerts for this program", onclick: () => Feedback.suppress("process", n.value) }, "Mute this program") : null,
         n.kind === "host" && !["this-computer", "gateway"].includes(n.value) ? el("button", { class: "ghost", title: "Never raise live alerts for this device's traffic", onclick: () => Feedback.suppress("device", n.value) }, "Mute this device") : null,
+        BLOCKABLE.has(n.kind) ? el("button", { class: info.blocked ? "primary" : "ghost", title: info.blocked ? "Remove it from the blocklist" : "Add it to the blocklist feeds and the gateway firewall",
+          onclick: () => Respond.toggle(key, info.blocked) }, info.blocked ? "Unblock" : "Block") : null,
+        n.kind === "host" && !isOrigin(n) ? el("button", { class: info.blocked ? "primary" : "ghost", onclick: () => Respond.toggle(key, info.blocked, n.attrs.name || n.value) },
+          info.blocked ? "Release from quarantine" : "Quarantine") : null,
+        el("button", { class: "ghost", onclick: () => CasePicker.open({ key, title: LOOKUP_KINDS.has(n.kind) ? `${a.verdict === "malicious" ? "Malicious" : "Investigate"} ${n.value}` : nodeLabel(n) }) }, "Add to case"),
+        el("button", { class: "ghost", title: "How is this connected to something else?", onclick: () => Graph.startPath(key) }, "Find path to…"),
         el("button", { class: "ghost", onclick: () => Analyst.send(`Explain ${key}: is it dangerous, what is it connected to, and what should I do about it?`) }, "Ask analyst"),
         el("button", { class: "ghost", onclick: () => Graph.focus(key) }, "Show in graph"),
         el("button", { class: "ghost", onclick: () => { Graph.setRoot(key); Graph.focus(key, false); } }, "Make graph root"),
@@ -1402,6 +1488,198 @@ const Drawer = {
       el("h3", {}, "Seen"),
       el("p", { class: "secondary", style: "margin:0" }, `First ${timeAgo(n.first_seen)} · last ${timeAgo(n.last_seen)}`),
     );
+  },
+};
+
+/* ---------- response: block / quarantine ---------- */
+const BLOCKABLE = new Set(["ip", "domain", "url"]);
+const Respond = {
+  status: null,
+  async toggle(key, blocked, label) {
+    const device = key.startsWith("host:"), value = device ? key.slice(5) : key, who = label || value;
+    if (!blocked && device && !confirm(`Quarantine ${who}? It will be cut off from the internet until you release it (it can still reach the gateway).`)) return;
+    try {
+      const r = await api(blocked ? "/api/unblock" : "/api/block", { value, device });
+      this.say(blocked ? (device ? `Released ${who}` : `Unblocked ${r.value}`) : (device ? `Quarantined ${who}` : `Blocked ${r.value}`), r.enforcement);
+    } catch (e) { alert(e.message); return; }
+    if (Drawer.key) Drawer.open(Drawer.key);
+    if (view === "network") { await Network.refresh(); if (Network.selected) Network.show(Network.selected, false); }
+    if (view === "cases") Cases.refresh();
+  },
+  say(title, enf) {
+    const t = el("div", { class: "toast", style: `--c:var(${enf && !enf.ok ? "--st-warning" : "--st-good"})`, role: "status", onclick: () => t.remove() },
+      el("div", { class: "t" }, title), el("div", { class: "secondary", style: "font-size:12px;margin-top:4px" }, enf ? enf.detail : ""));
+    $("toasts").append(t); setTimeout(() => t.remove(), 9000);
+  },
+};
+
+/* ---------- cases ---------- */
+const SEVERITIES = ["low", "medium", "high", "critical"], CASE_STATUSES = ["open", "investigating", "closed"];
+const sevChip = sev => el("span", { class: "sev " + sev }, sev);
+const Cases = {
+  list: [], selected: null, data: null,
+  editing() { const a = document.activeElement; return !!a && $("c-detail").contains(a) && a.matches("input, textarea"); },
+  go(id) { this.selected = id; if (view === "cases") this.refresh(); else location.hash = "#cases"; },
+  async count() {
+    try { const all = await api("/api/cases"); this.badge(all); } catch (e) {}
+  },
+  badge(all) {
+    const n = all.filter(c => c.status !== "closed").length, b = $("case-count");
+    b.hidden = !n; b.textContent = n; b.title = `${n} open case${n === 1 ? "" : "s"}`;
+  },
+  async refresh() {
+    const status = $("c-status").value;
+    const all = await api("/api/cases"); this.badge(all);
+    this.list = status ? all.filter(c => c.status === status) : all;
+    if (!this.list.some(c => c.id === this.selected)) this.selected = this.list.length ? this.list[0].id : null;
+    this.renderList();
+    if (this.selected) await this.show(this.selected); else this.empty();
+    this.response();
+  },
+  renderList() {
+    fill($("c-list"), this.list.length ? this.list.map(c => el("li", { "aria-current": String(c.id === this.selected), onclick: () => { this.selected = c.id; this.renderList(); this.show(c.id); } },
+      el("div", { class: "t" }, sevChip(c.severity), el("span", { style: "overflow:hidden;text-overflow:ellipsis" }, `#${c.id} ${c.title}`)),
+      el("div", { class: "m" }, `${c.status} · ${plural(c.alerts, "alert")} · ${plural(c.indicators, "indicator")} · ${timeAgo(c.updated)}`)))
+      : el("li", { class: "muted", style: "cursor:default" }, $("c-status").value ? "No cases in this state." : "No cases yet."));
+  },
+  empty() {
+    fill($("c-detail"), el("h2", {}, "Cases"),
+      el("p", {}, "A case groups the alerts, devices and indicators of one incident, with notes and a timeline of what was done."),
+      el("ul", { class: "steps-list" },
+        el("li", {}, "Open one from an alert (", el("b", {}, "Add to case"), " in Recent alerts) or with ", el("b", {}, "New case"), "."),
+        el("li", {}, "New alerts for the same device or indicator join the open case by themselves."),
+        el("li", {}, "Block indicators or quarantine devices from the case; it is all recorded in the timeline."),
+        el("li", {}, "Copy the report into a ticket or email when you're done.")));
+  },
+  async response() {
+    try {
+      const [n, b] = await Promise.all([api("/api/notify"), api("/api/blocks")]);
+      const enf = b.enforcer === "none" ? "blocklist feeds only" : b.enforcer;
+      fill($("c-response"), `Blocking: ${enf} · Notifications: `,
+        n.channels.length ? [n.channels.join(", "), " ", el("button", { class: "ghost small", onclick: ev => this.testNotify(ev.target) }, "Send test")]
+          : el("span", { title: "Set IGLITE_NOTIFY_SLACK, IGLITE_NOTIFY_TEAMS, IGLITE_NOTIFY_WEBHOOK or IGLITE_NOTIFY_EMAIL in .env and restart" }, "off"));
+    } catch (e) {}
+  },
+  async testNotify(btn) {
+    btn.disabled = true;
+    try { const r = await api("/api/notify/test", {}); Respond.say("Test notification", { ok: r.results.every(x => x.ok), detail: r.results.map(x => `${x.channel}: ${x.ok ? "sent" : x.detail}`).join(" · ") }); }
+    catch (e) { alert(e.message); }
+    btn.disabled = false;
+  },
+  async call(path, body) {
+    try { this.data = await api(path, body); this.render(); const all = await api("/api/cases"); this.badge(all); this.list = $("c-status").value ? all.filter(c => c.status === $("c-status").value) : all; this.renderList(); }
+    catch (e) { alert(e.message); }
+  },
+  async show(id) {
+    try { this.data = await api("/api/case?id=" + id); } catch (e) { this.empty(); return; }
+    if (!this.editing()) this.render();
+  },
+  async report(save) {
+    const id = this.data.id;
+    const res = await fetch("/api/case/report?id=" + id, { headers: token ? { Authorization: "Bearer " + token } : {} });
+    const text = await res.text();
+    if (save) { const a = el("a", { href: URL.createObjectURL(new Blob([text], { type: "text/markdown" })), download: `case-${id}.md` }); a.click(); URL.revokeObjectURL(a.href); }
+    else { try { await navigator.clipboard.writeText(text); Respond.say("Report copied", { ok: true, detail: "Markdown, ready to paste into a ticket, email or chat." }); } catch (e) { alert("Copy failed: " + e.message); } }
+  },
+  render() {
+    const c = this.data, id = c.id;
+    const upd = fields => this.call("/api/case/update", { id, ...fields });
+    const select = (opts, cur, field) => el("select", { "aria-label": field, onchange: ev => upd({ [field]: ev.target.value }) },
+      opts.map(o => el("option", { value: o, selected: o === cur }, o)));
+    const rm = (path, body) => el("button", { class: "icon-btn", title: "Remove from the case", onclick: ev => { ev.stopPropagation(); this.call(path, { id, remove: true, ...body }); } }, "✕");
+    const devices = c.devices, inds = c.indicators.filter(i => i.kind !== "host");
+    const note = el("textarea", { placeholder: "Add a note: what you found, what you did, who you told…", rows: 2 });
+    const addNote = () => { const text = note.value.trim(); if (text) this.call("/api/case/note", { id, text }); };
+    note.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) addNote(); });
+    const addInd = el("input", { type: "search", style: "width:100%;margin-top:6px", placeholder: "Add an indicator or device (e.g. 203.0.113.9, host:10.42.0.5) and press Enter" });
+    addInd.addEventListener("keydown", ev => { if (ev.key === "Enter" && addInd.value.trim()) this.call("/api/case/indicator", { id, key: addInd.value.trim() }); });
+    const summary = el("textarea", { placeholder: "Summary: what happened, impact, next steps", rows: 2, style: "min-height:52px" }, c.summary);
+    summary.addEventListener("change", () => upd({ summary: summary.value }));
+    const title = el("input", { class: "case-title", type: "text", value: c.title, "aria-label": "Case title" });
+    title.addEventListener("change", () => title.value.trim() && upd({ title: title.value.trim() }));
+    fill($("c-detail"),
+      title,
+      el("div", { class: "case-meta" }, el("span", { class: "muted" }, `Case #${id}`), select(CASE_STATUSES, c.status, "status"), select(SEVERITIES, c.severity, "severity"),
+        el("span", { class: "muted", style: "font-size:12px" }, `opened ${timeAgo(c.created)} · updated ${timeAgo(c.updated)}`),
+        el("span", { style: "margin-left:auto;display:flex;gap:6px" },
+          el("button", { class: "ghost small", onclick: () => this.report(false) }, "Copy report"),
+          el("button", { class: "ghost small", onclick: () => this.report(true) }, "Download"),
+          el("button", { class: "ghost small", onclick: () => { Graph.showCase(c); } }, "Show in graph"))),
+      summary,
+      el("h3", {}, `Devices (${devices.length})`),
+      devices.length ? el("ul", { class: "links" }, devices.map(d => el("li", { onclick: () => Drawer.open(d.key) },
+        el("span", { class: "muted nowrap", style: "min-width:58px" }, "device"), el("span", {}, d.name || d.value), el("span", { class: "mono muted" }, d.value),
+        d.blocked ? el("span", { class: "blocked-pill" }, "quarantined") : null,
+        el("span", { style: "margin-left:auto;display:flex;gap:6px" },
+          el("button", { class: "ghost small", onclick: ev => { ev.stopPropagation(); Respond.toggle(d.key, d.blocked, d.name || d.value); } }, d.blocked ? "Release" : "Quarantine"),
+          rm("/api/case/indicator", { key: d.key })))))
+        : el("p", { class: "muted" }, "No devices yet. They are added with their alerts."),
+      el("h3", {}, `Indicators (${inds.length})`),
+      inds.length ? el("ul", { class: "links" }, inds.map(i => el("li", { onclick: () => Drawer.open(i.key) },
+        LOOKUP_KINDS.has(i.kind) ? badge(i.verdict, i.score) : el("span", { class: "muted nowrap", style: "min-width:58px" }, i.kind),
+        el("span", { class: "mono" }, i.value), i.blocked ? el("span", { class: "blocked-pill" }, "blocked") : null,
+        el("span", { style: "margin-left:auto;display:flex;gap:6px" },
+          BLOCKABLE.has(i.kind) ? el("button", { class: "ghost small", onclick: ev => { ev.stopPropagation(); Respond.toggle(i.key, i.blocked); } }, i.blocked ? "Unblock" : "Block") : null,
+          rm("/api/case/indicator", { key: i.key })))))
+        : el("p", { class: "muted" }, "No indicators yet."),
+      addInd,
+      c.techniques.length ? el("h3", {}, `MITRE ATT&CK (${c.techniques.length})`) : null,
+      c.techniques.length ? el("ul", { class: "links" }, c.techniques.map(t => el("li", { onclick: () => { location.hash = "#attack"; AttackView.show(t.id); } },
+        el("span", { class: "mono" }, t.id), el("span", {}, t.name), el("span", { class: "muted", style: "margin-left:auto" }, t.tactics.join(", "))))) : null,
+      el("h3", {}, `Alerts (${c.alerts.length})`),
+      c.alerts.length ? el("ul", { class: "links" }, c.alerts.map(a => el("li", { onclick: () => Drawer.open(a.key) },
+        badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted" }, describeAlert(a)),
+        el("span", { style: "margin-left:auto;display:flex;gap:6px;align-items:center" }, el("span", { class: "muted nowrap", style: "font-size:12px" }, clock(a.at)),
+          rm("/api/case/alert", { alert: a.id })))))
+        : el("p", { class: "muted" }, "No alerts filed yet."),
+      el("h3", {}, "Timeline"),
+      el("ul", { class: "timeline" }, c.timeline.slice().reverse().map(e => el("li", { class: e.kind },
+        el("span", { class: "when", title: new Date(e.at * 1000).toLocaleString() }, timeAgo(e.at)), e.kind === "note" ? el("b", {}, "Note: ") : null, e.text))),
+      el("div", { class: "note-box" }, note, el("button", { class: "primary", onclick: addNote }, "Add note")),
+    );
+  },
+};
+$("c-status").onchange = () => Cases.refresh();
+$("c-new").onclick = () => CasePicker.open({ fresh: true });
+
+/* "Add to case": pick an open case or start a new one. */
+const CasePicker = {
+  async open({ alert: a = null, key = null, title = "", fresh = false }) {
+    const dlg = $("case-picker");
+    let open = [];
+    if (!fresh) { try { open = (await api("/api/cases")).filter(c => c.status !== "closed"); } catch (e) {} }
+    const name = el("input", { type: "text", value: title || (a ? `${a.verdict === "malicious" ? "Malicious" : "Suspicious"} ${a.key.split(":").slice(1).join(":")}${a.context && a.context.device_name ? " on " + a.context.device_name : ""}` : ""),
+      placeholder: "Case title", oninput: () => { const r = dlg.querySelector("input[value=new]"); if (r) r.checked = true; } });
+    const sev = el("select", {}, SEVERITIES.map(s => el("option", { selected: s === (a && a.verdict === "malicious" ? "high" : "medium") }, s)));
+    const choice = el("div", {},
+      open.map((c, i) => el("label", { class: "opt" }, el("input", { type: "radio", name: "cp", value: c.id, checked: i === 0 }), sevChip(c.severity), `#${c.id} ${c.title}`)),
+      el("label", { class: "opt" }, el("input", { type: "radio", name: "cp", value: "new", checked: !open.length }), el("b", {}, "New case")),
+      el("div", { style: "display:flex;gap:8px;margin:4px 0 0 26px" }, name, sev));
+    const go = async () => {
+      const picked = dlg.querySelector("input[name=cp]:checked").value;
+      try {
+        let id;
+        if (picked === "new") {
+          const c = await api("/api/cases", { title: name.value.trim(), severity: sev.value, alerts: a ? [a.id] : [], indicators: key ? [key] : [] });
+          id = c.id;
+        } else {
+          id = +picked;
+          if (a) await api("/api/case/alert", { id, alert: a.id });
+          if (key) await api("/api/case/indicator", { id, key });
+        }
+        dlg.close(); pollAlerts(); if (Drawer.key) Drawer.open(Drawer.key);
+        Respond.say(`Filed in case #${id}`, { ok: true, detail: "Open the Cases tab for its timeline." });
+        Cases.selected = id; Cases.count(); if (view === "cases") Cases.refresh();
+      } catch (e) { alert(e.message); }
+    };
+    fill(dlg, el("h2", { id: "cp-title" }, fresh ? "New case" : a ? "File this alert in a case" : "Add to a case"),
+      a ? el("p", { class: "secondary", style: "margin:0 0 8px;font-size:13px" }, badge(a.verdict, a.score), " ", el("span", { class: "mono" }, a.key)) : null,
+      key ? el("p", { class: "mono secondary", style: "margin:0 0 8px;font-size:13px" }, key) : null,
+      choice,
+      el("div", { class: "actions", style: "margin-top:14px" }, el("button", { class: "ghost", onclick: () => dlg.close() }, "Cancel"),
+        el("button", { class: "primary", onclick: go }, fresh || !open.length ? "Create case" : "Add")));
+    dlg.showModal();
+    if (fresh || !open.length) name.focus();
   },
 };
 
@@ -1456,7 +1734,36 @@ const Graph = {
     for (const [id, e] of this.edges) if (!this.nodes.has(e.src) || !this.nodes.has(e.dst)) this.edges.delete(id);
   },
   degree(key) { let d = 0; for (const e of this.edges.values()) if (e.src === key || e.dst === key) d++; return d; },
-  visible(n) { return !this.hidden.has(n.verdict || "unknown"); },
+  hiddenKinds: new Set(JSON.parse(store.get("iglite-hidden-kinds") || "[]")),
+  visible(n) { return !this.hidden.has(n.verdict || "unknown") && !(this.hiddenKinds.has(n.kind) && n.key !== this.selected && !(this.path && this.path.keys.has(n.key))); },
+  kinds() {
+    const KINDS = [["technique", "Techniques"], ["tag", "Tags"], ["software", "Malware & groups"], ["report", "Reports"]];
+    fill($("g-kinds"), KINDS.map(([k, label]) => el("label", { class: "check" },
+      el("input", { type: "checkbox", checked: !this.hiddenKinds.has(k), onchange: ev => {
+        const ks = k === "software" ? ["software", "group"] : [k];
+        ks.forEach(x => ev.target.checked ? this.hiddenKinds.delete(x) : this.hiddenKinds.add(x));
+        store.set("iglite-hidden-kinds", JSON.stringify([...this.hiddenKinds])); this.build(); this.relayout(); } }), label)));
+  },
+  path: null, pathFrom: null,
+  startPath(from) {
+    this.path = null; this.pathFrom = from;
+    if (location.hash !== "#graph") location.hash = "#graph";
+    this.load(from, true).then(() => { this.select(from); setTimeout(() => this.fit(), 450); });
+  },
+  async findPath(from, to, all = false) {
+    this.pathFrom = null;
+    let r;
+    try { r = await api(`/api/path?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${all ? "&all=1" : ""}`); }
+    catch (e) { this.path = { error: e.message, from, to, keys: new Set(), edgeIds: new Set(), edges: [] }; this.applyFocus(); return; }
+    this.path = { ...r, all, keys: new Set(r.nodes.map(n => n.key)), edgeIds: new Set(r.edges.map(e => `${e.src}|${e.rel}|${e.dst}`)) };
+    if (r.found) { this.merge({ nodes: r.nodes, edges: r.edges }, from); setTimeout(() => this.fit(), 450); }
+    this.applyFocus();
+  },
+  async showCase(c) {
+    location.hash = "#graph";
+    for (const i of c.indicators.slice(0, 12)) await this.load(i.key, false);
+    setTimeout(() => this.fit(), 450);
+  },
   setRoot(key) { this.root = key; this.build(); this.relayout(); },
   setMode(mode) {
     this.mode = mode; store.set("iglite-layout", mode);
@@ -1600,7 +1907,12 @@ const Graph = {
       if (Math.abs(ev.clientX - start[0]) + Math.abs(ev.clientY - start[1]) > 3) moved = true;
       if (moved) { if (this.mode === "force") n.fixed = true; [n.x, n.y] = this.toWorld(ev); n.tx = n.x; n.ty = n.y; this.render(); this.kick(0.3); }
     });
-    g.addEventListener("pointerup", () => { start = null; if (!moved) { Drawer.open(n.key); this.load(n.key, true); } if (this.mode === "force") n.fixed = moved; });
+    g.addEventListener("pointerup", () => {
+      start = null;
+      if (!moved && this.pathFrom && n.key !== this.pathFrom) this.findPath(this.pathFrom, n.key);
+      else if (!moved) { Drawer.open(n.key); this.load(n.key, true); }
+      if (this.mode === "force") n.fixed = moved;
+    });
     g.addEventListener("dblclick", ev => { ev.stopPropagation(); this.load(n.key, true, 2); });
     g.addEventListener("pointerenter", ev => this.highlight(n, ev));
     g.addEventListener("pointerleave", () => this.highlight(null));
@@ -1622,8 +1934,43 @@ const Graph = {
     for (const n of this.nodes.values()) n._el && n._el.classList.toggle("sel", n.key === key);
     this.applyFocus();
   },
+  /* Path finder: waiting for the second node, or the chain found between two. */
+  applyPath() {
+    const p = this.path, box = $("g-focus"), cancel = el("button", { class: "ghost small", onclick: () => { this.path = null; this.pathFrom = null; this.applyFocus(); } }, "Clear");
+    for (const e of this.edges.values()) if (e._el) {
+      const on = !!p && p.edgeIds.has(`${e.src}|${e.rel}|${e.dst}`);
+      e._el.classList.toggle("onpath", on); e._el.classList.remove("in", "out"); e._el.classList.toggle("dim", !!p && p.found && !on);
+    }
+    for (const n of this.nodes.values()) if (n._el) {
+      const on = !!p && p.keys.has(n.key);
+      n._el.classList.toggle("onpath", on); n._el.classList.toggle("dim", !!p && p.found && !on);
+    }
+    if (this.pathFrom) {
+      const from = this.nodes.get(this.pathFrom), input = el("input", { type: "search", placeholder: "…or type an indicator and press Enter" });
+      input.addEventListener("keydown", ev => { if (ev.key === "Enter" && input.value.trim()) this.findPath(this.pathFrom, input.value.trim()); });
+      fill(box, el("div", { class: "who" }, "Path from ", from ? nodeLabel(from) : this.pathFrom),
+        el("div", { class: "muted", style: "margin-top:2px" }, "Click the node to connect it to"), input, el("div", { class: "dirs" }, cancel));
+      box.hidden = false; setTimeout(() => input.focus(), 0); return;
+    }
+    const label = key => { const n = this.nodes.get(key); return n ? nodeLabel(n) : key; };
+    if (!p.found) {
+      fill(box, el("div", { class: "who" }, p.error ? "Path search failed" : "No connection found"),
+        el("div", { class: "muted", style: "margin-top:4px" }, p.error || `${label(p.from)} and ${label(p.to)} are not linked within 6 hops` + (p.all ? "." : " (without going through tags, techniques or the gateway).")),
+        el("div", { class: "dirs" }, !p.all && !p.error ? el("button", { class: "ghost small", onclick: () => this.findPath(p.from, p.to, true) }, "Allow those too") : null, cancel));
+      box.hidden = false; return;
+    }
+    let at = p.from; const chain = [el("span", { class: "hop", onclick: () => Drawer.open(p.from) }, label(p.from))];
+    for (const e of p.edges) {
+      const fwd = e.src === at, nxt = fwd ? e.dst : e.src, k = nxt;
+      chain.push(el("span", { class: "rel" }, fwd ? `—${e.rel}→` : `←${e.rel}—`), el("span", { class: "hop", onclick: () => Drawer.open(k) }, label(nxt)));
+      at = nxt;
+    }
+    fill(box, el("div", { class: "who" }, `Connected in ${p.hops} hop${p.hops === 1 ? "" : "s"}`), el("div", { class: "chain" }, chain), el("div", { class: "dirs" }, cancel));
+    box.hidden = false;
+  },
   /* The selected node's view: incoming edges orange, outgoing blue, everything unrelated faded. */
   applyFocus() {
+    if (this.path || this.pathFrom) return this.applyPath();
     const k = this.selected && this.nodes.has(this.selected) ? this.selected : null, near = new Set([k]);
     let nin = 0, nout = 0;
     for (const e of this.edges.values()) {
@@ -1641,6 +1988,7 @@ const Graph = {
         el("span", {}, el("span", { class: "swatch", style: "background:var(--edge-in)" }), `${nin} incoming`),
         el("span", {}, el("span", { class: "swatch", style: "background:var(--edge-out)" }), `${nout} outgoing`),
         el("button", { class: "ghost small", title: "Add their connections too", onclick: () => this.load(k, true, 2) }, "Expand"),
+        el("button", { class: "ghost small", title: "How is this connected to another node?", onclick: () => this.startPath(k) }, "Path to…"),
         el("button", { class: "ghost small", onclick: () => Drawer.close() }, "Clear")));
     box.hidden = false;
   },
@@ -1655,6 +2003,7 @@ const Graph = {
     fill($("g-legend"), VERDICTS.map(v => el("label", { class: "check" },
       el("input", { type: "checkbox", checked: !this.hidden.has(v), onchange: ev => { ev.target.checked ? this.hidden.delete(v) : this.hidden.add(v); this.build(); this.relayout(); } }),
       badge(v))));
+    this.kinds();
   },
 };
 (function bindGraphCanvas() {
@@ -1810,6 +2159,7 @@ async function refreshView() {
     else if (view === "analyst") await Analyst.init();
     else if (view === "attack") await AttackView.refresh();
     else if (view === "network") await Network.refresh();
+    else if (view === "cases") await Cases.refresh();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
     else if (view === "graph" && !Graph.nodes.size) {
       await Graph.load(watch.mode === "gateway" ? "host:gateway" : "host:this-computer", true, 3);
@@ -1821,6 +2171,7 @@ async function refreshView() {
     }
   } catch (e) { /* surfaced by the next successful poll */ }
 }
+let pollTick = 0;
 async function poll() {
   if (!document.hidden) {
     try {
@@ -1828,6 +2179,7 @@ async function poll() {
       await pollAlerts();
       if (view === "live" && watch.running) await Live.refresh();
       if (view === "network") await Network.refresh();
+      if (view === "cases" && !Cases.editing()) await Cases.refresh(); else if (++pollTick % 6 === 1) Cases.count();
       if (view === "overview") { await refreshStats(); await Triage.refreshStatus(); if (watch.running) await Activity.refresh(); }
     } catch (e) {}
   }

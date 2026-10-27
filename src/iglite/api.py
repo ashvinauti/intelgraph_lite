@@ -18,6 +18,18 @@ Endpoints
     GET  /api/lookups?since=        live feed of DNS lookups across the network
     GET  /api/blocklist/{ip,domain,url}.txt?suspicious=0&min_score=0
                                     plain-text feed for a firewall / DNS filter to pull
+    GET  /api/path?from=&to=&all=0  shortest chain of edges linking two nodes
+    GET  /api/cases?status=         cases (incidents); POST to create one
+                                    {"title", "severity", "summary", "alerts": [ids], "indicators": [keys]}
+    GET  /api/case?id=              one case: alerts, indicators, devices, techniques, timeline
+    POST /api/case/update           {"id", "title"?, "status"?, "severity"?, "summary"?}
+    POST /api/case/note             {"id", "text"}
+    POST /api/case/alert            {"id", "alert", "remove"?}   file / unfile an alert
+    POST /api/case/indicator        {"id", "key", "remove"?}
+    GET  /api/case/report?id=       the case as Markdown
+    GET  /api/blocks                blocked indicators and quarantined devices
+    POST /api/block                 {"value", "device"?, "note"?, "case_id"?}; /api/unblock {"value", "device"?}
+    GET  /api/notify                notification channels and recent deliveries; POST /api/notify/test
     POST /api/extract      {"text": "..."}
     POST /api/investigate  {"indicators": [...], "text": "...", "depth": 1, "budget": 50}
 
@@ -37,7 +49,7 @@ from importlib import resources
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__, attack, export
+from . import __version__, attack, cases, export, respond
 from .engine import Engine
 from .extract import classify, extract
 from .model import KINDS
@@ -271,6 +283,11 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
         },
         "attack": attack.techniques_of(engine.store, key),
         "attack_entry": _attack_entry(key),
+        "blocked": key in respond.blocked_keys(engine.store),
+        "cases": [
+            {"id": c["id"], "title": c["title"], "status": c["status"]}
+            for c in filter(None, map(engine.store.case, engine.store.cases_with_indicator(key)))
+        ],
     }
 
 
@@ -528,6 +545,141 @@ def _investigate(engine: Engine, q: dict, body: dict) -> Any:
     return report.as_dict()
 
 
+# -- cases ---------------------------------------------------------------------------------
+
+
+def _case_id(raw: Any) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "id must be a case number")
+
+
+def _case_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return fn(*args, **kwargs)
+    except KeyError as exc:
+        raise ApiError(HTTPStatus.NOT_FOUND, str(exc).strip("'\""))
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+
+
+def _cases(engine: Engine, q: dict, body: dict) -> Any:
+    status = q.get("status") or None
+    if status and status not in cases.STATUSES:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"status must be one of {', '.join(cases.STATUSES)}")
+    return engine.store.cases(status)
+
+
+def _case_create(engine: Engine, q: dict, body: dict) -> Any:
+    alerts = [_case_id(a) for a in body.get("alerts") or []]
+    keys = [_key({"key": str(k)}) for k in body.get("indicators") or []]
+    case_id = _case_call(
+        cases.create,
+        engine.store,
+        str(body.get("title") or ""),
+        severity=str(body.get("severity") or "medium"),
+        summary=str(body.get("summary") or "")[:4000],
+        alerts=alerts,
+        indicators=keys,
+    )
+    return cases.detail(engine.store, case_id)
+
+
+def _case(engine: Engine, q: dict, body: dict) -> Any:
+    return _case_call(cases.detail, engine.store, _case_id(q.get("id")))
+
+
+def _case_update(engine: Engine, q: dict, body: dict) -> Any:
+    case_id = _case_id(body.get("id"))
+    fields = {k: str(body[k])[:4000] for k in ("title", "status", "severity", "summary") if k in body}
+    _case_call(cases.update, engine.store, case_id, **fields)
+    return cases.detail(engine.store, case_id)
+
+
+def _case_note(engine: Engine, q: dict, body: dict) -> Any:
+    case_id = _case_id(body.get("id"))
+    _case_call(cases.note, engine.store, case_id, str(body.get("text") or ""))
+    return cases.detail(engine.store, case_id)
+
+
+def _case_alert(engine: Engine, q: dict, body: dict) -> Any:
+    case_id, alert_id = _case_id(body.get("id")), _case_id(body.get("alert"))
+    fn = cases.detach_alert if body.get("remove") else cases.attach_alert
+    _case_call(fn, engine.store, case_id, alert_id)
+    return cases.detail(engine.store, case_id)
+
+
+def _case_indicator(engine: Engine, q: dict, body: dict) -> Any:
+    case_id, key = _case_id(body.get("id")), _key({"key": str(body.get("key") or "")})
+    fn = cases.remove_indicator if body.get("remove") else cases.add_indicator
+    _case_call(fn, engine.store, case_id, key)
+    return cases.detail(engine.store, case_id)
+
+
+def _case_report(engine: Engine, q: dict, body: dict) -> Any:
+    return _case_call(cases.report, engine.store, _case_id(q.get("id"))), "text/markdown; charset=utf-8"
+
+
+# -- response ------------------------------------------------------------------------------
+
+
+def _blocks(engine: Engine, q: dict, body: dict) -> Any:
+    return {"blocks": engine.store.blocks(), "enforcer": respond.enforcer(engine.config).name}
+
+
+def _block(engine: Engine, q: dict, body: dict) -> Any:
+    case_id = _case_id(body["case_id"]) if body.get("case_id") not in (None, "") else None
+    return _case_call(
+        respond.block,
+        engine,
+        str(body.get("value") or ""),
+        device=bool(body.get("device")),
+        note=str(body.get("note") or "")[:500],
+        case_id=case_id,
+    )
+
+
+def _unblock(engine: Engine, q: dict, body: dict) -> Any:
+    return _case_call(respond.unblock, engine, str(body.get("value") or ""), device=bool(body.get("device")))
+
+
+# -- graph path ------------------------------------------------------------------------------
+
+# Hubs that connect everything to everything: never stepping stones unless asked for.
+PATH_AVOID = ("tag:", "technique:", "software:", "group:", "asn:", "host:gateway", "host:this-computer")
+
+
+def _path(engine: Engine, q: dict, body: dict) -> Any:
+    src, dst = _key({"key": q.get("from", "")}), _key({"key": q.get("to", "")})
+    for k in (src, dst):
+        if engine.store.node(k) is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, f"{k} not found")
+    found = engine.store.path(
+        src, dst, max_hops=_int(q, "max_hops", 6, 8), avoid=() if _flag(q, "all") else PATH_AVOID
+    )
+    return {
+        "from": src,
+        "to": dst,
+        "found": found is not None,
+        **(found or {"nodes": [], "edges": [], "hops": None}),
+    }
+
+
+# -- notifications --------------------------------------------------------------------------
+
+
+def _notify_status(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.notifier().status()
+
+
+def _notify_test(engine: Engine, q: dict, body: dict) -> Any:
+    try:
+        return {"results": engine.notifier().test()}
+    except RuntimeError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+
+
 ROUTES = {
     ("GET", "/api/health"): _health,
     ("GET", "/api/stats"): _stats,
@@ -560,6 +712,20 @@ ROUTES = {
     ("GET", "/api/suppressions"): _suppressions,
     ("POST", "/api/suppressions"): _suppression_add,
     ("POST", "/api/suppressions/delete"): _suppression_delete,
+    ("GET", "/api/cases"): _cases,
+    ("POST", "/api/cases"): _case_create,
+    ("GET", "/api/case"): _case,
+    ("POST", "/api/case/update"): _case_update,
+    ("POST", "/api/case/note"): _case_note,
+    ("POST", "/api/case/alert"): _case_alert,
+    ("POST", "/api/case/indicator"): _case_indicator,
+    ("GET", "/api/case/report"): _case_report,
+    ("GET", "/api/blocks"): _blocks,
+    ("POST", "/api/block"): _block,
+    ("POST", "/api/unblock"): _unblock,
+    ("GET", "/api/path"): _path,
+    ("GET", "/api/notify"): _notify_status,
+    ("POST", "/api/notify/test"): _notify_test,
     ("GET", "/api/agent/status"): _agent_status,
     ("POST", "/api/agent"): _agent_ask,
     ("GET", "/api/agent"): _agent_get,
