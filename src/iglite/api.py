@@ -7,7 +7,13 @@ Endpoints
     GET  /api/sources
     GET  /api/indicators?verdict=&kind=&q=&limit=&offset=
     GET  /api/indicator?key=        node, assessment, evidence, edges
-    GET  /api/graph?key=&depth=&limit=
+    GET  /api/graph?key=&depth=&limit=&hide_common=0
+                                    hide_common=1 drops routine services (Google, Apple, CDNs...)
+    GET  /api/graph/live?since=&hide_common=1   edges live monitoring recorded since a time
+    GET  /api/connlog?dns=0&who=&q=&since=&until=&verdict=&limit=&offset=
+                                    the database of every connection (dns=1: DNS lookups)
+    GET  /api/connlog/stats; GET /api/connlog.csv?... (same filters)
+    GET  /api/common                the common-services catalogue in use; POST /api/common/check {"name"}
     GET  /api/export/{json,csv,stix}
     GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
     GET  /api/attack/technique?id=  one technique and its indicators
@@ -18,6 +24,18 @@ Endpoints
     GET  /api/lookups?since=        live feed of DNS lookups across the network
     GET  /api/blocklist/{ip,domain,url}.txt?suspicious=0&min_score=0
                                     plain-text feed for a firewall / DNS filter to pull
+    GET  /api/path?from=&to=&all=0  shortest chain of edges linking two nodes
+    GET  /api/cases?status=         cases (incidents); POST to create one
+                                    {"title", "severity", "summary", "alerts": [ids], "indicators": [keys]}
+    GET  /api/case?id=              one case: alerts, indicators, devices, techniques, timeline
+    POST /api/case/update           {"id", "title"?, "status"?, "severity"?, "summary"?}
+    POST /api/case/note             {"id", "text"}
+    POST /api/case/alert            {"id", "alert", "remove"?}   file / unfile an alert
+    POST /api/case/indicator        {"id", "key", "remove"?}
+    GET  /api/case/report?id=       the case as Markdown
+    GET  /api/blocks                blocked indicators and quarantined devices
+    POST /api/block                 {"value", "device"?, "note"?, "case_id"?}; /api/unblock {"value", "device"?}
+    GET  /api/notify                notification channels and recent deliveries; POST /api/notify/test
     POST /api/extract      {"text": "..."}
     POST /api/investigate  {"indicators": [...], "text": "...", "depth": 1, "budget": 50}
 
@@ -34,10 +52,11 @@ from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__, attack, export
+from . import __version__, attack, cases, export, respond
 from .engine import Engine
 from .extract import classify, extract
 from .model import KINDS
@@ -252,13 +271,40 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
     node = engine.store.node(key)
     if node is None:
         raise ApiError(HTTPStatus.NOT_FOUND, f"{key} not found")
+    edges = engine.store.edges_of(key)[:500]
+    others = {e["dst"] if e["src"] == key else e["src"] for e in edges}
+    from .common import protected
+
+    other_nodes = engine.store.nodes(others)
+    common = engine.common().classify(engine.store, other_nodes)
+    for k in protected(engine.store, other_nodes):
+        common.pop(k, None)
     return {
         "node": node,
         "assessment": engine.assess(key).as_dict(),
         "evidence": [asdict(e) for e in engine.store.evidence(key)],
-        "edges": engine.store.edges_of(key)[:500],
+        "edges": edges,
+        # The other end of each edge, so the details panel can show verdicts and names.
+        "neighbours": {
+            n["key"]: {
+                "kind": n["kind"],
+                "verdict": n["verdict"],
+                "score": n["score"],
+                "name": (n["attrs"] or {}).get("name") or (n["attrs"] or {}).get("attack.name"),
+                "common": common.get(n["key"]),
+            }
+            for n in other_nodes
+        },
         "attack": attack.techniques_of(engine.store, key),
         "attack_entry": _attack_entry(key),
+        "blocked": key in respond.blocked_keys(engine.store),
+        "common": None
+        if node["verdict"] in ("malicious", "suspicious") or protected(engine.store, [node])
+        else engine.common().classify(engine.store, [node]).get(key),
+        "cases": [
+            {"id": c["id"], "title": c["title"], "status": c["status"]}
+            for c in filter(None, map(engine.store.case, engine.store.cases_with_indicator(key)))
+        ],
     }
 
 
@@ -294,7 +340,14 @@ def _attack_navigator(engine: Engine, q: dict, body: dict) -> Any:
 
 
 def _graph(engine: Engine, q: dict, body: dict) -> Any:
-    return engine.store.neighbourhood(_key(q), _int(q, "depth", 1, 3), _int(q, "limit", 150, 1000))
+    key, depth, limit = _key(q), _int(q, "depth", 1, 3), _int(q, "limit", 150, 1000)
+    if not _flag(q, "hide_common"):
+        return engine.store.neighbourhood(key, depth, limit)
+    from .common import filter_graph
+
+    # Common services eat the node budget, so look further and trim after filtering.
+    graph = engine.store.neighbourhood(key, depth, min(2000, limit * 4))
+    return filter_graph(engine.common(), engine.store, graph, keep=[key], limit=limit)
 
 
 def _export(engine: Engine, q: dict, body: dict) -> Any:
@@ -332,7 +385,11 @@ def _devices(engine: Engine, q: dict, body: dict) -> Any:
 
 
 def _device(engine: Engine, q: dict, body: dict) -> Any:
-    return engine.watcher().device(_device_ip(q.get("ip")))
+    d = engine.watcher().device(_device_ip(q.get("ip")))
+    common = engine.common()
+    for x in d["lookups"]:
+        x["common"] = None if x["verdict"] in ("malicious", "suspicious") else common.domain(x["domain"])
+    return d
 
 
 def _device_name(engine: Engine, q: dict, body: dict) -> Any:
@@ -347,7 +404,11 @@ def _lookups(engine: Engine, q: dict, body: dict) -> Any:
         since = float(q.get("since") or 0)
     except ValueError:
         raise ApiError(HTTPStatus.BAD_REQUEST, "since must be a number")
-    return engine.watcher().lookup_feed(since, _int(q, "limit", 200, 1000))
+    items = engine.watcher().lookup_feed(since, _int(q, "limit", 200, 1000))
+    common = engine.common()
+    for x in items:  # flagged lookups are never "common"
+        x["common"] = None if x["verdict"] in ("malicious", "suspicious") else common.domain(x["domain"])
+    return items
 
 
 def _watch_status(engine: Engine, q: dict, body: dict) -> Any:
@@ -516,6 +577,329 @@ def _investigate(engine: Engine, q: dict, body: dict) -> Any:
     return report.as_dict()
 
 
+# -- cases ---------------------------------------------------------------------------------
+
+
+def _case_id(raw: Any) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "id must be a case number")
+
+
+def _case_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return fn(*args, **kwargs)
+    except KeyError as exc:
+        raise ApiError(HTTPStatus.NOT_FOUND, str(exc).strip("'\""))
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+
+
+def _cases(engine: Engine, q: dict, body: dict) -> Any:
+    status = q.get("status") or None
+    if status and status not in cases.STATUSES:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"status must be one of {', '.join(cases.STATUSES)}")
+    return engine.store.cases(status)
+
+
+def _case_create(engine: Engine, q: dict, body: dict) -> Any:
+    alerts = [_case_id(a) for a in body.get("alerts") or []]
+    keys = [_key({"key": str(k)}) for k in body.get("indicators") or []]
+    case_id = _case_call(
+        cases.create,
+        engine.store,
+        str(body.get("title") or ""),
+        severity=str(body.get("severity") or "medium"),
+        summary=str(body.get("summary") or "")[:4000],
+        alerts=alerts,
+        indicators=keys,
+    )
+    return cases.detail(engine.store, case_id)
+
+
+def _case(engine: Engine, q: dict, body: dict) -> Any:
+    return _case_call(cases.detail, engine.store, _case_id(q.get("id")))
+
+
+def _case_update(engine: Engine, q: dict, body: dict) -> Any:
+    case_id = _case_id(body.get("id"))
+    fields = {k: str(body[k])[:4000] for k in ("title", "status", "severity", "summary") if k in body}
+    _case_call(cases.update, engine.store, case_id, **fields)
+    return cases.detail(engine.store, case_id)
+
+
+def _case_note(engine: Engine, q: dict, body: dict) -> Any:
+    case_id = _case_id(body.get("id"))
+    _case_call(cases.note, engine.store, case_id, str(body.get("text") or ""))
+    return cases.detail(engine.store, case_id)
+
+
+def _case_alert(engine: Engine, q: dict, body: dict) -> Any:
+    case_id, alert_id = _case_id(body.get("id")), _case_id(body.get("alert"))
+    fn = cases.detach_alert if body.get("remove") else cases.attach_alert
+    _case_call(fn, engine.store, case_id, alert_id)
+    return cases.detail(engine.store, case_id)
+
+
+def _case_indicator(engine: Engine, q: dict, body: dict) -> Any:
+    case_id, key = _case_id(body.get("id")), _key({"key": str(body.get("key") or "")})
+    fn = cases.remove_indicator if body.get("remove") else cases.add_indicator
+    _case_call(fn, engine.store, case_id, key)
+    return cases.detail(engine.store, case_id)
+
+
+def _case_report(engine: Engine, q: dict, body: dict) -> Any:
+    return _case_call(cases.report, engine.store, _case_id(q.get("id"))), "text/markdown; charset=utf-8"
+
+
+# -- response ------------------------------------------------------------------------------
+
+
+def _blocks(engine: Engine, q: dict, body: dict) -> Any:
+    return {"blocks": engine.store.blocks(), "enforcer": respond.enforcer(engine.config).name}
+
+
+def _block(engine: Engine, q: dict, body: dict) -> Any:
+    case_id = _case_id(body["case_id"]) if body.get("case_id") not in (None, "") else None
+    return _case_call(
+        respond.block,
+        engine,
+        str(body.get("value") or ""),
+        device=bool(body.get("device")),
+        note=str(body.get("note") or "")[:500],
+        case_id=case_id,
+    )
+
+
+def _unblock(engine: Engine, q: dict, body: dict) -> Any:
+    return _case_call(respond.unblock, engine, str(body.get("value") or ""), device=bool(body.get("device")))
+
+
+# -- connection log --------------------------------------------------------------------------
+
+# Relations that are traffic (who talks to whom), not intelligence or inferences.
+LIVE_RELS = ("routes_for", "runs", "connected_to", "queried", "resolves_to")
+
+
+def _float(q: dict[str, str], name: str) -> float | None:
+    if not q.get(name):
+        return None
+    try:
+        return float(q[name])
+    except ValueError:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must be a number")
+
+
+def _log_query(engine: Engine, q: dict, limit: int, hi: int) -> dict[str, Any]:
+    verdicts = [v for v in (q.get("verdict") or "").split(",") if v]
+    bad = set(verdicts) - {"malicious", "suspicious", "benign", "unknown"}
+    if bad:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"unknown verdict: {', '.join(sorted(bad))}")
+    return engine.store.connection_log(
+        dns=_flag(q, "dns"),
+        who=q.get("who") or None,
+        text=(q.get("q") or "").strip() or None,
+        since=_float(q, "since"),
+        until=_float(q, "until"),
+        verdicts=verdicts,
+        limit=_int(q, "limit", limit, hi),
+        offset=_int(q, "offset", 0, 10**9),
+    )
+
+
+def _connlog(engine: Engine, q: dict, body: dict) -> Any:
+    out = _log_query(engine, q, 200, 1000)
+    if _flag(q, "hide_common"):
+        common = engine.common()
+        for r in out["rows"]:
+            host = r["domain"] if "domain" in r else (r["names"].split(",")[0] if r["names"] else "")
+            r["common"] = (
+                None if r["verdict"] in ("malicious", "suspicious") or not host else common.domain(host)
+            )
+    return out
+
+
+def _connlog_stats(engine: Engine, q: dict, body: dict) -> Any:
+    return {
+        **engine.store.connection_log_stats(),
+        "retention_days": engine.config.connection_log_days,
+        "enabled": engine.config.connection_log,
+    }
+
+
+def _connlog_csv(engine: Engine, q: dict, body: dict) -> Any:
+    import csv
+    import io
+    from datetime import UTC, datetime
+
+    rows = _log_query(engine, q, 100_000, 100_000)["rows"]
+    iso = lambda ts: datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    if _flag(q, "dns"):
+        w.writerow(["first_seen", "last_seen", "who", "name", "domain", "lookups", "verdict", "score"])
+        for r in rows:
+            w.writerow(
+                [
+                    iso(r["first_seen"]),
+                    iso(r["last_seen"]),
+                    r["who"],
+                    r["who_name"] or "",
+                    r["domain"],
+                    r["hits"],
+                    r["verdict"] or "",
+                    r["score"] if r["score"] is not None else "",
+                ]
+            )
+    else:
+        w.writerow(
+            [
+                "first_seen",
+                "last_seen",
+                "who",
+                "name",
+                "direction",
+                "proto",
+                "remote_ip",
+                "remote_port",
+                "names",
+                "hits",
+                "verdict",
+                "score",
+            ]
+        )
+        for r in rows:
+            w.writerow(
+                [
+                    iso(r["first_seen"]),
+                    iso(r["last_seen"]),
+                    r["who"],
+                    r["who_name"] or "",
+                    "inbound" if r["inbound"] else "outbound",
+                    r["proto"],
+                    r["remote_ip"],
+                    r["remote_port"],
+                    r["names"],
+                    r["hits"],
+                    r["verdict"] or "",
+                    r["score"] if r["score"] is not None else "",
+                ]
+            )
+    return buf.getvalue(), "text/csv; charset=utf-8"
+
+
+def _graph_live(engine: Engine, q: dict, body: dict) -> Any:
+    """What live monitoring recorded since ``since``: new and re-seen edges, with their nodes."""
+    import time
+
+    now = time.time()
+    since = _float(q, "since") or now - 300
+    edges = engine.store.edges_since(since, LIVE_RELS, _int(q, "limit", 400, 2000))
+    keys = {k for e in edges for k in (e["src"], e["dst"])}
+    nodes = engine.store.nodes(keys)
+    out: dict[str, Any] = {"now": now, "since": since, "nodes": nodes, "edges": edges}
+    if _flag(q, "hide_common"):
+        from .common import protected
+
+        common = engine.common().classify(engine.store, nodes)
+        flagged = {n["key"] for n in nodes if n.get("verdict") in ("malicious", "suspicious")}
+        safe = protected(engine.store, nodes)
+        for e in edges:  # a common node next to something flagged stays
+            if e["src"] in flagged:
+                safe.add(e["dst"])
+            if e["dst"] in flagged:
+                safe.add(e["src"])
+        hidden = {k: v for k, v in common.items() if k not in safe}
+        out["nodes"] = [n for n in nodes if n["key"] not in hidden]
+        out["edges"] = [e for e in edges if e["src"] not in hidden and e["dst"] not in hidden]
+        out["hidden"] = {"common": len(hidden), "keys": hidden}
+    return out
+
+
+# -- common services ---------------------------------------------------------------------------
+
+
+def _common(engine: Engine, q: dict, body: dict) -> Any:
+    from .common import TRANCO_FILE, read_top
+
+    c = engine.common()
+    top, header = (
+        read_top(Path(engine.config.common_top_file).expanduser())
+        if engine.config.common_top_file
+        else ([], None)
+    )
+    services: dict[str, list[str]] = {}
+    for domain, name in c.service.items():
+        services.setdefault(name, []).append(domain)
+    return {
+        "services": services,
+        "abused": sorted(c.abused),
+        "ignore": sorted(c.ignore),
+        "top_list": {
+            "file": engine.config.common_top_file or str(TRANCO_FILE),
+            "domains": len(top),
+            "about": header,
+        },
+    }
+
+
+def _common_check(engine: Engine, q: dict, body: dict) -> Any:
+    name = str(body.get("name") or "").strip().lower()
+    ind = classify(name)
+    if ind is None or ind.kind.value not in ("domain", "url", "ip"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "give a domain, URL or IP")
+    node = engine.store.node(ind.key) or {
+        "key": ind.key,
+        "kind": ind.kind.value,
+        "value": ind.value,
+        "attrs": {},
+    }
+    c = engine.common()
+    host = ind.value if ind.kind.value != "url" else ind.value.split("/")[2]
+    return {
+        "key": ind.key,
+        "common": c.classify(engine.store, [node]).get(ind.key),
+        "abused": c.abused_by(host) if ind.kind.value != "ip" else None,
+    }
+
+
+# -- graph path ------------------------------------------------------------------------------
+
+# Hubs that connect everything to everything: never stepping stones unless asked for.
+PATH_AVOID = ("tag:", "technique:", "software:", "group:", "asn:", "host:gateway", "host:this-computer")
+
+
+def _path(engine: Engine, q: dict, body: dict) -> Any:
+    src, dst = _key({"key": q.get("from", "")}), _key({"key": q.get("to", "")})
+    for k in (src, dst):
+        if engine.store.node(k) is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, f"{k} not found")
+    found = engine.store.path(
+        src, dst, max_hops=_int(q, "max_hops", 6, 8), avoid=() if _flag(q, "all") else PATH_AVOID
+    )
+    return {
+        "from": src,
+        "to": dst,
+        "found": found is not None,
+        **(found or {"nodes": [], "edges": [], "hops": None}),
+    }
+
+
+# -- notifications --------------------------------------------------------------------------
+
+
+def _notify_status(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.notifier().status()
+
+
+def _notify_test(engine: Engine, q: dict, body: dict) -> Any:
+    try:
+        return {"results": engine.notifier().test()}
+    except RuntimeError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+
+
 ROUTES = {
     ("GET", "/api/health"): _health,
     ("GET", "/api/stats"): _stats,
@@ -548,6 +932,26 @@ ROUTES = {
     ("GET", "/api/suppressions"): _suppressions,
     ("POST", "/api/suppressions"): _suppression_add,
     ("POST", "/api/suppressions/delete"): _suppression_delete,
+    ("GET", "/api/cases"): _cases,
+    ("POST", "/api/cases"): _case_create,
+    ("GET", "/api/case"): _case,
+    ("POST", "/api/case/update"): _case_update,
+    ("POST", "/api/case/note"): _case_note,
+    ("POST", "/api/case/alert"): _case_alert,
+    ("POST", "/api/case/indicator"): _case_indicator,
+    ("GET", "/api/case/report"): _case_report,
+    ("GET", "/api/blocks"): _blocks,
+    ("POST", "/api/block"): _block,
+    ("POST", "/api/unblock"): _unblock,
+    ("GET", "/api/path"): _path,
+    ("GET", "/api/graph/live"): _graph_live,
+    ("GET", "/api/connlog"): _connlog,
+    ("GET", "/api/connlog/stats"): _connlog_stats,
+    ("GET", "/api/connlog.csv"): _connlog_csv,
+    ("GET", "/api/common"): _common,
+    ("POST", "/api/common/check"): _common_check,
+    ("GET", "/api/notify"): _notify_status,
+    ("POST", "/api/notify/test"): _notify_test,
     ("GET", "/api/agent/status"): _agent_status,
     ("POST", "/api/agent"): _agent_ask,
     ("GET", "/api/agent"): _agent_get,

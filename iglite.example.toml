@@ -34,6 +34,24 @@ watch_max_new = 25    # new IPs/domains looked up per snapshot
 # gateway_include_blocked = false           # also check flows the firewall blocked
 # gateway_window = 300                      # seconds a flow stays in the live table
 
+# Cases and response (see README).
+# auto_case = true                          # new alerts join an open case holding their indicator/device
+# enforce = "nftables"                      # on the gateway: drop blocked IPs, cut off quarantined devices
+# block_hosts = "/var/lib/iglite/blocked.hosts"  # dnsmasq hosts file for blocked domains
+# Alert notifications: destinations go in .env (IGLITE_NOTIFY_*); these tune what is sent.
+# notify_min_verdict = "malicious"          # or "suspicious"
+# notify_per_hour = 30
+# dashboard_url = "http://10.42.0.1:8765"   # link in each notification
+
+# Database of every connection and DNS lookup (Live network › History, `iglite connections`).
+# connection_log = true
+# connection_log_days = 90                  # 0 keeps everything
+
+# Common services hidden from the graph (see README "Hide common services").
+# common_domains = ["mycompany.com", "our-saas.example"]   # your own routine services
+# common_ignore = ["zoom.us"]                               # never treat these as common
+# common_top_file = "~/.iglite/tranco.txt"                  # written by `iglite common update`
+
 # AI agents (optional). Provider: "anthropic" (Claude; `pip install .[ai]` +
 # ANTHROPIC_API_KEY in .env) or "ollama" (local model; nothing leaves the PC).
 ai_provider = "anthropic"

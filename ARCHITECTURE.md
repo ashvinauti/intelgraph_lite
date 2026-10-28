@@ -141,6 +141,77 @@ passive node kinds. They are never looked up, and their edges don't propagate
 suspicion. The matrix is a range scan of edges whose destination is a
 technique, so it costs one indexed query.
 
+## Cases, response and notifications
+
+`engine.on_alert(id)` is the one hook a new live alert passes through, in order:
+
+1. **cases.auto_attach**: file it into the most recently updated open case
+   that already holds its indicator or its device (`host:<ip>`), touched in the
+   last 7 days. Closed cases take nothing new.
+2. **Notifier.on_alert**: if the verdict is at or above `notify_min_verdict`
+   and the hourly cap allows, queue it; one background thread posts to every
+   channel (Slack text, a Teams Adaptive Card, a JSON webhook, SMTP email). A
+   failing channel is logged and never stops the others or the watcher.
+3. **Triage** (when `ai_triage = "auto"`).
+
+A case is three tables: the case row, the indicators it holds (devices are
+`host:` keys), and an append-only event log that becomes the timeline. Alerts
+point at their case (`alerts.case_id`); pruning keeps alerts and nodes that a
+case still references. `cases.report()` renders the case as Markdown.
+
+**Response** (`respond.py`) records a block first and enforces second, so the
+database is the single source of truth:
+
+```
+block / unblock ──► blocks table ──► blocklist feeds (export.blocklist)
+                         │
+                         └─► Enforcer.apply(store): rebuild everything from the table
+                                ├─ nftables: one atomic `nft -f` load of table inet iglite
+                                │    sets block4/block6/quarantine4, forward + output chains
+                                └─ dnsmasq: rewrite the hosts file, SIGHUP NetworkManager's dnsmasq
+```
+
+Rebuilding the whole table each time (instead of adding and removing
+elements) makes enforcement idempotent: a restart, a crash between two steps,
+or a block made from the CLI while the service runs all converge on what the
+database says. `serve` applies it once at startup, so blocks survive reboots.
+
+**Path finder** (`store.path`): breadth-first search over edges in both
+directions, level by level with indexed `IN (...)` queries, stopping at the
+target, at `max_hops` (6), or after 20,000 visited nodes. Hubs (tags,
+techniques, software, groups, ASNs, the gateway) are never used as stepping
+stones unless asked, because they connect everything to everything and would
+make every answer meaningless.
+
+## Live graph
+
+`GET /api/graph/live?since=T` returns the traffic edges (`routes_for`, `runs`,
+`connected_to`, `queried`, `resolves_to`) whose `last_seen` moved past `T`, with
+their nodes. Netwatch refreshes `last_seen` whenever it sees a flow again, so the
+same query yields both new links and active ones. The dashboard polls it with the
+previous response's `now`, merges what is new (relaying out only when nodes were
+added) and animates links active in the last 60 s.
+
+## Common services
+
+`common.py` decides what is routine, and only the presentation layer uses it:
+`/api/graph?hide_common=1`, the neighbour lists in `/api/indicator`, and the DNS
+feeds. Lookups, scoring, alerts and exports never consult it, so hiding can't
+make anything less detected.
+
+```
+domain ─► parents (a.b.c.com → b.c.com → c.com) ─► ignore? abused? ─► no
+                                                └► catalogue / your list / Tranco top N ─► service label
+ip     ─► CDN-only operator (RDAP/Shodan owner) ─► label
+       └► every resolves_to name is common     ─► label
+```
+
+`filter_graph` takes a neighbourhood fetched with four times the node budget
+(common services would otherwise eat it), removes common nodes except protected
+ones (flagged, blocked, in a case, the root, or one edge from something
+flagged), drops whatever is no longer connected to the root, trims to the
+budget nearest-first, and reports what it hid per service.
+
 ## Traceroute
 
 ```
@@ -235,7 +306,21 @@ nodes    (key PK, kind, value, attrs JSON, score, verdict, first_seen, last_seen
 edges    (src, dst, rel, source, first_seen, last_seen)   PK(src,dst,rel), INDEX(dst)
 evidence (node, source, verdict, confidence, detail, url, observed_at)  INDEX(node,source)
 cache    (key PK, status, body, fetched_at)
+alerts   (id, at, key, verdict, score, context JSON, status, case_id)
+cases    (id, title, status, severity, summary, created, updated)
+case_indicators (case_id, key)      case_events (case_id, at, kind, text)
+blocks   (kind indicator|device, value, note, case_id, at)   UNIQUE(kind, value)
+conn_log (day, who, remote_ip, remote_port, proto, inbound, names, first_seen, last_seen, hits)
+         PK(day, who, remote_ip, remote_port, proto, inbound)  INDEX(remote_ip), INDEX(last_seen)
+dns_log  (day, who, domain, first_seen, last_seen, hits)      PK(day, who, domain)
 ```
+
+* The connection log is written on every scan. In gateway mode only flows new
+  since the previous scan count (`Connection.fresh`), so a flow that stays in
+  the rolling window isn't counted twice; DNS lookups come from the collector's
+  lookup stream. On this computer, `hits` counts sockets per snapshot.
+  Verdicts aren't stored in the log: they are joined from `nodes` when read, so
+  history always shows what is known now.
 
 * A node key is `kind:value`, e.g. `ip:45.155.205.20`. It is human readable,
   and the same value from different sources collapses into one node.
@@ -257,7 +342,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (147 tests, offline) | ~10 s |
+| Full test suite (176 tests, offline) | ~14 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 

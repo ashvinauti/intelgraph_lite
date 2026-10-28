@@ -28,7 +28,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import cases
 from . import config as config_mod
+from .common import Common
 from .engine import Engine
 from .extract import classify, treat_as_public
 from .gateway import DnsEvent, Flow, GatewayCollector, Lease
@@ -65,6 +67,18 @@ SITES = {
     "smart-home-hub.example": ("198.51.100.20", 8883),
     "static-cdn.example": ("198.51.100.200", 443),
 }
+# Everyday services every household uses (the "Google and Netflix" of the demo).
+DEMO_COMMON = (
+    "news-site.example",
+    "video-stream.example",
+    "photos-cloud.example",
+    "music.example",
+    "maps.example",
+    "video-call.example",
+    "updates.vendor.example",
+    "printer-cloud.example",
+    "static-cdn.example",
+)
 HABITS = {
     "10.42.0.11": [
         "news-site.example",
@@ -291,11 +305,24 @@ def build(
     cfg.offline = True
     cfg.ai_triage = "manual" if cfg.ai_triage == "auto" else cfg.ai_triage
     cfg.lan_networks = ["10.42.0.0/24"]
+    # The demo's stand-ins for Google, Netflix, Spotify...: hidden from the graph like the real ones.
+    cfg.common_top_file = None
     engine = Engine(cfg, sources=[DemoIntel(name) for name in INTEL])
     engine.demo = True
+    engine._common = Common(DEMO_COMMON, extra_label="Everyday services (demo)")
     engine.ingest(REPORT, "Threat brief: IoT botnet and phishing (demo)")
     report = [i for i in (classify(DROPPER_URL), classify(C2_IP)) if i is not None]
     engine.investigate(report, depth=1)
+    # The analyst opened a case from the threat brief; matching alerts will file themselves into it.
+    keys = [k for k in (f"ip:{C2_IP}", f"domain:{DROPPER}", f"url:{DROPPER_URL}") if engine.store.node(k)]
+    case_id = cases.create(
+        engine.store,
+        "IoT botnet campaign from this week's threat brief",
+        severity="high",
+        summary="Watching for the C2 server and dropper named in the brief. Any device that touches them joins this case.",
+        indicators=keys,
+    )
+    cases.note(engine.store, case_id, "Brief ingested; its indicators are on watch.")
     gw = GatewayCollector(cfg)
     gw.started = True  # no listeners: the simulation feeds it directly
     gw.extra_inputs = ["simulated home network (demo)"]

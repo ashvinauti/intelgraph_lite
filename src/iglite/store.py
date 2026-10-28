@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     verdict     TEXT NOT NULL,
     score       INTEGER NOT NULL,
     context     TEXT NOT NULL DEFAULT '{}',
-    status      TEXT NOT NULL DEFAULT 'open'
+    status      TEXT NOT NULL DEFAULT 'open',
+    case_id     INTEGER
 );
 
 -- Analyst verdicts that override the computed one ("false_positive" / "confirmed").
@@ -122,6 +123,72 @@ CREATE TABLE IF NOT EXISTS routes (
     hops        TEXT NOT NULL
 );
 
+-- Cases: an incident that groups alerts and indicators, with a timeline of what was done.
+CREATE TABLE IF NOT EXISTS cases (
+    id          INTEGER PRIMARY KEY,
+    title       TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open',      -- open | investigating | closed
+    severity    TEXT NOT NULL DEFAULT 'medium',    -- low | medium | high | critical
+    summary     TEXT NOT NULL DEFAULT '',
+    created     REAL NOT NULL,
+    updated     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS case_indicators (
+    case_id     INTEGER NOT NULL,
+    key         TEXT NOT NULL,
+    at          REAL NOT NULL,
+    PRIMARY KEY (case_id, key)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS case_indicators_key ON case_indicators(key);
+CREATE TABLE IF NOT EXISTS case_events (
+    id          INTEGER PRIMARY KEY,
+    case_id     INTEGER NOT NULL,
+    at          REAL NOT NULL,
+    kind        TEXT NOT NULL,                     -- created | note | status | alert | indicator | block | ...
+    text        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS case_events_case ON case_events(case_id, at);
+
+-- Response actions: indicators blocked and devices quarantined (enforced by respond.py).
+CREATE TABLE IF NOT EXISTS blocks (
+    id          INTEGER PRIMARY KEY,
+    kind        TEXT NOT NULL,                     -- indicator | device
+    value       TEXT NOT NULL,                     -- indicator key, or a device's LAN IP
+    note        TEXT NOT NULL DEFAULT '',
+    case_id     INTEGER,
+    at          REAL NOT NULL,
+    UNIQUE (kind, value)
+);
+
+-- Every connection and DNS lookup seen by live monitoring, one row per endpoint per day.
+-- who: host:<lan ip> (gateway mode) or process:<name> (this computer).
+CREATE TABLE IF NOT EXISTS conn_log (
+    day         TEXT NOT NULL,                     -- YYYY-MM-DD (UTC)
+    who         TEXT NOT NULL,
+    remote_ip   TEXT NOT NULL,
+    remote_port INTEGER NOT NULL,
+    proto       TEXT NOT NULL,
+    inbound     INTEGER NOT NULL DEFAULT 0,
+    names       TEXT NOT NULL DEFAULT '',          -- DNS names seen for the remote, comma separated
+    first_seen  REAL NOT NULL,
+    last_seen   REAL NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0,        -- flow records (gateway) or snapshots it was seen in
+    PRIMARY KEY (day, who, remote_ip, remote_port, proto, inbound)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS conn_log_remote ON conn_log(remote_ip);
+CREATE INDEX IF NOT EXISTS conn_log_last ON conn_log(last_seen);
+CREATE TABLE IF NOT EXISTS dns_log (
+    day         TEXT NOT NULL,
+    who         TEXT NOT NULL,
+    domain      TEXT NOT NULL,
+    first_seen  REAL NOT NULL,
+    last_seen   REAL NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, who, domain)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS dns_log_domain ON dns_log(domain);
+CREATE INDEX IF NOT EXISTS dns_log_last ON dns_log(last_seen);
+
 CREATE TABLE IF NOT EXISTS cache (
     key         TEXT PRIMARY KEY,
     status      INTEGER NOT NULL,
@@ -136,6 +203,7 @@ class Store:
     _ADDED_COLUMNS = (
         ("evidence", "last_seen", "REAL"),
         ("alerts", "status", "TEXT NOT NULL DEFAULT 'open'"),
+        ("alerts", "case_id", "INTEGER"),
     )
 
     def __init__(self, path: str | Path = ":memory:") -> None:
@@ -331,6 +399,69 @@ class Store:
             ]
         return {"root": key, "nodes": nodes, "edges": edges}
 
+    def path(
+        self,
+        src: str,
+        dst: str,
+        *,
+        max_hops: int = 6,
+        avoid: Iterable[str] = (),
+        limit: int = 20_000,
+    ) -> dict[str, Any] | None:
+        """Shortest chain of edges (either direction) from ``src`` to ``dst``, or None.
+
+        Nodes in ``avoid`` (keys, or ``kind:`` prefixes such as ``"tag:"``) are never
+        used as stepping stones: hubs like a shared tag or the gateway connect
+        everything to everything and would make every path meaningless.
+        ``limit`` bounds the nodes visited, so the search stays cheap on big graphs.
+        """
+        if src == dst:
+            return {"nodes": self.nodes([src]), "edges": [], "hops": 0}
+        avoid = tuple(avoid)
+        blocked = lambda k: any(k == a or (a.endswith(":") and k.startswith(a)) for a in avoid)  # noqa: E731
+        parent: dict[str, tuple[str, dict[str, Any]] | None] = {src: None}
+        frontier = [src]
+        for _ in range(max_hops):
+            nxt: list[str] = []
+            for i in range(0, len(frontier), 400):
+                chunk = frontier[i : i + 400]
+                marks = ",".join("?" * len(chunk))
+                rows = self._query(
+                    f"SELECT src, dst, rel, source FROM edges WHERE src IN ({marks})"  # noqa: S608 - placeholders only
+                    f" UNION ALL SELECT src, dst, rel, source FROM edges WHERE dst IN ({marks})",
+                    chunk + chunk,
+                )
+                here = set(chunk)
+                for r in rows:
+                    for at, other in ((r["src"], r["dst"]), (r["dst"], r["src"])):
+                        if at not in here or other in parent:
+                            continue
+                        parent[other] = (at, dict(r))
+                        if other == dst:
+                            keys, edges = [dst], []
+                            step = parent[dst]
+                            while step is not None:
+                                prev, edge = step
+                                keys.append(prev)
+                                edges.append(edge)
+                                step = parent[prev]
+                            keys.reverse()
+                            edges.reverse()
+                            order = {n["key"]: n for n in self.nodes(keys)}
+                            return {
+                                "nodes": [order[k] for k in keys if k in order],
+                                "edges": edges,
+                                "hops": len(edges),
+                            }
+                        if not blocked(other):
+                            nxt.append(other)
+                if len(parent) > limit:
+                    return None
+            if not nxt:
+                return None
+            frontier = nxt
+        return None
+
     # -- evidence ----------------------------------------------------------
 
     def replace_evidence(self, key: str, source: str, items: Iterable[Evidence]) -> None:
@@ -500,6 +631,289 @@ class Store:
         rows = self._query("SELECT * FROM alerts WHERE id > ? ORDER BY id DESC LIMIT ?", (since_id, limit))
         return [{**dict(r), "context": json.loads(r["context"])} for r in rows]
 
+    def alert(self, alert_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM alerts WHERE id=?", (alert_id,))
+        return {**dict(rows[0]), "context": json.loads(rows[0]["context"])} if rows else None
+
+    # -- cases -------------------------------------------------------------
+
+    def add_case(self, title: str, severity: str, summary: str = "") -> int:
+        now = time.time()
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO cases (title, severity, summary, created, updated) VALUES (?,?,?,?,?)",
+                (title, severity, summary, now, now),
+            )
+            return int(cur.lastrowid or 0)
+
+    def case(self, case_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM cases WHERE id=?", (case_id,))
+        return dict(rows[0]) if rows else None
+
+    def cases(self, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._query(
+            "SELECT c.*,"
+            " (SELECT COUNT(*) FROM alerts a WHERE a.case_id = c.id) AS alerts,"
+            " (SELECT COUNT(*) FROM case_indicators i WHERE i.case_id = c.id) AS indicators"
+            " FROM cases c WHERE (? IS NULL OR c.status = ?) ORDER BY c.status = 'closed', c.updated DESC LIMIT ?",
+            (status, status, limit),
+        )
+        return [dict(r) for r in rows]
+
+    def update_case(self, case_id: int, **fields: Any) -> None:
+        allowed = {k: v for k, v in fields.items() if k in ("title", "status", "severity", "summary")}
+        sets = ", ".join(f"{k}=?" for k in allowed)
+        with self._lock:
+            self._db.execute(
+                f"UPDATE cases SET {sets + ', ' if sets else ''}updated=? WHERE id=?",  # noqa: S608 - fixed names
+                (*allowed.values(), time.time(), case_id),
+            )
+
+    def add_case_event(self, case_id: int, kind: str, text: str) -> None:
+        now = time.time()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO case_events (case_id, at, kind, text) VALUES (?,?,?,?)",
+                (case_id, now, kind, text),
+            )
+            self._db.execute("UPDATE cases SET updated=? WHERE id=?", (now, case_id))
+
+    def case_events(self, case_id: int) -> list[dict[str, Any]]:
+        return [
+            dict(r)
+            for r in self._query("SELECT * FROM case_events WHERE case_id=? ORDER BY at, id", (case_id,))
+        ]
+
+    def add_case_indicator(self, case_id: int, key: str) -> bool:
+        with self._lock:
+            return (
+                self._db.execute(
+                    "INSERT OR IGNORE INTO case_indicators (case_id, key, at) VALUES (?,?,?)",
+                    (case_id, key, time.time()),
+                ).rowcount
+                > 0
+            )
+
+    def remove_case_indicator(self, case_id: int, key: str) -> bool:
+        with self._lock:
+            return (
+                self._db.execute(
+                    "DELETE FROM case_indicators WHERE case_id=? AND key=?", (case_id, key)
+                ).rowcount
+                > 0
+            )
+
+    def case_indicators(self, case_id: int) -> list[str]:
+        return [
+            r["key"]
+            for r in self._query("SELECT key FROM case_indicators WHERE case_id=? ORDER BY at", (case_id,))
+        ]
+
+    def keys_in_cases(self, keys: Iterable[str]) -> set[str]:
+        keys = list(keys)
+        out: set[str] = set()
+        for i in range(0, len(keys), 500):
+            chunk = keys[i : i + 500]
+            marks = ",".join("?" * len(chunk))
+            out |= {
+                r["key"]
+                for r in self._query(
+                    f"SELECT DISTINCT key FROM case_indicators WHERE key IN ({marks})",  # noqa: S608 - placeholders only
+                    chunk,
+                )
+            }
+        return out
+
+    def cases_with_indicator(self, key: str) -> list[int]:
+        return [r["case_id"] for r in self._query("SELECT case_id FROM case_indicators WHERE key=?", (key,))]
+
+    def set_alert_case(self, alert_id: int, case_id: int | None) -> bool:
+        with self._lock:
+            return (
+                self._db.execute("UPDATE alerts SET case_id=? WHERE id=?", (case_id, alert_id)).rowcount > 0
+            )
+
+    def case_alerts(self, case_id: int) -> list[dict[str, Any]]:
+        rows = self._query("SELECT * FROM alerts WHERE case_id=? ORDER BY at", (case_id,))
+        return [{**dict(r), "context": json.loads(r["context"])} for r in rows]
+
+    # -- blocks ------------------------------------------------------------
+
+    def add_block(self, kind: str, value: str, note: str = "", case_id: int | None = None) -> bool:
+        with self._lock:
+            return (
+                self._db.execute(
+                    "INSERT OR IGNORE INTO blocks (kind, value, note, case_id, at) VALUES (?,?,?,?,?)",
+                    (kind, value, note, case_id, time.time()),
+                ).rowcount
+                > 0
+            )
+
+    def remove_block(self, kind: str, value: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM blocks WHERE kind=? AND value=?", (kind, value)).fetchone()
+            if row is not None:
+                self._db.execute("DELETE FROM blocks WHERE id=?", (row["id"],))
+            return dict(row) if row is not None else None
+
+    def blocks(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._query("SELECT * FROM blocks ORDER BY at DESC")]
+
+    # -- connection log ------------------------------------------------------
+
+    def log_connections(self, rows: Iterable[tuple[float, str, str, int, str, bool, str, int]]) -> int:
+        """Upsert (at, who, remote_ip, remote_port, proto, inbound, names, hits) into today's rows."""
+        data = [
+            (
+                time.strftime("%Y-%m-%d", time.gmtime(at)),
+                who,
+                ip,
+                port,
+                proto,
+                int(inbound),
+                names,
+                at,
+                at,
+                hits,
+            )
+            for at, who, ip, port, proto, inbound, names, hits in rows
+        ]
+        if not data:
+            return 0
+        with self.transaction() as db:
+            db.executemany(
+                "INSERT INTO conn_log VALUES (?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(day, who, remote_ip, remote_port, proto, inbound) DO UPDATE SET"
+                " last_seen = MAX(last_seen, excluded.last_seen), hits = hits + excluded.hits,"
+                " names = CASE WHEN excluded.names = '' THEN names ELSE excluded.names END",
+                data,
+            )
+        return len(data)
+
+    def log_lookups(self, rows: Iterable[tuple[float, str, str]]) -> int:
+        """Upsert (at, who, domain) DNS lookups into today's rows."""
+        agg: dict[tuple[str, str, str], list[float]] = {}
+        for at, who, domain in rows:
+            key = (time.strftime("%Y-%m-%d", time.gmtime(at)), who, domain.lower())
+            first, last, n = agg.get(key, (at, at, 0))
+            agg[key] = [min(first, at), max(last, at), n + 1]
+        if not agg:
+            return 0
+        with self.transaction() as db:
+            db.executemany(
+                "INSERT INTO dns_log VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(day, who, domain) DO UPDATE SET"
+                " last_seen = MAX(last_seen, excluded.last_seen), hits = hits + excluded.hits",
+                [(*k, *v) for k, v in agg.items()],
+            )
+        return len(agg)
+
+    def connection_log(
+        self,
+        *,
+        dns: bool = False,
+        who: str | None = None,
+        text: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        verdicts: Iterable[str] = (),
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Search the log, newest first, with each remote's current verdict and the device's name."""
+        table, remote = ("dns_log", "'domain:' || l.domain") if dns else ("conn_log", "'ip:' || l.remote_ip")
+        where, args = ["1=1"], []
+        if who:
+            where.append("l.who = ?")
+            args.append(who)
+        if since is not None:
+            where.append("l.last_seen >= ?")
+            args.append(since)
+        if until is not None:
+            where.append("l.first_seen <= ?")
+            args.append(until)
+        if text:
+            like = f"%{text.lower()}%"
+            cols = (
+                ["l.domain", "l.who", "lower(coalesce(h.attrs, ''))"]
+                if dns
+                else [
+                    "l.remote_ip",
+                    "lower(l.names)",
+                    "l.who",
+                    "CAST(l.remote_port AS TEXT)",
+                    "lower(coalesce(h.attrs, ''))",
+                ]
+            )
+            where.append("(" + " OR ".join(f"{c} LIKE ?" for c in cols) + ")")
+            args += [like] * len(cols)
+        verdicts = list(verdicts)
+        if verdicts:
+            where.append(f"coalesce(n.verdict, 'unknown') IN ({','.join('?' * len(verdicts))})")
+            args += verdicts
+        base = (
+            f"FROM {table} l LEFT JOIN nodes n ON n.key = {remote}"  # noqa: S608 - fixed names, placeholders
+            " LEFT JOIN nodes h ON h.key = l.who"
+            f" WHERE {' AND '.join(where)}"
+        )
+        total = self._query(f"SELECT COUNT(*) AS c {base}", args)[0]["c"]
+        rows = self._query(
+            f"SELECT l.*, n.verdict AS verdict, n.score AS score, h.attrs AS who_attrs {base}"
+            " ORDER BY l.last_seen DESC LIMIT ? OFFSET ?",
+            [*args, limit, offset],
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            attrs = json.loads(d.pop("who_attrs") or "{}")
+            d["who_name"] = attrs.get("name")
+            if not dns:
+                d["inbound"] = bool(d["inbound"])
+            out.append(d)
+        return {"total": total, "rows": out}
+
+    def connection_log_stats(self) -> dict[str, Any]:
+        def one(sql: str) -> Any:
+            return self._query(sql)[0][0]
+
+        return {
+            "connections": one("SELECT COUNT(*) FROM conn_log"),
+            "lookups": one("SELECT COUNT(*) FROM dns_log"),
+            "first": one(
+                "SELECT MIN(first_seen) FROM (SELECT first_seen FROM conn_log UNION ALL SELECT first_seen FROM dns_log)"
+            ),
+            "days": one(
+                "SELECT COUNT(DISTINCT day) FROM (SELECT day FROM conn_log UNION SELECT day FROM dns_log)"
+            ),
+            "remotes": one("SELECT COUNT(DISTINCT remote_ip) FROM conn_log"),
+            "domains": one("SELECT COUNT(DISTINCT domain) FROM dns_log"),
+            "who": [
+                r[0]
+                for r in self._query(
+                    "SELECT who FROM conn_log UNION SELECT who FROM dns_log ORDER BY 1 LIMIT 500"
+                )
+            ],
+        }
+
+    def prune_connection_log(self, older_than_days: float) -> int:
+        cutoff = time.time() - older_than_days * 86400
+        with self.transaction() as db:
+            return (
+                db.execute("DELETE FROM conn_log WHERE last_seen < ?", (cutoff,)).rowcount
+                + db.execute("DELETE FROM dns_log WHERE last_seen < ?", (cutoff,)).rowcount
+            )
+
+    def edges_since(self, since: float, rels: Iterable[str], limit: int = 500) -> list[dict[str, Any]]:
+        """Edges of the given relations recorded or seen again after ``since``, newest first."""
+        rels = list(rels)
+        marks = ",".join("?" * len(rels))
+        rows = self._query(
+            f"SELECT src, dst, rel, source, first_seen, last_seen FROM edges"  # noqa: S608 - placeholders only
+            f" WHERE last_seen > ? AND rel IN ({marks}) ORDER BY last_seen DESC LIMIT ?",
+            [since, *rels, limit],
+        )
+        return [dict(r) for r in rows]
+
     # -- routes ------------------------------------------------------------
 
     def add_route(self, target: str, ip: str, hops: str) -> None:
@@ -534,20 +948,32 @@ class Store:
         cutoff = time.time() - older_than_days * 86400
         with self.transaction() as db:
             cache = db.execute("DELETE FROM cache WHERE fetched_at < ?", (cutoff,)).rowcount
-            alerts = db.execute("DELETE FROM alerts WHERE at < ?", (cutoff,)).rowcount
+            alerts = db.execute(  # alerts filed in a case are kept with it
+                "DELETE FROM alerts WHERE at < ? AND case_id IS NULL", (cutoff,)
+            ).rowcount
             db.execute("DELETE FROM routes WHERE at < ?", (cutoff,))
+            log = db.execute("DELETE FROM conn_log WHERE last_seen < ?", (cutoff,)).rowcount
+            log += db.execute("DELETE FROM dns_log WHERE last_seen < ?", (cutoff,)).rowcount
             ev = db.execute("DELETE FROM evidence WHERE observed_at < ?", (cutoff,)).rowcount
             edges = db.execute("DELETE FROM edges WHERE last_seen < ?", (cutoff,)).rowcount
             nodes = db.execute(
                 "DELETE FROM nodes WHERE last_seen < ?"
                 " AND key NOT IN (SELECT node FROM evidence)"
                 " AND key NOT IN (SELECT src FROM edges)"
-                " AND key NOT IN (SELECT dst FROM edges)",
+                " AND key NOT IN (SELECT dst FROM edges)"
+                " AND key NOT IN (SELECT key FROM case_indicators)",
                 (cutoff,),
             ).rowcount
         with self._lock:
             self._db.execute("PRAGMA optimize")
-        return {"cache": cache, "evidence": ev, "edges": edges, "nodes": nodes, "alerts": alerts}
+        return {
+            "cache": cache,
+            "evidence": ev,
+            "edges": edges,
+            "nodes": nodes,
+            "alerts": alerts,
+            "connection_log": log,
+        }
 
 
 def _node_dict(row: sqlite3.Row) -> dict[str, Any]:

@@ -73,3 +73,15 @@ def test_single_file_build_runs(tmp_path):
     )
     assert run.returncode == 0, run.stderr
     assert "Spearphishing Link" in run.stdout  # the catalogue loads from inside the zip
+
+
+def test_the_demo_case_collects_the_botnet_alerts(demo_run):
+    engine, watch, network = demo_run
+    network.incidents(60)
+    watch.scan()
+    from iglite import cases
+
+    d = cases.detail(engine.store, 1)
+    assert d["title"].startswith("IoT botnet")
+    assert {a["key"] for a in d["alerts"]} == {f"ip:{demo.C2_IP}", f"domain:{demo.DROPPER}"}
+    assert {x["value"] for x in d["devices"]} == {"10.42.0.61", "10.42.0.52"}  # Smart-Plug, Work-Laptop
