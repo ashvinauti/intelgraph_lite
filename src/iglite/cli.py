@@ -215,6 +215,78 @@ def cmd_graph(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def _ago(text: str | None) -> float | None:
+    """'30m', '24h', '7d' or seconds -> a timestamp that long ago."""
+    if not text:
+        return None
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+    try:
+        n = float(text[:-1]) * units[text[-1]] if text[-1] in units else float(text)
+    except (ValueError, IndexError):
+        raise SystemExit(f"error: --since takes 30m, 24h, 7d or seconds, not {text!r}")
+    return time.time() - n
+
+
+def cmd_connections(engine: Engine, args: argparse.Namespace) -> int:
+    store = engine.store
+    if args.stats:
+        st = store.connection_log_stats()
+        first = time.strftime("%Y-%m-%d %H:%M", time.localtime(st["first"])) if st["first"] else "never"
+        print(
+            f"{st['connections']:,} connection rows to {st['remotes']:,} addresses, {st['lookups']:,} lookup rows of "
+            f"{st['domains']:,} domains, over {st['days']} day(s) since {first}. Kept {engine.config.connection_log_days:g} days."
+        )
+        return 0
+    who = args.who
+    if who and ":" not in who:
+        who = f"host:{who}" if who[0].isdigit() else f"process:{who.lower()}"
+    res = store.connection_log(
+        dns=args.dns,
+        who=who,
+        text=args.search,
+        since=_ago(args.since),
+        verdicts=args.verdict or (),
+        limit=args.limit,
+    )
+    if args.csv:
+        import csv
+
+        with open(args.csv, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            rows = store.connection_log(
+                dns=args.dns,
+                who=who,
+                text=args.search,
+                since=_ago(args.since),
+                verdicts=args.verdict or (),
+                limit=10**7,
+            )["rows"]
+            if rows:
+                w.writerow([k for k in rows[0] if k != "day"])
+                for r in rows:
+                    w.writerow([v for k, v in r.items() if k != "day"])
+        print(f"Wrote {len(rows):,} rows to {args.csv}")
+        return 0
+    if not res["rows"]:
+        print(
+            "Nothing logged yet. Connections are recorded while `iglite watch` or `iglite serve --watch` runs."
+        )
+        return 0
+    for r in res["rows"]:
+        when = time.strftime("%m-%d %H:%M", time.localtime(r["last_seen"]))
+        who_ = (r["who_name"] + " " if r["who_name"] else "") + r["who"].split(":", 1)[1]
+        verdict = r["verdict"] or "unknown"
+        if args.dns:
+            line = f"{when}  {who_:<28} {r['domain']:<44} x{r['hits']}"
+        else:
+            arrow = "<-" if r["inbound"] else "->"
+            line = f"{when}  {who_:<28} {arrow} {r['remote_ip']}:{r['remote_port']}/{r['proto']:<4} {r['names'][:40]:<40} x{r['hits']}"
+        print(_paint(verdict, f"{verdict:<10}") + " " + line)
+    if res["total"] > len(res["rows"]):
+        print(f"... {res['total'] - len(res['rows']):,} more (use --limit or --csv)")
+    return 0
+
+
 def cmd_common(engine: Engine, args: argparse.Namespace) -> int:
     from . import common
 
@@ -940,6 +1012,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="allow tags, techniques and the gateway as stepping stones"
     )
     sp.set_defaults(func=cmd_path)
+
+    sp = sub.add_parser("connections", help="search the database of every connection and DNS lookup seen")
+    sp.add_argument("--dns", action="store_true", help="DNS lookups instead of connections")
+    sp.add_argument("--who", help="a device's LAN IP or a program name")
+    sp.add_argument("--search", help="text in the address, names, port, domain or device")
+    sp.add_argument("--since", help="only the last 30m, 24h, 7d...")
+    sp.add_argument("--verdict", action="append", choices=["malicious", "suspicious", "benign", "unknown"])
+    sp.add_argument("--limit", type=int, default=50)
+    sp.add_argument("--csv", metavar="FILE", help="write every matching row to a CSV file")
+    sp.add_argument("--stats", action="store_true", help="how much is stored")
+    sp.set_defaults(func=cmd_connections)
 
     sp = sub.add_parser("common", help="common services hidden from the graph (Google, Apple, CDNs...)")
     sp.add_argument("action", nargs="?", default="list", choices=["list", "check", "update"])

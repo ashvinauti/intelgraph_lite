@@ -43,6 +43,10 @@ watch_max_new = 25    # new IPs/domains looked up per snapshot
 # notify_per_hour = 30
 # dashboard_url = "http://10.42.0.1:8765"   # link in each notification
 
+# Database of every connection and DNS lookup (Live network › History, `iglite connections`).
+# connection_log = true
+# connection_log_days = 90                  # 0 keeps everything
+
 # Common services hidden from the graph (see README "Hide common services").
 # common_domains = ["mycompany.com", "our-saas.example"]   # your own routine services
 # common_ignore = ["zoom.us"]                               # never treat these as common

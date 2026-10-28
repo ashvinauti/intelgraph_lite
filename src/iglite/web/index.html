@@ -210,6 +210,14 @@
   #graph text.glyph { fill: #0b0b0b; stroke: none; font-size: 9px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
   #graph text.colhead { fill: var(--text-muted); font-size: 11px; font-weight: 600; text-anchor: middle; letter-spacing: .04em; }
   #graph line.colrule { stroke: var(--grid); stroke-width: 1; stroke-dasharray: 2 4; }
+  #graph path.edge.flow { stroke: var(--series-1); stroke-width: 2; stroke-dasharray: 6 5; animation: flow .9s linear infinite; marker-end: url(#arr-out); }
+  @keyframes flow { to { stroke-dashoffset: -11; } }
+  #graph g.node.fresh circle { animation: ping 1.4s ease-out 4; }
+  @keyframes ping { 0% { stroke: var(--accent); stroke-width: 12; stroke-opacity: .55; } 100% { stroke-width: 2; stroke-opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { #graph path.edge.flow, #graph g.node.fresh circle { animation: none; } }
+  .live-status { font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+  .live-status .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-neutral); }
+  .live-status.on .live-dot { background: var(--st-critical); animation: pulse 2s infinite; }
   .graph-common { position: absolute; left: 12px; bottom: 32px; max-width: calc(100% - 24px); font-size: 12px; color: var(--text-secondary);
                   background: var(--surface-1); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
   .graph-common[hidden] { display: none; }
@@ -420,6 +428,13 @@
   <!-- LIVE NETWORK -->
   <section class="view" id="view-live">
     <div class="toolbar">
+      <span class="seg" role="group" aria-label="Live or history">
+        <button id="lv-now" aria-pressed="true">Live now</button>
+        <button id="lv-hist" aria-pressed="false" title="The database of every connection and DNS lookup seen">History</button>
+      </span>
+    </div>
+    <div id="live-now">
+    <div class="toolbar">
       <button class="primary" id="live-toggle">Start monitoring</button>
       <button class="ghost" id="live-scan">Scan now</button>
       <label class="check">Every
@@ -431,6 +446,24 @@
     </div>
     <p class="muted" id="live-status" style="margin:0 0 10px"></p>
     <div class="table-wrap"><table id="live-table"></table></div>
+    </div>
+    <div id="live-hist" hidden>
+      <div class="toolbar">
+        <span class="seg" role="group" aria-label="Connections or DNS lookups">
+          <button id="h-conn" aria-pressed="true">Connections</button>
+          <button id="h-dns" aria-pressed="false">DNS lookups</button>
+        </span>
+        <input type="search" class="grow" id="h-q" placeholder="Search address, DNS name, port, domain or device">
+        <select id="h-who" aria-label="Device or program"><option value="">All devices &amp; programs</option></select>
+        <select id="h-since" aria-label="Time range"><option value="3600">Last hour</option><option value="86400" selected>Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option><option value="">Everything</option></select>
+        <select id="h-verdict" aria-label="Verdict"><option value="">Any verdict</option><option value="malicious,suspicious">Flagged</option><option value="malicious">Malicious</option><option value="suspicious">Suspicious</option><option value="unknown">Unknown</option><option value="benign">Benign</option></select>
+        <label class="check" title="Hide routine services (Google, Apple, CDNs...)"><input type="checkbox" id="h-common" checked> Hide common</label>
+        <a class="ghost" id="h-csv" href="/api/connlog.csv" download="iglite-connections.csv">Export CSV</a>
+      </div>
+      <p class="muted" id="h-status" style="margin:0 0 10px"></p>
+      <div class="table-wrap"><table id="h-table"></table></div>
+      <div class="toolbar" style="margin-top:10px"><button class="ghost" id="h-more">Load more</button></div>
+    </div>
   </section>
 
   <!-- NETWORK (gateway mode) -->
@@ -514,6 +547,8 @@
       <button class="ghost" id="g-fit">Fit</button>
       <button class="ghost" id="g-labels" aria-pressed="true">Labels</button>
       <button class="ghost" id="g-clear">Clear</button>
+      <button class="ghost" id="g-live" aria-pressed="true" title="Add connections to the graph as live monitoring sees them; active ones animate">Live</button>
+      <span class="live-status" id="g-live-status"><span class="live-dot"></span><span></span></span>
       <button class="ghost" id="g-common" aria-pressed="true" title="Hide routine services (Google, Apple, Microsoft, Netflix, CDNs...) so only the connections that matter remain. Anything flagged, blocked or in a case is always shown.">Hide common services</button>
       <span class="legend" id="g-legend"></span>
       <span class="legend" id="g-kinds" title="Hide kinds of nodes that clutter the graph"></span>
@@ -1510,6 +1545,90 @@ const Drawer = {
   },
 };
 
+/* ---------- history: the connection database ---------- */
+const History = {
+  on: false, dns: false, rows: [], offset: 0, total: 0, whoLoaded: 0,
+  show(on) {
+    this.on = on;
+    $("lv-now").setAttribute("aria-pressed", String(!on)); $("lv-hist").setAttribute("aria-pressed", String(on));
+    $("live-now").hidden = on; $("live-hist").hidden = !on;
+    store.set("iglite-live-mode", on ? "history" : "now");
+    if (on) this.reset(); else Live.refresh();
+  },
+  params(limit, offset) {
+    const p = new URLSearchParams({ limit, offset });
+    if (this.dns) p.set("dns", "1");
+    const q = $("h-q").value.trim(); if (q) p.set("q", q);
+    if ($("h-who").value) p.set("who", $("h-who").value);
+    if ($("h-since").value) p.set("since", String(Date.now() / 1000 - +$("h-since").value));
+    if ($("h-verdict").value) p.set("verdict", $("h-verdict").value);
+    if ($("h-common").checked) p.set("hide_common", "1");
+    return p;
+  },
+  async stats() {
+    try {
+      const st = await api("/api/connlog/stats");
+      if (st.who.length !== this.whoLoaded) {
+        const cur = $("h-who").value;
+        fill($("h-who"), el("option", { value: "" }, "All devices & programs"),
+          st.who.map(w => el("option", { value: w, selected: w === cur }, w.startsWith("host:") ? `device ${w.slice(5)}` : `program ${w.slice(8)}`)));
+        this.whoLoaded = st.who.length;
+      }
+      this.st = st;
+    } catch (e) {}
+  },
+  async reset() { this.rows = []; this.offset = 0; await this.stats(); await this.load(); },
+  async load() {
+    const p = this.params(200, this.offset);
+    const r = await api("/api/connlog?" + p);
+    this.rows = this.rows.concat(r.rows); this.total = r.total; this.offset += r.rows.length;
+    const csv = this.params(100000, 0); csv.delete("hide_common");
+    $("h-csv").setAttribute("href", "/api/connlog.csv?" + csv);
+    $("h-csv").setAttribute("download", this.dns ? "iglite-dns-lookups.csv" : "iglite-connections.csv");
+    this.render();
+  },
+  render() {
+    const hide = $("h-common").checked, shown = this.rows.filter(r => !(hide && r.common)), hidden = this.rows.length - shown.length;
+    const st = this.st;
+    $("h-status").textContent = `${this.total.toLocaleString()} matching ${this.dns ? "lookup" : "connection"} rows` +
+      (hidden ? ` · ${plural(hidden, "common-service row")} hidden` : "") +
+      (st ? ` · database: ${st.connections.toLocaleString()} connections, ${st.lookups.toLocaleString()} lookups over ${plural(st.days, "day")}` +
+        (st.first ? ` since ${new Date(st.first * 1000).toLocaleDateString()}` : "") + (st.retention_days ? `, kept ${st.retention_days} days` : ", kept forever") : "") +
+      (st && !st.enabled ? " · logging is off (connection_log = false)" : "");
+    const who = r => el("td", {}, r.who_name ? [r.who_name, " "] : null, el("span", { class: r.who_name ? "muted mono" : "mono" }, r.who.split(":").slice(1).join(":")));
+    const when = ts => el("td", { class: "nowrap", title: new Date(ts * 1000).toLocaleString() }, timeAgo(ts));
+    const head = cols => el("thead", {}, el("tr", {}, cols.map(([c, cls]) => el("th", { class: "static " + (cls || "") }, c))));
+    fill($("h-table"), this.dns
+      ? [head([["Last seen"], ["Device"], ["Domain"], ["Verdict"], ["Lookups", "num"], ["First seen"]]),
+         el("tbody", {}, shown.map(r => el("tr", { onclick: () => Drawer.open("domain:" + r.domain) },
+           when(r.last_seen), who(r), el("td", { class: "mono" }, r.domain, r.common ? el("span", { class: "muted", style: "margin-left:6px;font-size:12px" }, r.common) : null),
+           el("td", {}, badge(r.verdict || "unknown", r.score)), el("td", { class: "num" }, r.hits), when(r.first_seen))))]
+      : [head([["Last seen"], ["Device / program"], ["Remote"], ["Names"], ["Verdict"], ["Hits", "num"], ["First seen"]]),
+         el("tbody", {}, shown.map(r => el("tr", { onclick: () => Drawer.open("ip:" + r.remote_ip) },
+           when(r.last_seen), who(r),
+           el("td", { class: "mono nowrap" }, `${r.inbound ? "← " : "→ "}${r.remote_ip}:${r.remote_port}`, el("span", { class: "muted" }, ` ${r.proto}`)),
+           el("td", { class: "mono", style: "max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap", title: r.names }, r.names,
+             r.common ? el("span", { class: "muted", style: "margin-left:6px;font-size:12px;font-family:inherit" }, r.common) : null),
+           el("td", {}, badge(r.verdict || "unknown", r.score)), el("td", { class: "num" }, r.hits), when(r.first_seen))))]);
+    if (!shown.length) $("h-table").append(el("tbody", {}, el("tr", {}, el("td", { colspan: 7, class: "muted", style: "cursor:default" },
+      this.rows.length ? "Every row here is a common service; untick Hide common to see them." : "Nothing logged for these filters yet. Connections are recorded while monitoring runs."))));
+    $("h-more").hidden = this.offset >= this.total;
+  },
+};
+$("lv-now").onclick = () => History.show(false);
+$("lv-hist").onclick = () => History.show(true);
+$("h-conn").onclick = () => { History.dns = false; $("h-conn").setAttribute("aria-pressed", "true"); $("h-dns").setAttribute("aria-pressed", "false"); History.reset(); };
+$("h-dns").onclick = () => { History.dns = true; $("h-dns").setAttribute("aria-pressed", "true"); $("h-conn").setAttribute("aria-pressed", "false"); History.reset(); };
+let hTimer = null;
+$("h-q").oninput = () => { clearTimeout(hTimer); hTimer = setTimeout(() => History.reset(), 300); };
+["h-who", "h-since", "h-verdict"].forEach(id => { $(id).onchange = () => History.reset(); });
+$("h-common").onchange = () => History.render();
+$("h-more").onclick = () => History.load();
+if (store.get("iglite-live-mode") === "history") {  // reopen where the viewer left off
+  History.on = true; $("lv-now").setAttribute("aria-pressed", "false"); $("lv-hist").setAttribute("aria-pressed", "true");
+  $("live-now").hidden = true; $("live-hist").hidden = false;
+}
+
 /* ---------- response: block / quarantine ---------- */
 const BLOCKABLE = new Set(["ip", "domain", "url"]);
 const Respond = {
@@ -1748,16 +1867,63 @@ const Graph = {
     for (const e of g.edges) this.edges.set(`${e.src}|${e.rel}|${e.dst}`, e);
     for (const n of g.nodes) this.commonHidden.delete(n.key);
     this.commonNote();
-    if (this.nodes.size > 400) this.prune(root);
+    if (this.nodes.size > 400) this.prune(this.originKey() || root);
     this.build(); this.relayout();
   },
   prune(keep) {
-    for (const k of [...this.nodes.keys()]) { if (this.nodes.size <= 400) break; if (k !== keep && k !== this.selected && k !== this.root) this.nodes.delete(k); }
+    // Drop the least recently active context first; devices and flagged nodes stay.
+    const lastActive = new Map();
+    for (const e of this.edges.values()) for (const k of [e.src, e.dst]) lastActive.set(k, Math.max(lastActive.get(k) || 0, e.active || 0));
+    const spare = [...this.nodes.values()].filter(n => n.key !== keep && n.key !== this.selected && n.key !== this.root && n.kind !== "host"
+      && n.verdict !== "malicious" && n.verdict !== "suspicious" && !(this.path && this.path.keys.has(n.key)))
+      .sort((a, b) => (lastActive.get(a.key) || a.newAt || 0) - (lastActive.get(b.key) || b.newAt || 0));
+    for (const n of spare) { if (this.nodes.size <= 400) break; this.nodes.delete(n.key); }
     for (const [id, e] of this.edges) if (!this.nodes.has(e.src) || !this.nodes.has(e.dst)) this.edges.delete(id);
   },
   degree(key) { let d = 0; for (const e of this.edges.values()) if (e.src === key || e.dst === key) d++; return d; },
   hiddenKinds: new Set(JSON.parse(store.get("iglite-hidden-kinds") || "[]")),
   hideCommon: store.get("iglite-hide-common") !== "0", commonHidden: new Map(),
+  live: store.get("iglite-graph-live") !== "0", liveSince: null, liveCount: [],
+  setLive(on) {
+    this.live = on; store.set("iglite-graph-live", on ? "1" : "0");
+    $("g-live").setAttribute("aria-pressed", String(on));
+    if (on) { this.liveSince = null; this.pollLive(); } else { this.applyLive(); this.liveStatus(); }
+  },
+  originKey() { return this.nodes.has("host:gateway") ? "host:gateway" : this.nodes.has("host:this-computer") ? "host:this-computer" : null; },
+  async pollLive() {
+    if (!this.live) return;
+    let r;
+    const since = this.liveSince || Date.now() / 1000 - 300;
+    try { r = await api(`/api/graph/live?since=${since}${this.hideCommon ? "&hide_common=1" : ""}`); } catch (e) { return; }
+    this.liveSince = r.now;
+    if (r.hidden) { for (const [k, label] of Object.entries(r.hidden.keys || {})) if (!this.nodes.has(k)) this.commonHidden.set(k, label); this.commonNote(); }
+    const fresh = r.nodes.filter(n => !this.nodes.has(n.key));
+    const now = Date.now() / 1000;
+    for (const e of r.edges) {  // re-seen edges: just mark them active
+      const old = this.edges.get(`${e.src}|${e.rel}|${e.dst}`);
+      if (old) old.active = e.last_seen;
+    }
+    const newEdges = r.edges.filter(e => !this.edges.has(`${e.src}|${e.rel}|${e.dst}`)).map(e => ({ ...e, active: e.last_seen }));
+    if (fresh.length || newEdges.length) {
+      this.merge({ nodes: r.nodes, edges: newEdges }, this.originKey() || (r.nodes[0] || {}).key);
+      for (const n of fresh) { const x = this.nodes.get(n.key); if (x) x.newAt = now; }
+      this.liveCount.push(...fresh.map(() => now));
+    }
+    this.applyLive(); this.liveStatus();
+  },
+  applyLive() {
+    const now = Date.now() / 1000;
+    for (const e of this.edges.values()) if (e._el) e._el.classList.toggle("flow", this.live && !!e.active && now - e.active < 60);
+    for (const n of this.nodes.values()) if (n._el) n._el.classList.toggle("fresh", this.live && !!n.newAt && now - n.newAt < 20);
+  },
+  liveStatus() {
+    const box = $("g-live-status"), now = Date.now() / 1000;
+    this.liveCount = this.liveCount.filter(t => now - t < 60);
+    const active = [...this.edges.values()].filter(e => e.active && now - e.active < 60).length;
+    box.classList.toggle("on", this.live && !!watch.running);
+    box.lastChild.textContent = !this.live ? "" : !watch.running ? "monitoring is off" :
+      `${plural(this.liveCount.length, "new node")} · ${plural(active, "active link")} in the last minute`;
+  },
   setHideCommon(on) {
     this.hideCommon = on; store.set("iglite-hide-common", on ? "1" : "0");
     $("g-common").setAttribute("aria-pressed", String(on));
@@ -1895,6 +2061,7 @@ const Graph = {
     }
     this.render();
     this.applyFocus();
+    this.applyLive();
   },
   render() {
     $("viewport").setAttribute("transform", `translate(${this.view.x},${this.view.y}) scale(${this.view.k})`);
@@ -2068,6 +2235,8 @@ const Graph = {
   $("g-fit").onclick = () => Graph.fit();
   $("g-clear").onclick = () => { Graph.nodes.clear(); Graph.edges.clear(); Graph.commonHidden.clear(); Graph.commonNote(); Graph.root = null; Graph.build(); fill($("cols")); $("g-root").hidden = true; };
   $("g-common").onclick = () => Graph.setHideCommon(!Graph.hideCommon);
+  $("g-live").onclick = () => Graph.setLive(!Graph.live);
+  $("g-live").setAttribute("aria-pressed", String(Graph.live));
   $("g-common").setAttribute("aria-pressed", String(Graph.hideCommon));
   $("g-labels").onclick = ev => { Graph.labels = !Graph.labels; ev.target.setAttribute("aria-pressed", Graph.labels); Graph.build(); Graph.relayout(); };
   $("g-path").onclick = () => Graph.setMode("path");
@@ -2196,7 +2365,7 @@ $("a-q").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey
 async function refreshView() {
   try {
     if (view === "overview") await Promise.all([refreshStats(), Triage.refreshStatus().then(pollAlerts), Activity.refresh(), refreshSources()]);
-    else if (view === "live") await Live.refresh();
+    else if (view === "live") { if (History.on) await History.reset(); else await Live.refresh(); }
     else if (view === "routes") await Routes.list();
     else if (view === "analyst") await Analyst.init();
     else if (view === "attack") await AttackView.refresh();
@@ -2219,7 +2388,8 @@ async function poll() {
     try {
       watch = await api("/api/watch"); paintWatch();
       await pollAlerts();
-      if (view === "live" && watch.running) await Live.refresh();
+      if (view === "live" && watch.running && !History.on) await Live.refresh();
+      if (view === "graph" && Graph.live) await Graph.pollLive();
       if (view === "network") await Network.refresh();
       if (view === "cases" && !Cases.editing()) await Cases.refresh(); else if (++pollTick % 6 === 1) Cases.count();
       if (view === "overview") { await refreshStats(); await Triage.refreshStatus(); if (watch.running) await Activity.refresh(); }

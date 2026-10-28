@@ -1058,6 +1058,7 @@ class GatewayCollector:
                 device_name=devices.get(device),
                 inbound=inbound,
                 count=count,
+                fresh=fresh.get((device, proto, remote, port, inbound), 0),
             )
             for (device, proto, remote, port, inbound), count in flows.items()
         ]
