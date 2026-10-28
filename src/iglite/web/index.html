@@ -210,6 +210,9 @@
   #graph text.glyph { fill: #0b0b0b; stroke: none; font-size: 9px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
   #graph text.colhead { fill: var(--text-muted); font-size: 11px; font-weight: 600; text-anchor: middle; letter-spacing: .04em; }
   #graph line.colrule { stroke: var(--grid); stroke-width: 1; stroke-dasharray: 2 4; }
+  .graph-common { position: absolute; left: 12px; bottom: 32px; max-width: calc(100% - 24px); font-size: 12px; color: var(--text-secondary);
+                  background: var(--surface-1); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+  .graph-common[hidden] { display: none; }
   .graph-hint { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: var(--text-muted); pointer-events: none; }
   .graph-focus { position: absolute; left: 12px; top: 10px; max-width: min(420px, calc(100% - 24px)); font-size: 12px; background: var(--surface-1);
                  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; box-shadow: var(--shadow); }
@@ -460,7 +463,8 @@
         </div>
         <div class="card">
           <div class="card-head"><h2>Live DNS lookups</h2>
-            <span class="toolbar" style="margin:0"><label class="check"><input type="checkbox" id="nw-feed-flagged"> Flagged only</label>
+            <span class="toolbar" style="margin:0"><label class="check" title="Hide lookups of routine services (Google, Apple, CDNs...)"><input type="checkbox" id="nw-feed-common" checked> Hide common</label>
+            <label class="check"><input type="checkbox" id="nw-feed-flagged"> Flagged only</label>
             <button class="ghost small" id="nw-pause" aria-pressed="false">Pause</button></span></div>
           <ul class="feed lookups" id="nw-feed"></ul>
         </div>
@@ -510,6 +514,7 @@
       <button class="ghost" id="g-fit">Fit</button>
       <button class="ghost" id="g-labels" aria-pressed="true">Labels</button>
       <button class="ghost" id="g-clear">Clear</button>
+      <button class="ghost" id="g-common" aria-pressed="true" title="Hide routine services (Google, Apple, Microsoft, Netflix, CDNs...) so only the connections that matter remain. Anything flagged, blocked or in a case is always shown.">Hide common services</button>
       <span class="legend" id="g-legend"></span>
       <span class="legend" id="g-kinds" title="Hide kinds of nodes that clutter the graph"></span>
     </div>
@@ -522,6 +527,7 @@
       </defs><g id="viewport"><g id="cols"></g><g id="edges"></g><g id="nodes"></g></g></svg>
       <div class="graph-focus" id="g-focus" hidden></div>
       <div class="graph-root" id="g-root"></div>
+      <div class="graph-common" id="g-common-note" hidden></div>
       <div class="graph-hint">Click a node to see what connects to it and what it connects to · double-click to expand further · drag to move · scroll to zoom</div>
     </div>
   </section>
@@ -1255,7 +1261,8 @@ const Network = {
         d.quarantined ? el("span", { class: "blocked-pill", title: "Cut off from the internet" }, "quarantined") : null)))
       : el("p", { class: "empty", style: "grid-column:1/-1" }, ds.length ? "No device matches the filter." : "No devices seen yet. Traffic appears within one scan of reaching the gateway."));
     const feedFlagged = $("nw-feed-flagged").checked;
-    const items = this.feed.filter(x => !feedFlagged || x.verdict === "malicious" || x.verdict === "suspicious").slice(0, 150);
+    const hideCommon = $("nw-feed-common").checked;
+    const items = this.feed.filter(x => (!feedFlagged || x.verdict === "malicious" || x.verdict === "suspicious") && !(hideCommon && x.common)).slice(0, 150);
     fill($("nw-feed"), items.length ? items.map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
       badge(x.verdict, x.score), el("span", { class: "mono" }, x.domain), el("span", { class: "muted nowrap", style: "font-size:12px" }, clock(x.at)),
       el("span", { class: "who" }, this.label(x), x.device_name ? el("span", { class: "muted" }, ` ${x.device}`) : null)))
@@ -1294,7 +1301,9 @@ const Network = {
         el("span", { class: "muted mono", style: "margin-left:auto" }, (r.names || []).join(", ")))))
         : el("p", { class: "muted" }, "No connections in the current window."),
       el("h3", {}, `Recent lookups (${d.lookups.length})`),
-      d.lookups.length ? el("ul", { class: "links" }, d.lookups.slice(0, 40).map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
+      $("nw-feed-common").checked && d.lookups.some(x => x.common)
+        ? el("p", { class: "muted", style: "margin:0 0 4px;font-size:12px" }, `${plural(d.lookups.filter(x => x.common).length, "lookup")} of common services hidden (see “Hide common” in Live DNS lookups)`) : null,
+      d.lookups.length ? el("ul", { class: "links" }, d.lookups.filter(x => !($("nw-feed-common").checked && x.common)).slice(0, 40).map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
         badge(x.verdict || "pending", x.score), el("span", { class: "mono" }, x.domain), el("span", { class: "muted", style: "margin-left:auto" }, clock(x.at)))))
         : el("p", { class: "muted" }, "No DNS lookups seen from this device yet."));
     if (scroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1309,6 +1318,7 @@ const Network = {
 $("nw-q").oninput = () => Network.render();
 $("nw-flagged").onchange = () => Network.render();
 $("nw-feed-flagged").onchange = () => Network.render();
+$("nw-feed-common").onchange = () => Network.render();
 $("nw-pause").onclick = ev => { Network.paused = !Network.paused; ev.target.setAttribute("aria-pressed", String(Network.paused)); ev.target.textContent = Network.paused ? "Resume" : "Pause"; };
 
 /* ---------- MITRE ATT&CK ---------- */
@@ -1404,20 +1414,28 @@ const Drawer = {
       return el("li", { onclick: () => this.open(other), title: other },
         o.verdict && LOOKUP_KINDS.has(kind) ? badge(o.verdict, o.score) : el("span", { class: "muted nowrap", style: "min-width:58px" }, kind === "host" ? "device" : kind),
         el("span", { class: "mono" }, other.slice(kind.length + 1)),
-        o.name ? el("span", { class: "muted" }, o.name) : null);
+        o.name ? el("span", { class: "muted" }, o.name) : null,
+        o.common ? el("span", { class: "muted", style: "margin-left:auto;font-size:12px" }, o.common) : null);
     };
     // One group per relation ("resolves_to", "connects_to"...), long groups folded.
     const linkGroups = (edges, out) => {
       if (!edges.length) return el("p", { class: "muted" }, out ? "It points at nothing yet." : "Nothing points at it yet.");
       const byRel = new Map();
       for (const e of edges) (byRel.get(e.rel) || byRel.set(e.rel, []).get(e.rel)).push(e);
+      const hideCommon = Graph.hideCommon;
       return el("div", {}, [...byRel].sort((a, b) => b[1].length - a[1].length).map(([rel, es]) => {
-        const others = [...new Set(es.map(e => out ? e.dst : e.src))], srcs = [...new Set(es.map(e => e.source))].join(", ");
+        const all = [...new Set(es.map(e => out ? e.dst : e.src))], srcs = [...new Set(es.map(e => e.source))].join(", ");
+        const common = hideCommon ? all.filter(k => (nb[k] || {}).common) : [];
+        const others = hideCommon ? all.filter(k => !(nb[k] || {}).common) : all;
         const ul = el("ul", { class: "links" }, others.slice(0, 8).map(linkRow));
         const more = others.length > 8 ? el("button", { class: "ghost small", onclick: ev => { ul.append(...others.slice(8).map(linkRow)); ev.target.remove(); } },
           `Show ${others.length - 8} more`) : null;
-        return el("div", {}, el("div", { class: "rel-group" }, el("b", {}, out ? `${rel} →` : `← ${rel}`), `${others.length}`,
-          el("span", { class: "muted", style: "margin-left:auto" }, srcs)), ul, more);
+        const services = [...new Set(common.map(k => nb[k].common))];
+        const commonRow = common.length ? el("button", { class: "ghost small", style: "margin-top:4px", title: common.join("\n"),
+          onclick: ev => { ul.append(...common.map(linkRow)); ev.target.remove(); } },
+          `+ ${plural(common.length, "common service")} (${services.slice(0, 3).join(", ")}${services.length > 3 ? "…" : ""})`) : null;
+        return el("div", {}, el("div", { class: "rel-group" }, el("b", {}, out ? `${rel} →` : `← ${rel}`), `${all.length}`,
+          el("span", { class: "muted", style: "margin-left:auto" }, srcs)), ul, more, commonRow);
       }));
     };
     const attrs = Object.entries(n.attrs);
@@ -1442,6 +1460,7 @@ const Drawer = {
         el("b", {}, a.override === "false_positive" ? "You marked this a false positive. " : "You confirmed this is malicious. "),
         "Your mark overrides the computed verdict; the evidence below is kept for reference. ",
         el("button", { class: "ghost small", onclick: () => Feedback.mark(key, "clear", false) }, "Undo")) : null,
+      info.common ? el("p", { class: "secondary", style: "margin:8px 0 0;font-size:13px" }, `Common service: ${info.common}. Hidden from the graph unless flagged.`) : null,
       info.blocked ? el("div", { class: "warn", role: "note" }, el("b", {}, n.kind === "host" ? "Quarantined. " : "Blocked. "),
         n.kind === "host" ? "This device can reach the gateway but nothing beyond it." : "It is in the blocklist feeds and, if the gateway enforces blocks, dropped there.") : null,
       info.cases && info.cases.length ? el("p", { class: "secondary", style: "margin:8px 0 0;font-size:13px" }, "In ",
@@ -1699,7 +1718,8 @@ const Graph = {
 
   async load(key, expand, depth = 1) {
     try {
-      const g = await api(`/api/graph?depth=${depth}&limit=${expand ? 120 : 30}&key=` + encodeURIComponent(key));
+      const g = await api(`/api/graph?depth=${depth}&limit=${expand ? 120 : 30}${this.hideCommon ? "&hide_common=1" : ""}&key=` + encodeURIComponent(key));
+      if (g.hidden) { for (const [k, label] of Object.entries(g.hidden.keys || {})) if (!this.nodes.has(k)) this.commonHidden.set(k, label); this.commonNote(); }
       // Only re-lay out when something is new, so clicking around doesn't shuffle the graph.
       const fresh = g.nodes.some(n => !this.nodes.has(n.key)) || g.edges.some(e => !this.edges.has(`${e.src}|${e.rel}|${e.dst}`));
       if (g.nodes.length && fresh) this.merge(g, g.root);
@@ -1726,6 +1746,8 @@ const Graph = {
         x: cx + Math.cos(t) * r, y: cy + Math.sin(t) * r, vx: 0, vy: 0, fixed: false });
     }
     for (const e of g.edges) this.edges.set(`${e.src}|${e.rel}|${e.dst}`, e);
+    for (const n of g.nodes) this.commonHidden.delete(n.key);
+    this.commonNote();
     if (this.nodes.size > 400) this.prune(root);
     this.build(); this.relayout();
   },
@@ -1735,6 +1757,24 @@ const Graph = {
   },
   degree(key) { let d = 0; for (const e of this.edges.values()) if (e.src === key || e.dst === key) d++; return d; },
   hiddenKinds: new Set(JSON.parse(store.get("iglite-hidden-kinds") || "[]")),
+  hideCommon: store.get("iglite-hide-common") !== "0", commonHidden: new Map(),
+  setHideCommon(on) {
+    this.hideCommon = on; store.set("iglite-hide-common", on ? "1" : "0");
+    $("g-common").setAttribute("aria-pressed", String(on));
+    const keep = this.root || this.selected;
+    this.nodes.clear(); this.edges.clear(); this.commonHidden.clear(); this.build();
+    if (keep) this.load(keep, true, 2).then(() => setTimeout(() => this.fit(), 450)); else refreshView();
+    if (Drawer.key) Drawer.open(Drawer.key);
+  },
+  commonNote() {
+    const box = $("g-common-note"), n = this.commonHidden.size;
+    if (!this.hideCommon || !n) { box.hidden = true; return; }
+    const by = new Map(); for (const label of this.commonHidden.values()) by.set(label, (by.get(label) || 0) + 1);
+    const top = [...by].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l, c]) => `${l} ${c}`).join(" · ");
+    fill(box, `${plural(n, "common service")} hidden: ${top}${by.size > 5 ? " · …" : ""} `,
+      el("button", { class: "ghost small", onclick: () => this.setHideCommon(false) }, "Show them"));
+    box.hidden = false;
+  },
   visible(n) { return !this.hidden.has(n.verdict || "unknown") && !(this.hiddenKinds.has(n.kind) && n.key !== this.selected && !(this.path && this.path.keys.has(n.key))); },
   kinds() {
     const KINDS = [["technique", "Techniques"], ["tag", "Tags"], ["software", "Malware & groups"], ["report", "Reports"]];
@@ -2026,7 +2066,9 @@ const Graph = {
     await Graph.load(ev.target.value.trim(), true); ev.target.value = ""; setTimeout(() => Graph.fit(), 450);
   });
   $("g-fit").onclick = () => Graph.fit();
-  $("g-clear").onclick = () => { Graph.nodes.clear(); Graph.edges.clear(); Graph.root = null; Graph.build(); fill($("cols")); $("g-root").hidden = true; };
+  $("g-clear").onclick = () => { Graph.nodes.clear(); Graph.edges.clear(); Graph.commonHidden.clear(); Graph.commonNote(); Graph.root = null; Graph.build(); fill($("cols")); $("g-root").hidden = true; };
+  $("g-common").onclick = () => Graph.setHideCommon(!Graph.hideCommon);
+  $("g-common").setAttribute("aria-pressed", String(Graph.hideCommon));
   $("g-labels").onclick = ev => { Graph.labels = !Graph.labels; ev.target.setAttribute("aria-pressed", Graph.labels); Graph.build(); Graph.relayout(); };
   $("g-path").onclick = () => Graph.setMode("path");
   $("g-force").onclick = () => Graph.setMode("force");

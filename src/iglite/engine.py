@@ -85,6 +85,7 @@ class Engine:
         self._desk: Any = None
         self._triage: Any = None
         self._notifier: Any = None
+        self._common: Any = None
         self.demo = False  # set by ``iglite demo``: simulated network and invented intel
 
     def agent_desk(self) -> Any:
@@ -112,6 +113,14 @@ class Engine:
         self.notifier().on_alert(alert_id)
         if (self.config.ai_triage or "").lower() == "auto":
             self.triage_worker().on_alert(alert_id)
+
+    def common(self) -> Any:
+        """The common-services classifier, loaded on first use (reload after `iglite common update`)."""
+        if self._common is None:
+            from .common import from_config
+
+            self._common = from_config(self.config)
+        return self._common
 
     def notifier(self) -> Any:
         """Alert notifications (Slack, Teams, email, webhook), created on first use."""
