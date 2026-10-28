@@ -53,6 +53,14 @@ iglite serve --host 0.0.0.0 --syslog 5514 --netflow 2055
 iglite attack                    # matrix by tactic
 iglite attack navigator -o layer.json
 
+# Cases, response and notifications
+iglite case list
+iglite block 203.0.113.66 --case 1
+iglite path host:10.42.0.52 http://cdn-update.example/setup.bin
+iglite notify --test
+iglite common update             # popular-domain list, so routine traffic stays out of the graph
+iglite connections --since 24h   # the database of every connection seen
+
 # Show it to someone: a simulated network with a minute of incidents, nothing to set up
 iglite demo
 ```
@@ -94,6 +102,9 @@ With Docker: `docker run --rm -p 8765:8765 iglite iglite demo --host 0.0.0.0 --n
 | ~20 s | The Work-Laptop downloads a dropper | Alert; T1105; click it for the graph |
 | ~28 s | The LG TV joins a crypto-mining pool | Alert; T1496 |
 | ~36 s | An internet scanner reaches the NAS on SSH | *Suspicious* only: worth a look, not an alert |
+| any time | The C2 and dropper alerts have filed themselves into case #1, opened from the threat brief | Cases tab: timeline, ATT&CK, **Block** the C2 IP, **Quarantine** the Smart-Plug, **Copy report** |
+| any time | File the phishing alert into a new case | Recent alerts › **Add to case** |
+| any time | How did the laptop get the malware? | Work-Laptop › **Find path to…** the dropper URL |
 
 Good stops along the way: click a device in the **Network** tab to see its
 connections and lookups; open an alert and read *why* it scored that way; mark
@@ -318,8 +329,9 @@ Put IntelGraph Lite on a small VM or server in the management network:
 
 ### Closing the loop: feed your firewall a blocklist
 
-IntelGraph Lite doesn't block anything itself. It publishes plain-text feeds
-that the gateway pulls and enforces:
+IntelGraph Lite publishes plain-text feeds that the gateway pulls and enforces
+(when it runs *on* the gateway it can also block directly, see
+[Respond: block and quarantine](#respond-block-and-quarantine)):
 
 ```
 GET /api/blocklist/ip.txt       # malicious IPs
@@ -332,7 +344,8 @@ Use these with pfSense/OPNsense *URL Table* aliases, FortiGate *External
 Threat Feeds*, Palo Alto *External Dynamic Lists*, or Pi-hole *adlists*.
 `iglite blocklist ip -o ips.txt` writes the same list to a file. False
 positives you marked, suppressed indicators, private addresses and IPs on
-shared CDN/cloud infrastructure are always left out. Blocking one Cloudflare
+shared CDN/cloud infrastructure are left out; anything you blocked by hand is
+always in. Blocking one Cloudflare
 IP would break thousands of unrelated sites. IntelGraph Lite serves plain
 HTTP, so put it behind a TLS reverse proxy (Caddy, nginx) if the firewall
 pulls across an untrusted network.
@@ -376,6 +389,164 @@ iglite attack update                    # refresh the catalogue from MITRE
 ATT&CK® is a registered trademark of The MITRE Corporation. The bundled data
 is © MITRE and used under the
 [ATT&CK terms of use](https://attack.mitre.org/resources/legal-and-branding/terms-of-use/).
+
+## Cases: from alerts to an incident
+
+A **case** groups everything about one incident: its alerts, the devices and
+indicators involved, the ATT&CK techniques they map to, your notes, and a
+timeline of what happened and what was done (blocks, status changes).
+
+* Open one from an alert (**Add to case** in Recent alerts), from any node's
+  details panel, a device in the Network tab, or **New case** in the Cases tab.
+* New alerts **file themselves** into an open case that already holds the same
+  indicator or device (switch off with `auto_case = false`). One infected
+  laptop stays one case, not twenty alerts.
+* Set the status (open, investigating, closed) and severity, write a summary,
+  add notes, and **Copy report** to paste the whole case as Markdown into a
+  ticket, email or chat.
+
+```bash
+iglite case new "Smart plug beaconing" --alert 12 --severity high
+iglite case add 1 --indicator 203.0.113.66
+iglite case note 1 "Unplugged; owner informed"
+iglite case status 1 closed
+iglite case report 1 -o case-1.md
+iglite case list
+```
+
+## Live graph and connection history
+
+**Live graph.** With **Live** on (the default) in the Graph tab, new
+connections appear as monitoring sees them: new devices, servers and domains
+drop into the graph with a pulse, and links that carried traffic in the last
+minute animate in the direction of the traffic. Only traffic relations animate
+(device → server, device → domain, domain → address), not intelligence links
+such as tags or ATT&CK techniques. A counter next to the button shows new nodes
+and active links in the last minute. Common services stay hidden unless you
+turn that off. On a long run the graph keeps about 400 nodes, dropping the
+least recently active first; devices and anything flagged are kept.
+
+**Connection history.** Every connection and DNS lookup that live monitoring
+sees is written to the database, one row per device or program, remote
+address, port and protocol per day, with the first and last time seen, the
+DNS names and a hit count. Open **Live network › History** to search it by
+address, name, port, domain or device, filter by time range and verdict
+(verdicts are the current ones, so something that turned malicious later shows
+up as malicious in last week's history), and **Export CSV**.
+
+```bash
+iglite connections --since 24h                     # newest first
+iglite connections --who 10.42.0.61 --since 7d     # one device (or --who firefox for a program)
+iglite connections --verdict malicious --verdict suspicious
+iglite connections --dns --search coin-mine        # DNS lookups
+iglite connections --csv everything.csv
+iglite connections --stats
+```
+
+Rows older than `connection_log_days` (90) are deleted every hour; set it to 0
+to keep everything, or `connection_log = false` to switch logging off. A home
+network writes roughly 1 MB a day.
+
+## Hide common services
+
+On a real network most connections go to the same few dozen big services:
+Google, Apple, Microsoft, Meta, Netflix, Amazon, Akamai and Cloudflare, plus
+certificate checks, time servers and update servers. The graph hides them by
+default (**Hide common services** in the Graph toolbar), so what is left is the
+unusual, the unknown and the flagged. A note in the corner says how many were
+hidden and from which services, with **Show them** to bring them back. A
+device's incoming and outgoing lists fold them into one line in the same way,
+and the Network tab's DNS feed has a **Hide common** box.
+
+What counts as common:
+
+* **Built-in catalogue** (`src/iglite/data/common_services.json`): about 190
+  domains of 36 well-known services. A domain matches by whole labels, so
+  `r3---sn-aig.googlevideo.com` is Google but `google.com.evil.example` and
+  `goog1e.com` are not.
+* **The Tranco list**, if you download it: a research ranking of the most
+  popular domains, built from several providers over 30 days so it is hard to
+  game. `iglite common update` saves the top 10,000 to `~/.iglite/tranco.txt`.
+  Run it on the gateway now and then, then restart the service.
+* **Your own**: `common_domains = ["mycompany.com"]` in `iglite.toml`. Use
+  `common_ignore` for anything that should never be hidden.
+* **IPs**: an address counts if it belongs to a CDN-only operator (Akamai,
+  Cloudflare, Fastly, Apple, Meta...) or if every name seen resolving to it is
+  common. Google, Microsoft and Amazon addresses don't count by owner alone,
+  because their clouds rent servers to anyone, attackers included.
+
+What is **never hidden**, however popular:
+
+* anything flagged malicious or suspicious, blocked, or held in a case, and a
+  common node directly linked to something flagged (so a malicious file on a
+  popular host keeps its path back to the device that fetched it);
+* about 100 popular services that attackers use to host or deliver malware and
+  phishing: Google Docs/Drive/Sites, Dropbox, OneDrive and SharePoint, GitHub raw
+  files and Pages, Discord's CDN, Telegram, pastebins, URL shorteners, dynamic
+  DNS, tunnels (ngrok, trycloudflare), and user-content hosting (`*.blogspot.com`,
+  `*.herokuapp.com`, `*.workers.dev`, S3, Azure Blob...).
+
+Hiding only changes what you see. Every connection is still looked up, scored
+and alerted on.
+
+```bash
+iglite common update                # download the Tranco top 10,000 (needs internet)
+iglite common check docs.google.com cdn.example.net 142.250.180.14
+iglite common                       # what is in the catalogue
+iglite graph host:gateway --hide-common
+```
+
+## Respond: block and quarantine
+
+**Block** an IP, domain or URL, or **Quarantine** a device, from its details
+panel, a case, or the Network tab. Every block:
+
+1. goes into the [blocklist feeds](#closing-the-loop-feed-your-firewall-a-blocklist)
+   your firewall or DNS filter pulls, even if its score is low;
+2. is written into the timeline of every case that holds it;
+3. is **enforced right away** when IntelGraph Lite runs on the gateway:
+   * `--enforce nftables`: blocked IPs are dropped, both ways, in an nftables
+     table of its own (`inet iglite`), and a quarantined device can reach the
+     gateway (DHCP, DNS, this dashboard) but nothing beyond it. Existing
+     connections are cut too. The table is rebuilt from the database on every
+     change and at startup, so it always matches the dashboard.
+   * `--block-hosts FILE`: blocked domains are written as a dnsmasq hosts file
+     and dnsmasq reloads it, so the gateway's DNS stops answering for them
+     (exact names, not subdomains).
+
+Domains are never turned into IP blocks, because one IP can serve thousands of
+sites. **Unblock** and **Release** undo it the same way. The Ubuntu hotspot
+script sets both options up.
+
+```bash
+sudo iglite block 203.0.113.66 --note "C2 server" --case 1 --enforce nftables
+sudo iglite block 10.42.0.61 --device --enforce nftables      # quarantine
+sudo iglite block 10.42.0.61 --device --undo --enforce nftables
+iglite block                                                  # list
+```
+
+## Alert notifications
+
+New alerts can go to Slack, Microsoft Teams, email or any webhook. The
+destinations are secrets, so they go in `.env`:
+
+```bash
+IGLITE_NOTIFY_SLACK=https://hooks.slack.com/services/...     # Slack incoming webhook
+IGLITE_NOTIFY_TEAMS=https://...                              # Teams: Workflows › "Post to a channel when a webhook request is received"
+IGLITE_NOTIFY_WEBHOOK=https://...                            # anything: the alert as JSON
+IGLITE_NOTIFY_EMAIL=you@example.com,soc@example.com          # plus the SMTP settings:
+IGLITE_SMTP_HOST=smtp.example.com
+IGLITE_SMTP_PORT=587                                         # 587 STARTTLS, 465 TLS
+IGLITE_SMTP_USER=...
+IGLITE_SMTP_PASSWORD=...
+IGLITE_DASHBOARD_URL=http://10.42.0.1:8765                   # optional: a link in each message
+```
+
+Only malicious alerts are sent by default (`notify_min_verdict = "suspicious"`
+for more), at most `notify_per_hour = 30`. Each message names the device, what
+it did, the ATT&CK techniques and the case it was filed in. Check the setup
+with `iglite notify --test` or **Send test** in the Cases tab. Offline mode
+and the demo never send anything.
 
 ## Reducing false positives
 
@@ -513,16 +684,17 @@ Windows and macOS include one.
 `iglite serve` opens an interactive dashboard:
 
 * **Overview**: totals by verdict, a live network-activity chart (connections and flagged over time), recent alerts, and a box for investigating pasted indicators or reports.
-* **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
+* **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort. **History** searches the database of every connection and DNS lookup ever seen, with CSV export.
 * **Network** (gateway mode): every device on the network as a card, a detail panel per device, and a live feed of DNS lookups.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
-* **Graph**: two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
+* **Cases**: incidents with their alerts, devices, indicators, ATT&CK techniques, notes and timeline (see [Cases](#cases-from-alerts-to-an-incident)).
+* **Graph**: updates live as connections happen, with active links animated (see [Live graph](#live-graph-and-connection-history)). Routine services (Google, Apple, CDNs...) are hidden by default, see [Hide common services](#hide-common-services). Two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
 * **Indicators**: a searchable, sortable list with STIX export.
 * **Analyst**: chat with the optional AI analyst (see below).
-* **Details panel**: why an indicator got its score, its connections and attributes, and a button to investigate again.
+* **Details panel**: why an indicator got its score, its incoming and outgoing connections, attributes, the cases it is in, and buttons to investigate again, block or quarantine, add it to a case, or find a path to another node.
 
-Keyboard: `1`–`8` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`9` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -609,7 +781,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 147 offline tests, ~10 s
+.venv/bin/pytest            # 176 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

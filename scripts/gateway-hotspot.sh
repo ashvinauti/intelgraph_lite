@@ -56,6 +56,7 @@ if [ "$DRY" = 0 ] && [ "$(id -u)" != 0 ]; then echo "run with sudo" >&2; exit 1;
 if [ "$UNINSTALL" = 1 ]; then
   say "Removing the hotspot, the service and their settings"
   run systemctl disable --now iglite-gateway.service || true
+  run nft delete table inet iglite 2>/dev/null || true   # blocks and quarantines enforced by the service
   run rm -f /etc/systemd/system/iglite-gateway.service
   run nmcli connection delete "$CON" || true
   run rm -f /etc/NetworkManager/dnsmasq-shared.d/iglite.conf /etc/NetworkManager/dispatcher.d/90-iglite-hotspot \
@@ -105,7 +106,11 @@ write /etc/NetworkManager/dnsmasq-shared.d/iglite.conf 0644 <<EOF
 log-queries
 log-dhcp
 log-facility=$DNSLOG
+# Domains blocked from the dashboard (written by the service, reloaded with SIGHUP)
+addn-hosts=$DATA/blocked.hosts
 EOF
+run mkdir -p "$DATA"
+[ -f "$DATA/blocked.hosts" ] || run touch "$DATA/blocked.hosts"
 write /etc/logrotate.d/iglite-hotspot 0644 <<EOF
 $DNSLOG {
   daily
@@ -145,7 +150,7 @@ EOF
 # -- 4. IntelGraph Lite as a service ---------------------------------------------------------
 if [ "$SERVICE" = 1 ]; then
   say "Installing IntelGraph Lite from $REPO into $PREFIX"
-  run apt-get install -y -q python3-venv conntrack
+  run apt-get install -y -q python3-venv conntrack nftables
   [ -x "$PREFIX/venv/bin/python" ] || run python3 -m venv "$PREFIX/venv"
   run "$PREFIX/venv/bin/pip" install -q --upgrade "${REPO}[ai]"   # [ai]: the AI analyst and triage
   run mkdir -p "$DATA"
@@ -173,7 +178,7 @@ WorkingDirectory=$ETC
 EnvironmentFile=$ETC/.env
 ExecStartPre=-$ETC/hotspot-forward.sh
 ExecStart=$PREFIX/venv/bin/iglite --db $DATA/iglite.db serve --host 0.0.0.0 --conntrack --tail $DNSLOG \\
-  --leases /var/lib/NetworkManager/dnsmasq-$WIFI.leases
+  --leases /var/lib/NetworkManager/dnsmasq-$WIFI.leases --enforce nftables --block-hosts $DATA/blocked.hosts
 Restart=on-failure
 RestartSec=10
 

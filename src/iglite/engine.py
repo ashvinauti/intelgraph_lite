@@ -84,6 +84,8 @@ class Engine:
         self._tracer: Tracer | None = None
         self._desk: Any = None
         self._triage: Any = None
+        self._notifier: Any = None
+        self._common: Any = None
         self.demo = False  # set by ``iglite demo``: simulated network and invented intel
 
     def agent_desk(self) -> Any:
@@ -103,9 +105,30 @@ class Engine:
         return self._triage
 
     def on_alert(self, alert_id: int) -> None:
-        """Hook for live monitoring: hand new alerts to automatic triage (if enabled)."""
+        """Hook for live monitoring: file the alert into its case, notify, and triage (each if enabled)."""
+        if self.config.auto_case:
+            from . import cases
+
+            cases.auto_attach(self.store, alert_id)
+        self.notifier().on_alert(alert_id)
         if (self.config.ai_triage or "").lower() == "auto":
             self.triage_worker().on_alert(alert_id)
+
+    def common(self) -> Any:
+        """The common-services classifier, loaded on first use (reload after `iglite common update`)."""
+        if self._common is None:
+            from .common import from_config
+
+            self._common = from_config(self.config)
+        return self._common
+
+    def notifier(self) -> Any:
+        """Alert notifications (Slack, Teams, email, webhook), created on first use."""
+        if self._notifier is None:
+            from .notify import Notifier
+
+            self._notifier = Notifier(self.config, self.store)
+        return self._notifier
 
     def tracer(self) -> Tracer:
         """Traceroute runner, created on first use."""

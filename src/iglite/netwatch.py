@@ -56,6 +56,7 @@ class Connection:
     device_name: str | None = None
     inbound: bool = False  # a remote host connected in (e.g. to a forwarded port)
     count: int = 1  # sockets / flow records folded into this one
+    fresh: int = 0  # gateway mode: flow records since the previous snapshot
 
 
 @dataclass
@@ -318,6 +319,8 @@ class NetWatch:
         self.rows: list[dict[str, Any]] = []
         # (time, connections, public IPs, flagged) per scan, for the activity chart.
         self.history: deque[tuple[float, int, int, int]] = deque(maxlen=720)
+        self._logged_lookups = 0.0  # newest DNS lookup already written to the log
+        self._log_pruned = 0.0
 
     @property
     def mode(self) -> str:
@@ -414,6 +417,12 @@ class NetWatch:
             dom = classify(name)
             if dom is not None and dom.kind is Kind.DOMAIN and is_public(dom):
                 queried[dom.key] = (dom, devices)
+
+        if self.engine.config.connection_log:
+            try:
+                self._log(snap, live, now)
+            except Exception as exc:  # the log must never stop monitoring
+                self.last_error = f"connection log: {type(exc).__name__}: {exc}"
 
         # Record who talks to whom (cheap, local) before any lookups.
         if live or queried:
@@ -549,6 +558,36 @@ class NetWatch:
 
     # -- devices (gateway mode) ---------------------------------------------------
 
+    def _log(self, snap: Snapshot, live: list[Connection], now: float) -> None:
+        """Append this snapshot to the connection and DNS log (one row per endpoint per day)."""
+        rows = []
+        for c in live:
+            try:
+                if ipaddress.ip_address(c.remote_ip).is_loopback:
+                    continue
+            except ValueError:
+                continue
+            if self.gateway is not None:
+                if not c.fresh:  # already logged when it was new
+                    continue
+                hits = c.fresh
+            else:
+                hits = c.count
+            who = f"host:{c.device}" if c.device else f"process:{(c.process or 'unknown').lower()}"
+            names = ",".join(snap.dns.get(c.remote_ip, [])[:5])
+            rows.append((now, who, c.remote_ip, int(c.remote_port or 0), c.proto, c.inbound, names, hits))
+        store = self.engine.store
+        store.log_connections(rows)
+        if self.gateway is not None:
+            items = self.gateway.recent_lookups(self._logged_lookups, 5000)
+            if items:
+                self._logged_lookups = max(t for t, _, _ in items)
+                store.log_lookups((t, f"host:{dev}", dom) for t, dev, dom in items)
+        days = float(self.engine.config.connection_log_days or 0)
+        if days > 0 and now - self._log_pruned > 3600:
+            self._log_pruned = now
+            store.prune_connection_log(days)
+
     def devices(self) -> list[dict[str, Any]]:
         """One summary per LAN device: activity in the current window, worst verdict, alerts."""
         rank = {"malicious": 0, "suspicious": 1, "pending": 2, "unknown": 3, "benign": 4, "private": 5}
@@ -591,6 +630,7 @@ class NetWatch:
         for a in store.alerts(limit=1000):
             if (dev := (a["context"] or {}).get("device")) and a["status"] == "open":
                 alerts[dev] = alerts.get(dev, 0) + 1
+        quarantined = {b["value"] for b in store.blocks() if b["kind"] == "device"}
         result = []
         for ip, d in out.items():
             node = nodes.get(ip) or {}
@@ -604,6 +644,7 @@ class NetWatch:
                     "first_seen": node.get("first_seen"),
                     "last_seen": node.get("last_seen"),
                     "key": f"host:{ip}",
+                    "quarantined": ip in quarantined,
                 }
             )
         result.sort(key=lambda d: (rank.get(d["worst"], 3), -d["open_alerts"], -d["connections"], d["ip"]))
@@ -625,6 +666,7 @@ class NetWatch:
             "key": key,
             "name": node["attrs"].get("name"),
             "named_by_you": node["attrs"].get("name_source") == "user",
+            "quarantined": any(b["kind"] == "device" and b["value"] == ip for b in store.blocks()),
             "first_seen": node.get("first_seen"),
             "last_seen": node.get("last_seen"),
             "connections": rows,

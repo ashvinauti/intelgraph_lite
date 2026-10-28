@@ -25,7 +25,7 @@ iglite = "iglite.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-iglite = ["web/*.html", "data/*.json.gz"]
+iglite = ["web/*.html", "data/*.json.gz", "data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
