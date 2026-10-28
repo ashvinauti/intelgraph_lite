@@ -680,6 +680,21 @@ class Store:
             for r in self._query("SELECT key FROM case_indicators WHERE case_id=? ORDER BY at", (case_id,))
         ]
 
+    def keys_in_cases(self, keys: Iterable[str]) -> set[str]:
+        keys = list(keys)
+        out: set[str] = set()
+        for i in range(0, len(keys), 500):
+            chunk = keys[i : i + 500]
+            marks = ",".join("?" * len(chunk))
+            out |= {
+                r["key"]
+                for r in self._query(
+                    f"SELECT DISTINCT key FROM case_indicators WHERE key IN ({marks})",  # noqa: S608 - placeholders only
+                    chunk,
+                )
+            }
+        return out
+
     def cases_with_indicator(self, key: str) -> list[int]:
         return [r["case_id"] for r in self._query("SELECT case_id FROM case_indicators WHERE key=?", (key,))]
 

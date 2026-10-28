@@ -183,6 +183,26 @@ techniques, software, groups, ASNs, the gateway) are never used as stepping
 stones unless asked, because they connect everything to everything and would
 make every answer meaningless.
 
+## Common services
+
+`common.py` decides what is routine, and only the presentation layer uses it:
+`/api/graph?hide_common=1`, the neighbour lists in `/api/indicator`, and the DNS
+feeds. Lookups, scoring, alerts and exports never consult it, so hiding can't
+make anything less detected.
+
+```
+domain ─► parents (a.b.c.com → b.c.com → c.com) ─► ignore? abused? ─► no
+                                                └► catalogue / your list / Tranco top N ─► service label
+ip     ─► CDN-only operator (RDAP/Shodan owner) ─► label
+       └► every resolves_to name is common     ─► label
+```
+
+`filter_graph` takes a neighbourhood fetched with four times the node budget
+(common services would otherwise eat it), removes common nodes except protected
+ones (flagged, blocked, in a case, the root, or one edge from something
+flagged), drops whatever is no longer connected to the root, trims to the
+budget nearest-first, and reports what it hid per service.
+
 ## Traceroute
 
 ```
@@ -303,7 +323,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (163 tests, offline) | ~11 s |
+| Full test suite (171 tests, offline) | ~12 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 

@@ -43,6 +43,11 @@ watch_max_new = 25    # new IPs/domains looked up per snapshot
 # notify_per_hour = 30
 # dashboard_url = "http://10.42.0.1:8765"   # link in each notification
 
+# Common services hidden from the graph (see README "Hide common services").
+# common_domains = ["mycompany.com", "our-saas.example"]   # your own routine services
+# common_ignore = ["zoom.us"]                               # never treat these as common
+# common_top_file = "~/.iglite/tranco.txt"                  # written by `iglite common update`
+
 # AI agents (optional). Provider: "anthropic" (Claude; `pip install .[ai]` +
 # ANTHROPIC_API_KEY in .env) or "ollama" (local model; nothing leaves the PC).
 ai_provider = "anthropic"

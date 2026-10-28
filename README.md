@@ -58,6 +58,7 @@ iglite case list
 iglite block 203.0.113.66 --case 1
 iglite path host:10.42.0.52 http://cdn-update.example/setup.bin
 iglite notify --test
+iglite common update             # popular-domain list, so routine traffic stays out of the graph
 
 # Show it to someone: a simulated network with a minute of incidents, nothing to set up
 iglite demo
@@ -412,6 +413,55 @@ iglite case report 1 -o case-1.md
 iglite case list
 ```
 
+## Hide common services
+
+On a real network most connections go to the same few dozen big services:
+Google, Apple, Microsoft, Meta, Netflix, Amazon, Akamai and Cloudflare, plus
+certificate checks, time servers and update servers. The graph hides them by
+default (**Hide common services** in the Graph toolbar), so what is left is the
+unusual, the unknown and the flagged. A note in the corner says how many were
+hidden and from which services, with **Show them** to bring them back. A
+device's incoming and outgoing lists fold them into one line in the same way,
+and the Network tab's DNS feed has a **Hide common** box.
+
+What counts as common:
+
+* **Built-in catalogue** (`src/iglite/data/common_services.json`): about 190
+  domains of 36 well-known services. A domain matches by whole labels, so
+  `r3---sn-aig.googlevideo.com` is Google but `google.com.evil.example` and
+  `goog1e.com` are not.
+* **The Tranco list**, if you download it: a research ranking of the most
+  popular domains, built from several providers over 30 days so it is hard to
+  game. `iglite common update` saves the top 10,000 to `~/.iglite/tranco.txt`.
+  Run it on the gateway now and then, then restart the service.
+* **Your own**: `common_domains = ["mycompany.com"]` in `iglite.toml`. Use
+  `common_ignore` for anything that should never be hidden.
+* **IPs**: an address counts if it belongs to a CDN-only operator (Akamai,
+  Cloudflare, Fastly, Apple, Meta...) or if every name seen resolving to it is
+  common. Google, Microsoft and Amazon addresses don't count by owner alone,
+  because their clouds rent servers to anyone, attackers included.
+
+What is **never hidden**, however popular:
+
+* anything flagged malicious or suspicious, blocked, or held in a case, and a
+  common node directly linked to something flagged (so a malicious file on a
+  popular host keeps its path back to the device that fetched it);
+* about 100 popular services that attackers use to host or deliver malware and
+  phishing: Google Docs/Drive/Sites, Dropbox, OneDrive and SharePoint, GitHub raw
+  files and Pages, Discord's CDN, Telegram, pastebins, URL shorteners, dynamic
+  DNS, tunnels (ngrok, trycloudflare), and user-content hosting (`*.blogspot.com`,
+  `*.herokuapp.com`, `*.workers.dev`, S3, Azure Blob...).
+
+Hiding only changes what you see. Every connection is still looked up, scored
+and alerted on.
+
+```bash
+iglite common update                # download the Tranco top 10,000 (needs internet)
+iglite common check docs.google.com cdn.example.net 142.250.180.14
+iglite common                       # what is in the catalogue
+iglite graph host:gateway --hide-common
+```
+
 ## Respond: block and quarantine
 
 **Block** an IP, domain or URL, or **Quarantine** a device, from its details
@@ -604,7 +654,7 @@ Windows and macOS include one.
 * **Network** (gateway mode): every device on the network as a card, a detail panel per device, and a live feed of DNS lookups.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
 * **Cases**: incidents with their alerts, devices, indicators, ATT&CK techniques, notes and timeline (see [Cases](#cases-from-alerts-to-an-incident)).
-* **Graph**: two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
+* **Graph**: routine services (Google, Apple, CDNs...) are hidden by default, see [Hide common services](#hide-common-services). Two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
 * **Indicators**: a searchable, sortable list with STIX export.
 * **Analyst**: chat with the optional AI analyst (see below).
@@ -697,7 +747,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 163 offline tests, ~10 s
+.venv/bin/pytest            # 171 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

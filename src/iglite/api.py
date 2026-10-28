@@ -7,7 +7,9 @@ Endpoints
     GET  /api/sources
     GET  /api/indicators?verdict=&kind=&q=&limit=&offset=
     GET  /api/indicator?key=        node, assessment, evidence, edges
-    GET  /api/graph?key=&depth=&limit=
+    GET  /api/graph?key=&depth=&limit=&hide_common=0
+                                    hide_common=1 drops routine services (Google, Apple, CDNs...)
+    GET  /api/common                the common-services catalogue in use; POST /api/common/check {"name"}
     GET  /api/export/{json,csv,stix}
     GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
     GET  /api/attack/technique?id=  one technique and its indicators
@@ -46,6 +48,7 @@ from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -266,6 +269,12 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
         raise ApiError(HTTPStatus.NOT_FOUND, f"{key} not found")
     edges = engine.store.edges_of(key)[:500]
     others = {e["dst"] if e["src"] == key else e["src"] for e in edges}
+    from .common import protected
+
+    other_nodes = engine.store.nodes(others)
+    common = engine.common().classify(engine.store, other_nodes)
+    for k in protected(engine.store, other_nodes):
+        common.pop(k, None)
     return {
         "node": node,
         "assessment": engine.assess(key).as_dict(),
@@ -278,12 +287,16 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
                 "verdict": n["verdict"],
                 "score": n["score"],
                 "name": (n["attrs"] or {}).get("name") or (n["attrs"] or {}).get("attack.name"),
+                "common": common.get(n["key"]),
             }
-            for n in engine.store.nodes(others)
+            for n in other_nodes
         },
         "attack": attack.techniques_of(engine.store, key),
         "attack_entry": _attack_entry(key),
         "blocked": key in respond.blocked_keys(engine.store),
+        "common": None
+        if node["verdict"] in ("malicious", "suspicious") or protected(engine.store, [node])
+        else engine.common().classify(engine.store, [node]).get(key),
         "cases": [
             {"id": c["id"], "title": c["title"], "status": c["status"]}
             for c in filter(None, map(engine.store.case, engine.store.cases_with_indicator(key)))
@@ -323,7 +336,14 @@ def _attack_navigator(engine: Engine, q: dict, body: dict) -> Any:
 
 
 def _graph(engine: Engine, q: dict, body: dict) -> Any:
-    return engine.store.neighbourhood(_key(q), _int(q, "depth", 1, 3), _int(q, "limit", 150, 1000))
+    key, depth, limit = _key(q), _int(q, "depth", 1, 3), _int(q, "limit", 150, 1000)
+    if not _flag(q, "hide_common"):
+        return engine.store.neighbourhood(key, depth, limit)
+    from .common import filter_graph
+
+    # Common services eat the node budget, so look further and trim after filtering.
+    graph = engine.store.neighbourhood(key, depth, min(2000, limit * 4))
+    return filter_graph(engine.common(), engine.store, graph, keep=[key], limit=limit)
 
 
 def _export(engine: Engine, q: dict, body: dict) -> Any:
@@ -361,7 +381,11 @@ def _devices(engine: Engine, q: dict, body: dict) -> Any:
 
 
 def _device(engine: Engine, q: dict, body: dict) -> Any:
-    return engine.watcher().device(_device_ip(q.get("ip")))
+    d = engine.watcher().device(_device_ip(q.get("ip")))
+    common = engine.common()
+    for x in d["lookups"]:
+        x["common"] = None if x["verdict"] in ("malicious", "suspicious") else common.domain(x["domain"])
+    return d
 
 
 def _device_name(engine: Engine, q: dict, body: dict) -> Any:
@@ -376,7 +400,11 @@ def _lookups(engine: Engine, q: dict, body: dict) -> Any:
         since = float(q.get("since") or 0)
     except ValueError:
         raise ApiError(HTTPStatus.BAD_REQUEST, "since must be a number")
-    return engine.watcher().lookup_feed(since, _int(q, "limit", 200, 1000))
+    items = engine.watcher().lookup_feed(since, _int(q, "limit", 200, 1000))
+    common = engine.common()
+    for x in items:  # flagged lookups are never "common"
+        x["common"] = None if x["verdict"] in ("malicious", "suspicious") else common.domain(x["domain"])
+    return items
 
 
 def _watch_status(engine: Engine, q: dict, body: dict) -> Any:
@@ -644,6 +672,53 @@ def _unblock(engine: Engine, q: dict, body: dict) -> Any:
     return _case_call(respond.unblock, engine, str(body.get("value") or ""), device=bool(body.get("device")))
 
 
+# -- common services ---------------------------------------------------------------------------
+
+
+def _common(engine: Engine, q: dict, body: dict) -> Any:
+    from .common import TRANCO_FILE, read_top
+
+    c = engine.common()
+    top, header = (
+        read_top(Path(engine.config.common_top_file).expanduser())
+        if engine.config.common_top_file
+        else ([], None)
+    )
+    services: dict[str, list[str]] = {}
+    for domain, name in c.service.items():
+        services.setdefault(name, []).append(domain)
+    return {
+        "services": services,
+        "abused": sorted(c.abused),
+        "ignore": sorted(c.ignore),
+        "top_list": {
+            "file": engine.config.common_top_file or str(TRANCO_FILE),
+            "domains": len(top),
+            "about": header,
+        },
+    }
+
+
+def _common_check(engine: Engine, q: dict, body: dict) -> Any:
+    name = str(body.get("name") or "").strip().lower()
+    ind = classify(name)
+    if ind is None or ind.kind.value not in ("domain", "url", "ip"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "give a domain, URL or IP")
+    node = engine.store.node(ind.key) or {
+        "key": ind.key,
+        "kind": ind.kind.value,
+        "value": ind.value,
+        "attrs": {},
+    }
+    c = engine.common()
+    host = ind.value if ind.kind.value != "url" else ind.value.split("/")[2]
+    return {
+        "key": ind.key,
+        "common": c.classify(engine.store, [node]).get(ind.key),
+        "abused": c.abused_by(host) if ind.kind.value != "ip" else None,
+    }
+
+
 # -- graph path ------------------------------------------------------------------------------
 
 # Hubs that connect everything to everything: never stepping stones unless asked for.
@@ -724,6 +799,8 @@ ROUTES = {
     ("POST", "/api/block"): _block,
     ("POST", "/api/unblock"): _unblock,
     ("GET", "/api/path"): _path,
+    ("GET", "/api/common"): _common,
+    ("POST", "/api/common/check"): _common_check,
     ("GET", "/api/notify"): _notify_status,
     ("POST", "/api/notify/test"): _notify_test,
     ("GET", "/api/agent/status"): _agent_status,

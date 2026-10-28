@@ -129,6 +129,10 @@ class Config:
     dashboard_url: str | None = None  # links in notifications, e.g. http://10.42.0.1:8765
     notify: dict[str, str] = field(default_factory=dict)  # channel -> destination (from the environment)
     smtp: dict[str, str] = field(default_factory=dict)
+    # Common services (Google, Apple, CDNs...): hidden from the graph by default. See common.py.
+    common_domains: list[str] = field(default_factory=list)  # your own routine services, e.g. your company's
+    common_ignore: list[str] = field(default_factory=list)  # never treat these as common
+    common_top_file: str | None = "~/.iglite/tranco.txt"  # written by `iglite common update`
     # False-positive controls
     evidence_half_life_days: float = 180.0  # bad evidence halves in weight this often
     alert_min_score: int = 60  # live-monitoring alerts need at least this score

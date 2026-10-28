@@ -203,12 +203,72 @@ def cmd_list(engine: Engine, args: argparse.Namespace) -> int:
 
 
 def cmd_graph(engine: Engine, args: argparse.Namespace) -> int:
-    print(
-        json.dumps(
-            engine.store.neighbourhood(_resolve_key(args.indicator), args.depth, args.limit),
-            indent=2,
-            default=str,
+    key = _resolve_key(args.indicator)
+    if args.hide_common:
+        from .common import filter_graph
+
+        graph = engine.store.neighbourhood(key, args.depth, min(2000, args.limit * 4))
+        graph = filter_graph(engine.common(), engine.store, graph, keep=[key], limit=args.limit)
+    else:
+        graph = engine.store.neighbourhood(key, args.depth, args.limit)
+    print(json.dumps(graph, indent=2, default=str))
+    return 0
+
+
+def cmd_common(engine: Engine, args: argparse.Namespace) -> int:
+    from . import common
+
+    path = Path(engine.config.common_top_file or common.TRANCO_FILE).expanduser()
+    if args.action == "update":
+        print(f"Downloading the Tranco top {args.top:,} popular domains (tranco-list.eu)...")
+        try:
+            domains, list_id = common.download_tranco(args.top)
+        except OSError as exc:
+            raise SystemExit(f"error: could not download the Tranco list: {exc}")
+        if not domains:
+            raise SystemExit("error: the Tranco list came back empty")
+        common.save_tranco(domains, list_id, path)
+        print(
+            f"Saved {len(domains):,} domains (list {list_id}) to {path}. Restart `iglite serve` to use them."
         )
+        return 0
+    c = engine.common()
+    if args.action == "check":
+        if not args.names:
+            raise SystemExit("usage: iglite common check NAME...")
+        for raw in args.names:
+            ind = classify(raw)
+            if ind is None:
+                print(f"{raw}: not a domain, URL or IP")
+                continue
+            node = engine.store.node(ind.key) or {
+                "key": ind.key,
+                "kind": ind.kind.value,
+                "value": ind.value,
+                "attrs": {},
+            }
+            label = c.classify(engine.store, [node]).get(ind.key)
+            host = ind.value.split("/")[2] if ind.kind.value == "url" else ind.value
+            abused = c.abused_by(host) if ind.kind.value != "ip" else None
+            if label:
+                print(f"{ind.value}: common ({label}), hidden from the graph unless flagged")
+            elif abused:
+                print(f"{ind.value}: popular but often abused ({abused}), always shown")
+            else:
+                print(f"{ind.value}: not a common service, shown")
+        return 0
+    services: dict[str, list[str]] = {}
+    for domain, name in c.service.items():
+        services.setdefault(name, []).append(domain)
+    for name in sorted(services):
+        print(f"{name}: {', '.join(sorted(services[name]))}")
+    top, header = common.read_top(path)
+    print(
+        f"\nAlways shown (often abused): {len(c.abused)} domains, e.g. {', '.join(sorted(c.abused)[:6])}..."
+    )
+    print(
+        f"Popular-site list: {header or 'not downloaded'} ({len(top):,} domains)"
+        + ("" if top else "; run `iglite common update`")
     )
     return 0
 
@@ -801,6 +861,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("indicator")
     sp.add_argument("--depth", type=int, default=2)
     sp.add_argument("--limit", type=int, default=200)
+    sp.add_argument(
+        "--hide-common", action="store_true", help="leave out routine services (Google, Apple, CDNs...)"
+    )
     sp.set_defaults(func=cmd_graph)
 
     sp = sub.add_parser("export", help="export as json, csv or STIX 2.1")
@@ -877,6 +940,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="allow tags, techniques and the gateway as stepping stones"
     )
     sp.set_defaults(func=cmd_path)
+
+    sp = sub.add_parser("common", help="common services hidden from the graph (Google, Apple, CDNs...)")
+    sp.add_argument("action", nargs="?", default="list", choices=["list", "check", "update"])
+    sp.add_argument("names", nargs="*", help="check: domains, URLs or IPs")
+    sp.add_argument(
+        "--top", type=int, default=10_000, help="update: how many of the most popular domains (default 10000)"
+    )
+    sp.set_defaults(func=cmd_common)
 
     sp = sub.add_parser("notify", help="alert notification channels (Slack, Teams, email, webhook)")
     sp.add_argument("--test", action="store_true", help="send a test notification to every channel")
