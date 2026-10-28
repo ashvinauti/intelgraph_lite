@@ -129,6 +129,9 @@ class Config:
     dashboard_url: str | None = None  # links in notifications, e.g. http://10.42.0.1:8765
     notify: dict[str, str] = field(default_factory=dict)  # channel -> destination (from the environment)
     smtp: dict[str, str] = field(default_factory=dict)
+    # Database of every connection and DNS lookup live monitoring sees (one row per endpoint per day).
+    connection_log: bool = True
+    connection_log_days: float = 90  # older rows are deleted; 0 keeps everything
     # Common services (Google, Apple, CDNs...): hidden from the graph by default. See common.py.
     common_domains: list[str] = field(default_factory=list)  # your own routine services, e.g. your company's
     common_ignore: list[str] = field(default_factory=list)  # never treat these as common

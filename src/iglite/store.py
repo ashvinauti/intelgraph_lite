@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -159,6 +159,35 @@ CREATE TABLE IF NOT EXISTS blocks (
     at          REAL NOT NULL,
     UNIQUE (kind, value)
 );
+
+-- Every connection and DNS lookup seen by live monitoring, one row per endpoint per day.
+-- who: host:<lan ip> (gateway mode) or process:<name> (this computer).
+CREATE TABLE IF NOT EXISTS conn_log (
+    day         TEXT NOT NULL,                     -- YYYY-MM-DD (UTC)
+    who         TEXT NOT NULL,
+    remote_ip   TEXT NOT NULL,
+    remote_port INTEGER NOT NULL,
+    proto       TEXT NOT NULL,
+    inbound     INTEGER NOT NULL DEFAULT 0,
+    names       TEXT NOT NULL DEFAULT '',          -- DNS names seen for the remote, comma separated
+    first_seen  REAL NOT NULL,
+    last_seen   REAL NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0,        -- flow records (gateway) or snapshots it was seen in
+    PRIMARY KEY (day, who, remote_ip, remote_port, proto, inbound)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS conn_log_remote ON conn_log(remote_ip);
+CREATE INDEX IF NOT EXISTS conn_log_last ON conn_log(last_seen);
+CREATE TABLE IF NOT EXISTS dns_log (
+    day         TEXT NOT NULL,
+    who         TEXT NOT NULL,
+    domain      TEXT NOT NULL,
+    first_seen  REAL NOT NULL,
+    last_seen   REAL NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, who, domain)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS dns_log_domain ON dns_log(domain);
+CREATE INDEX IF NOT EXISTS dns_log_last ON dns_log(last_seen);
 
 CREATE TABLE IF NOT EXISTS cache (
     key         TEXT PRIMARY KEY,
@@ -730,6 +759,161 @@ class Store:
     def blocks(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self._query("SELECT * FROM blocks ORDER BY at DESC")]
 
+    # -- connection log ------------------------------------------------------
+
+    def log_connections(self, rows: Iterable[tuple[float, str, str, int, str, bool, str, int]]) -> int:
+        """Upsert (at, who, remote_ip, remote_port, proto, inbound, names, hits) into today's rows."""
+        data = [
+            (
+                time.strftime("%Y-%m-%d", time.gmtime(at)),
+                who,
+                ip,
+                port,
+                proto,
+                int(inbound),
+                names,
+                at,
+                at,
+                hits,
+            )
+            for at, who, ip, port, proto, inbound, names, hits in rows
+        ]
+        if not data:
+            return 0
+        with self.transaction() as db:
+            db.executemany(
+                "INSERT INTO conn_log VALUES (?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(day, who, remote_ip, remote_port, proto, inbound) DO UPDATE SET"
+                " last_seen = MAX(last_seen, excluded.last_seen), hits = hits + excluded.hits,"
+                " names = CASE WHEN excluded.names = '' THEN names ELSE excluded.names END",
+                data,
+            )
+        return len(data)
+
+    def log_lookups(self, rows: Iterable[tuple[float, str, str]]) -> int:
+        """Upsert (at, who, domain) DNS lookups into today's rows."""
+        agg: dict[tuple[str, str, str], list[float]] = {}
+        for at, who, domain in rows:
+            key = (time.strftime("%Y-%m-%d", time.gmtime(at)), who, domain.lower())
+            first, last, n = agg.get(key, (at, at, 0))
+            agg[key] = [min(first, at), max(last, at), n + 1]
+        if not agg:
+            return 0
+        with self.transaction() as db:
+            db.executemany(
+                "INSERT INTO dns_log VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(day, who, domain) DO UPDATE SET"
+                " last_seen = MAX(last_seen, excluded.last_seen), hits = hits + excluded.hits",
+                [(*k, *v) for k, v in agg.items()],
+            )
+        return len(agg)
+
+    def connection_log(
+        self,
+        *,
+        dns: bool = False,
+        who: str | None = None,
+        text: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        verdicts: Iterable[str] = (),
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Search the log, newest first, with each remote's current verdict and the device's name."""
+        table, remote = ("dns_log", "'domain:' || l.domain") if dns else ("conn_log", "'ip:' || l.remote_ip")
+        where, args = ["1=1"], []
+        if who:
+            where.append("l.who = ?")
+            args.append(who)
+        if since is not None:
+            where.append("l.last_seen >= ?")
+            args.append(since)
+        if until is not None:
+            where.append("l.first_seen <= ?")
+            args.append(until)
+        if text:
+            like = f"%{text.lower()}%"
+            cols = (
+                ["l.domain", "l.who", "lower(coalesce(h.attrs, ''))"]
+                if dns
+                else [
+                    "l.remote_ip",
+                    "lower(l.names)",
+                    "l.who",
+                    "CAST(l.remote_port AS TEXT)",
+                    "lower(coalesce(h.attrs, ''))",
+                ]
+            )
+            where.append("(" + " OR ".join(f"{c} LIKE ?" for c in cols) + ")")
+            args += [like] * len(cols)
+        verdicts = list(verdicts)
+        if verdicts:
+            where.append(f"coalesce(n.verdict, 'unknown') IN ({','.join('?' * len(verdicts))})")
+            args += verdicts
+        base = (
+            f"FROM {table} l LEFT JOIN nodes n ON n.key = {remote}"  # noqa: S608 - fixed names, placeholders
+            " LEFT JOIN nodes h ON h.key = l.who"
+            f" WHERE {' AND '.join(where)}"
+        )
+        total = self._query(f"SELECT COUNT(*) AS c {base}", args)[0]["c"]
+        rows = self._query(
+            f"SELECT l.*, n.verdict AS verdict, n.score AS score, h.attrs AS who_attrs {base}"
+            " ORDER BY l.last_seen DESC LIMIT ? OFFSET ?",
+            [*args, limit, offset],
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            attrs = json.loads(d.pop("who_attrs") or "{}")
+            d["who_name"] = attrs.get("name")
+            if not dns:
+                d["inbound"] = bool(d["inbound"])
+            out.append(d)
+        return {"total": total, "rows": out}
+
+    def connection_log_stats(self) -> dict[str, Any]:
+        def one(sql: str) -> Any:
+            return self._query(sql)[0][0]
+
+        return {
+            "connections": one("SELECT COUNT(*) FROM conn_log"),
+            "lookups": one("SELECT COUNT(*) FROM dns_log"),
+            "first": one(
+                "SELECT MIN(first_seen) FROM (SELECT first_seen FROM conn_log UNION ALL SELECT first_seen FROM dns_log)"
+            ),
+            "days": one(
+                "SELECT COUNT(DISTINCT day) FROM (SELECT day FROM conn_log UNION SELECT day FROM dns_log)"
+            ),
+            "remotes": one("SELECT COUNT(DISTINCT remote_ip) FROM conn_log"),
+            "domains": one("SELECT COUNT(DISTINCT domain) FROM dns_log"),
+            "who": [
+                r[0]
+                for r in self._query(
+                    "SELECT who FROM conn_log UNION SELECT who FROM dns_log ORDER BY 1 LIMIT 500"
+                )
+            ],
+        }
+
+    def prune_connection_log(self, older_than_days: float) -> int:
+        cutoff = time.time() - older_than_days * 86400
+        with self.transaction() as db:
+            return (
+                db.execute("DELETE FROM conn_log WHERE last_seen < ?", (cutoff,)).rowcount
+                + db.execute("DELETE FROM dns_log WHERE last_seen < ?", (cutoff,)).rowcount
+            )
+
+    def edges_since(self, since: float, rels: Iterable[str], limit: int = 500) -> list[dict[str, Any]]:
+        """Edges of the given relations recorded or seen again after ``since``, newest first."""
+        rels = list(rels)
+        marks = ",".join("?" * len(rels))
+        rows = self._query(
+            f"SELECT src, dst, rel, source, first_seen, last_seen FROM edges"  # noqa: S608 - placeholders only
+            f" WHERE last_seen > ? AND rel IN ({marks}) ORDER BY last_seen DESC LIMIT ?",
+            [since, *rels, limit],
+        )
+        return [dict(r) for r in rows]
+
     # -- routes ------------------------------------------------------------
 
     def add_route(self, target: str, ip: str, hops: str) -> None:
@@ -768,6 +952,8 @@ class Store:
                 "DELETE FROM alerts WHERE at < ? AND case_id IS NULL", (cutoff,)
             ).rowcount
             db.execute("DELETE FROM routes WHERE at < ?", (cutoff,))
+            log = db.execute("DELETE FROM conn_log WHERE last_seen < ?", (cutoff,)).rowcount
+            log += db.execute("DELETE FROM dns_log WHERE last_seen < ?", (cutoff,)).rowcount
             ev = db.execute("DELETE FROM evidence WHERE observed_at < ?", (cutoff,)).rowcount
             edges = db.execute("DELETE FROM edges WHERE last_seen < ?", (cutoff,)).rowcount
             nodes = db.execute(
@@ -780,7 +966,14 @@ class Store:
             ).rowcount
         with self._lock:
             self._db.execute("PRAGMA optimize")
-        return {"cache": cache, "evidence": ev, "edges": edges, "nodes": nodes, "alerts": alerts}
+        return {
+            "cache": cache,
+            "evidence": ev,
+            "edges": edges,
+            "nodes": nodes,
+            "alerts": alerts,
+            "connection_log": log,
+        }
 
 
 def _node_dict(row: sqlite3.Row) -> dict[str, Any]:

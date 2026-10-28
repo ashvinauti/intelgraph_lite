@@ -59,6 +59,7 @@ iglite block 203.0.113.66 --case 1
 iglite path host:10.42.0.52 http://cdn-update.example/setup.bin
 iglite notify --test
 iglite common update             # popular-domain list, so routine traffic stays out of the graph
+iglite connections --since 24h   # the database of every connection seen
 
 # Show it to someone: a simulated network with a minute of incidents, nothing to set up
 iglite demo
@@ -413,6 +414,39 @@ iglite case report 1 -o case-1.md
 iglite case list
 ```
 
+## Live graph and connection history
+
+**Live graph.** With **Live** on (the default) in the Graph tab, new
+connections appear as monitoring sees them: new devices, servers and domains
+drop into the graph with a pulse, and links that carried traffic in the last
+minute animate in the direction of the traffic. Only traffic relations animate
+(device → server, device → domain, domain → address), not intelligence links
+such as tags or ATT&CK techniques. A counter next to the button shows new nodes
+and active links in the last minute. Common services stay hidden unless you
+turn that off. On a long run the graph keeps about 400 nodes, dropping the
+least recently active first; devices and anything flagged are kept.
+
+**Connection history.** Every connection and DNS lookup that live monitoring
+sees is written to the database, one row per device or program, remote
+address, port and protocol per day, with the first and last time seen, the
+DNS names and a hit count. Open **Live network › History** to search it by
+address, name, port, domain or device, filter by time range and verdict
+(verdicts are the current ones, so something that turned malicious later shows
+up as malicious in last week's history), and **Export CSV**.
+
+```bash
+iglite connections --since 24h                     # newest first
+iglite connections --who 10.42.0.61 --since 7d     # one device (or --who firefox for a program)
+iglite connections --verdict malicious --verdict suspicious
+iglite connections --dns --search coin-mine        # DNS lookups
+iglite connections --csv everything.csv
+iglite connections --stats
+```
+
+Rows older than `connection_log_days` (90) are deleted every hour; set it to 0
+to keep everything, or `connection_log = false` to switch logging off. A home
+network writes roughly 1 MB a day.
+
 ## Hide common services
 
 On a real network most connections go to the same few dozen big services:
@@ -650,11 +684,11 @@ Windows and macOS include one.
 `iglite serve` opens an interactive dashboard:
 
 * **Overview**: totals by verdict, a live network-activity chart (connections and flagged over time), recent alerts, and a box for investigating pasted indicators or reports.
-* **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort.
+* **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort. **History** searches the database of every connection and DNS lookup ever seen, with CSV export.
 * **Network** (gateway mode): every device on the network as a card, a detail panel per device, and a live feed of DNS lookups.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
 * **Cases**: incidents with their alerts, devices, indicators, ATT&CK techniques, notes and timeline (see [Cases](#cases-from-alerts-to-an-incident)).
-* **Graph**: routine services (Google, Apple, CDNs...) are hidden by default, see [Hide common services](#hide-common-services). Two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
+* **Graph**: updates live as connections happen, with active links animated (see [Live graph](#live-graph-and-connection-history)). Routine services (Google, Apple, CDNs...) are hidden by default, see [Hide common services](#hide-common-services). Two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
 * **Indicators**: a searchable, sortable list with STIX export.
 * **Analyst**: chat with the optional AI analyst (see below).
@@ -747,7 +781,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 171 offline tests, ~10 s
+.venv/bin/pytest            # 176 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 
