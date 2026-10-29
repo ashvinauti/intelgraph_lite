@@ -485,7 +485,9 @@ _LEASES_MARK = "#iglite-leases"
 # Fixed, read-only commands. The first that works wins: Linux conntrack, then pf (BSD).
 SSH_STATE_CMD = (
     # "grep ." fails on an empty file, so an empty /proc table falls through to the next reader.
-    "grep . /proc/net/nf_conntrack 2>/dev/null || conntrack -L 2>/dev/null || pfctl -ss 2>/dev/null; "
+    # ip_conntrack: older 2.6-kernel routers (e.g. ASUS RT-AC68U on stock firmware).
+    "grep . /proc/net/nf_conntrack 2>/dev/null || grep . /proc/net/ip_conntrack 2>/dev/null"
+    " || conntrack -L 2>/dev/null || pfctl -ss 2>/dev/null; "
     f"echo '{_LEASES_MARK}'; "
     "cat /tmp/dhcp.leases /var/lib/misc/dnsmasq.leases /tmp/dnsmasq.leases /var/dhcpd/var/db/dhcpd.leases "
     "2>/dev/null; true"

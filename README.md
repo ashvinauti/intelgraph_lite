@@ -260,6 +260,24 @@ switch on DNS query logging so lookups reach the log:
 Settings: `gateway_ssh = "root@192.168.1.1"`, `gateway_ssh_port`,
 `gateway_ssh_key`, `gateway_ssh_logs = false` to read only the connection table.
 
+**ASUS routers** (stock ASUSWRT firmware or Asuswrt-Merlin) work the same way:
+
+1. In the router's web page: **Administration › System › Enable SSH: LAN only**,
+   and paste the contents of `~/.ssh/router.pub` into **Authorized Keys**. Apply.
+2. Log in as the router's admin user (not `root`):
+   `iglite serve --ssh admin@192.168.50.1 --ssh-key ~/.ssh/router`.
+
+Connections and device names work on stock firmware. DNS lookups don't: stock
+firmware doesn't log them, so the graph shows addresses without the site names
+behind them. With **Asuswrt-Merlin** (free, for most current models), switch on
+**Administration › System › Enable JFFS custom scripts and configs**, then add
+DNS logging over SSH and restart dnsmasq:
+
+```bash
+echo "log-queries" >> /jffs/configs/dnsmasq.conf.add
+service restart_dnsmasq
+```
+
 ### Web proxy
 
 If your devices go through a web proxy (Squid, or a proxy server at work),
@@ -781,7 +799,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 176 offline tests, ~10 s
+.venv/bin/pytest            # 177 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

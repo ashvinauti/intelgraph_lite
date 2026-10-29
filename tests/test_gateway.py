@@ -704,3 +704,17 @@ def test_dhcp_names_are_remembered_across_restarts(make_engine, feeds):
         "dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-8"
     )  # a newer DHCP name wins
     assert gw2.devices["10.42.0.23"] == "pixel-8"
+
+
+def test_old_ip_conntrack_format_from_asus_stock_firmware():
+    from iglite.gateway import SSH_STATE_CMD, parse_conntrack
+
+    assert "/proc/net/ip_conntrack" in SSH_STATE_CMD
+    line = (
+        "tcp      6 431998 ESTABLISHED src=192.168.50.23 dst=203.0.113.66 sport=51234 dport=443 "
+        "src=203.0.113.66 dst=81.2.3.4 sport=443 dport=51234 [ASSURED] use=1"
+    )
+    flows = parse_conntrack(line)
+    assert [(f.src, f.dst, f.sport, f.dport, f.proto) for f in flows] == [
+        ("192.168.50.23", "203.0.113.66", 51234, 443, "tcp")
+    ]
