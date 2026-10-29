@@ -96,6 +96,10 @@ HABITS = {
     "10.42.0.88": ["doorbell-cloud.example"],
 }
 
+# Behaviour-only incidents: no feed knows these, only the devices' habits give them away.
+DOORBELL_C2, DOORBELL_NAME = "203.0.113.200", "cam-sync-relay.example"
+DGA_DOMAINS = ("xq7vk2zp9tl.example", "kz8qw3vxn5rt.example", "p9xv2kqz7wml.example", "tq4zx8vkr2pn.example")
+
 C2_IP, PHISH, MINER, DROPPER, SCANNER, CDN_IP = (
     "203.0.113.66",
     "account-verify-login.example",
@@ -230,6 +234,7 @@ class DemoNetwork:
         self.rng = random.Random(seed)  # noqa: S311 - simulated traffic, not security
         self.t0 = time.monotonic()
         self.fired: set[str] = set()
+        self.next_beacon = 40.0  # the doorbell's check-ins
         self._stop = threading.Event()
 
     # -- what happens -----------------------------------------------------------------
@@ -272,6 +277,15 @@ class DemoNetwork:
             self.gw.add(Flow("10.42.0.31", "198.51.100.77", 53001, 3333, "tcp", "pass"))
         if once("scanner", 36):  # an internet scanner reaches the NAS's forwarded SSH port
             self.gw.add(Flow(SCANNER, "10.42.0.70", 40022, 22, "tcp", "pass"))
+        while elapsed >= self.next_beacon:  # the doorbell starts checking in with an unknown server
+            if self.next_beacon == 40.0:
+                self.gw.add(DnsEvent("10.42.0.88", DOORBELL_NAME))
+                self.gw.add(DnsEvent(None, DOORBELL_NAME, (DOORBELL_C2,)))
+            self.gw.add(Flow("10.42.0.88", DOORBELL_C2, self.rng.randint(49152, 65000), 8443, "tcp", "pass"))
+            self.next_beacon += 10
+        if once("dga", 50):  # the printer looks up machine-generated names
+            for name in DGA_DOMAINS:
+                self.gw.add(DnsEvent("10.42.0.40", name))
         if once("cdn", 3):  # the false-positive trap: ordinary CDN traffic
             self.visit("10.42.0.11", "static-cdn.example")
 
@@ -295,6 +309,27 @@ class DemoNetwork:
             self._stop.wait(1.5 / self.speed)
 
 
+def seed_history(store: Any, now: float, days: int = 8, seed: int = 11) -> None:
+    """A week of ordinary life for every device, so behaviour analysis has baselines to compare with."""
+    rng = random.Random(seed)  # noqa: S311 - simulated traffic, not security
+    for d in range(days, 0, -1):
+        day = now - d * 86400
+        conns, lookups, activity = [], [], []
+        for ip in DEVICES:
+            who = f"host:{ip}"
+            for site_name in set(HABITS[ip]):
+                remote, port = SITES[site_name]
+                conns.append((day, who, remote, port, "tcp", False, site_name, rng.randint(5, 60)))
+                lookups.append((day, who, site_name))
+            hour0 = int(day // 3600) - time.localtime(day).tm_hour  # midnight, local time
+            activity += [(who, hour0 + h, rng.randint(3, 40), rng.randint(1, 20)) for h in range(24)]
+        store.log_connections(conns)
+        store.log_lookups(lookups)
+        store.add_activity(activity)
+    for ip, name in DEVICES.items():
+        store.upsert_node(Indicator(Kind.HOST, ip), {"name": name})
+
+
 def build(
     db: str | None = None, *, speed: float = 1.0, interval: float = 5.0
 ) -> tuple[Engine, NetWatch, DemoNetwork]:
@@ -313,6 +348,7 @@ def build(
     engine.ingest(REPORT, "Threat brief: IoT botnet and phishing (demo)")
     report = [i for i in (classify(DROPPER_URL), classify(C2_IP)) if i is not None]
     engine.investigate(report, depth=1)
+    seed_history(engine.store, time.time())
     # The analyst opened a case from the threat brief; matching alerts will file themselves into it.
     keys = [k for k in (f"ip:{C2_IP}", f"domain:{DROPPER}", f"url:{DROPPER_URL}") if engine.store.node(k)]
     case_id = cases.create(

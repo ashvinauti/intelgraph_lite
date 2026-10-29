@@ -554,7 +554,8 @@ def test_ssh_snapshot_reads_conntrack_or_pf_and_leases(monkeypatch):
     flows, found = _ssh(monkeypatch, FakeSsh(ct + _LEASES_MARK + "\n" + leases)).snapshot()
     assert [(f.src, f.dst, f.dport) for f in flows] == [(LAN, BAD, 443)] and found == [Lease(LAN, "pixel-7")]
     flows, _ = _ssh(monkeypatch, FakeSsh(PF_STATES + _LEASES_MARK + "\n")).snapshot()
-    assert len(flows) == 5
+    assert len([f for f in flows if f.action != "closed"]) == 5
+    assert [f.dport for f in flows if f.action == "closed"] == [443]  # TIME_WAIT: a connection start only
     with pytest.raises(RuntimeError, match="Permission denied"):
         _ssh(monkeypatch, FakeSsh("", 255, "root@192.168.1.1: Permission denied (publickey).\n")).snapshot()
 
@@ -718,3 +719,17 @@ def test_old_ip_conntrack_format_from_asus_stock_firmware():
     assert [(f.src, f.dst, f.sport, f.dport, f.proto) for f in flows] == [
         ("192.168.50.23", "203.0.113.66", 51234, 443, "tcp")
     ]
+
+
+def test_connection_starts_count_new_source_ports_once():
+    gw = GatewayCollector(Config())
+    gw.started = True
+    t = 1_000_000.0
+    for i, sport in enumerate([50001, 50001, 50002, 50003]):  # 50001 seen twice: one connection
+        with gw._lock:
+            key = ("192.168.1.23", "tcp", "45.155.205.9", 443, False)
+            gw._start(key, sport, t + i * 10)
+    gw.add(Flow("192.168.1.23", "45.155.205.9", 50004, 443, "tcp", "closed"))  # TIME_WAIT: start only
+    starts = gw.recent_starts(window=10**10)
+    assert len(starts[("192.168.1.23", "tcp", "45.155.205.9", 443, False)]) == 4
+    assert gw.collect().connections == []  # the closed one isn't a live flow

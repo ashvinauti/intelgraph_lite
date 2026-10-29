@@ -47,6 +47,11 @@ watch_max_new = 25    # new IPs/domains looked up per snapshot
 # connection_log = true
 # connection_log_days = 90                  # 0 keeps everything
 
+# Behaviour analysis (README "Behaviour analysis").
+# behaviour = true
+# behaviour_learn_days = 7                  # days of habits before changes count
+# behaviour_notify = "high"                 # notify findings at: high | medium | off
+
 # Common services hidden from the graph (see README "Hide common services").
 # common_domains = ["mycompany.com", "our-saas.example"]   # your own routine services
 # common_ignore = ["zoom.us"]                               # never treat these as common

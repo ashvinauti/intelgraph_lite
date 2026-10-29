@@ -13,6 +13,8 @@ Endpoints
     GET  /api/connlog?dns=0&who=&q=&since=&until=&verdict=&limit=&offset=
                                     the database of every connection (dns=1: DNS lookups)
     GET  /api/connlog/stats; GET /api/connlog.csv?... (same filters)
+    GET  /api/behaviour?status=&severity=&who=&since=   anomalies and per-device baselines
+    POST /api/behaviour/anomaly     {"id", "status": open|dismissed|normal}  (normal: never raise it again)
     GET  /api/common                the common-services catalogue in use; POST /api/common/check {"name"}
     GET  /api/export/{json,csv,stix}
     GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
@@ -48,6 +50,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import time
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -298,6 +301,12 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
         "attack": attack.techniques_of(engine.store, key),
         "attack_entry": _attack_entry(key),
         "blocked": key in respond.blocked_keys(engine.store),
+        # behaviour findings about this device/program, or about this server/domain
+        "anomalies": [
+            a
+            for a in engine.store.anomalies(since=time.time() - 7 * 86400, status="open", limit=500)
+            if a["who"] == key or a["remote"] == key or (a["context"] or {}).get("remote") == node["value"]
+        ][:20],
         "common": None
         if node["verdict"] in ("malicious", "suspicious") or protected(engine.store, [node])
         else engine.common().classify(engine.store, [node]).get(key),
@@ -817,6 +826,68 @@ def _graph_live(engine: Engine, q: dict, body: dict) -> Any:
     return out
 
 
+# -- behaviour -------------------------------------------------------------------------------
+
+
+def _who(raw: Any) -> str | None:
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    if raw.startswith(("host:", "process:")):
+        return raw
+    return f"host:{_device_ip(raw)}"
+
+
+def _behaviour(engine: Engine, q: dict, body: dict) -> Any:
+    import time
+
+    from .behaviour import describe
+
+    status = q.get("status") or None
+    if status and status not in ("open", "dismissed", "normal"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "status must be open, dismissed or normal")
+    severity = [s for s in (q.get("severity") or "").split(",") if s]
+    anomalies = engine.store.anomalies(
+        who=_who(q.get("who")),
+        since=_float(q, "since"),
+        status=status,
+        severity=severity,
+        limit=_int(q, "limit", 200, 2000),
+        since_id=_int(q, "since_id", 0, 2**62),
+    )
+    for a in anomalies:
+        a["label"] = describe(a["kind"])
+    beh = engine.behaviour()
+    now = time.time()
+    devices = []
+    if not _flag(q, "anomalies_only"):
+        names = {
+            n["key"]: (n["attrs"] or {}).get("name") for n in engine.store.nodes(engine.store.log_whos())
+        }
+        recent = engine.store.anomalies(since=now - 86400, status="open", limit=2000)
+        for who in engine.store.log_whos()[:500]:
+            d = beh.profile(who, now).summary()
+            d["name"] = names.get(who)
+            d["open"] = sum(a["who"] == who for a in recent)
+            d["worst"] = max(
+                (a["severity"] for a in recent if a["who"] == who),
+                key=lambda s: {"low": 0, "medium": 1, "high": 2}[s],
+                default=None,
+            )
+            devices.append(d)
+    return {"status": beh.status(now), "anomalies": anomalies, "devices": devices}
+
+
+def _behaviour_mark(engine: Engine, q: dict, body: dict) -> Any:
+    status = str(body.get("status") or "")
+    if status not in ("open", "dismissed", "normal"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "status must be open, dismissed or normal")
+    anomaly_id = _int({"id": str(body.get("id", ""))}, "id", 0, 2**62)
+    if not engine.store.set_anomaly_status(anomaly_id, status):
+        raise ApiError(HTTPStatus.NOT_FOUND, f"no anomaly {anomaly_id}")
+    return engine.store.anomaly(anomaly_id)
+
+
 # -- common services ---------------------------------------------------------------------------
 
 
@@ -945,6 +1016,8 @@ ROUTES = {
     ("POST", "/api/unblock"): _unblock,
     ("GET", "/api/path"): _path,
     ("GET", "/api/graph/live"): _graph_live,
+    ("GET", "/api/behaviour"): _behaviour,
+    ("POST", "/api/behaviour/anomaly"): _behaviour_mark,
     ("GET", "/api/connlog"): _connlog,
     ("GET", "/api/connlog/stats"): _connlog_stats,
     ("GET", "/api/connlog.csv"): _connlog_csv,

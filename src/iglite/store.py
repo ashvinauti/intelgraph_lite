@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -188,6 +188,30 @@ CREATE TABLE IF NOT EXISTS dns_log (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS dns_log_domain ON dns_log(domain);
 CREATE INDEX IF NOT EXISTS dns_log_last ON dns_log(last_seen);
+
+-- Behaviour analysis: activity per device per hour (the baseline), and what stood out.
+CREATE TABLE IF NOT EXISTS activity (
+    who         TEXT NOT NULL,
+    hour        INTEGER NOT NULL,                  -- unix time // 3600
+    flows       INTEGER NOT NULL DEFAULT 0,
+    lookups     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (who, hour)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS anomalies (
+    id          INTEGER PRIMARY KEY,
+    who         TEXT NOT NULL,
+    kind        TEXT NOT NULL,                     -- beaconing | dga | new_port | new_destination | ...
+    remote      TEXT NOT NULL DEFAULT '',          -- the indicator or port it is about
+    severity    TEXT NOT NULL,                     -- low | medium | high
+    detail      TEXT NOT NULL,
+    first_at    REAL NOT NULL,
+    last_at     REAL NOT NULL,
+    count       INTEGER NOT NULL DEFAULT 1,
+    status      TEXT NOT NULL DEFAULT 'open',      -- open | dismissed | normal (learned: never again)
+    context     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS anomalies_key ON anomalies(who, kind, remote);
+CREATE INDEX IF NOT EXISTS anomalies_last ON anomalies(last_at);
 
 CREATE TABLE IF NOT EXISTS cache (
     key         TEXT PRIMARY KEY,
@@ -903,6 +927,151 @@ class Store:
                 + db.execute("DELETE FROM dns_log WHERE last_seen < ?", (cutoff,)).rowcount
             )
 
+    # -- behaviour -----------------------------------------------------------
+
+    def add_activity(self, rows: Iterable[tuple[str, int, int, int]]) -> None:
+        """Add (who, hour, flows, lookups) to the hourly activity counters."""
+        rows = list(rows)
+        if rows:
+            with self.transaction() as db:
+                db.executemany(
+                    "INSERT INTO activity VALUES (?,?,?,?) ON CONFLICT(who, hour) DO UPDATE SET"
+                    " flows = flows + excluded.flows, lookups = lookups + excluded.lookups",
+                    rows,
+                )
+
+    def activity(self, who: str, since_hour: int) -> list[tuple[int, int, int]]:
+        rows = self._query(
+            "SELECT hour, flows, lookups FROM activity WHERE who=? AND hour >= ? ORDER BY hour",
+            (who, since_hour),
+        )
+        return [(r["hour"], r["flows"], r["lookups"]) for r in rows]
+
+    def baseline(self, who: str, before: float) -> dict[str, Any]:
+        """What a device did before ``before``: remotes, names, domains, ports, first seen."""
+        conns = self._query(
+            "SELECT remote_ip, remote_port, proto, inbound, names, first_seen FROM conn_log WHERE who=? AND first_seen < ?",
+            (who, before),
+        )
+        lookups = self._query(
+            "SELECT domain, first_seen FROM dns_log WHERE who=? AND first_seen < ?", (who, before)
+        )
+        firsts = [r["first_seen"] for r in conns] + [r["first_seen"] for r in lookups]
+        names: set[str] = set()
+        for r in conns:
+            names.update(n for n in r["names"].split(",") if n)
+        return {
+            "first_seen": min(firsts) if firsts else None,
+            "remotes": {r["remote_ip"] for r in conns},
+            "ports": {(r["proto"], r["remote_port"], bool(r["inbound"])) for r in conns},
+            "inbound": any(r["inbound"] for r in conns),
+            "domains": {r["domain"] for r in lookups} | names,
+        }
+
+    def log_whos(self) -> list[str]:
+        return [r[0] for r in self._query("SELECT DISTINCT who FROM activity ORDER BY who")]
+
+    def record_anomaly(
+        self,
+        who: str,
+        kind: str,
+        remote: str,
+        severity: str,
+        detail: str,
+        context: str,
+        now: float,
+        repeat_after: float,
+    ) -> tuple[int, bool] | None:
+        """Store an anomaly; returns (id, new). A repeat within ``repeat_after`` s only bumps its count.
+        None when you marked this one normal."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT id, status, last_at FROM anomalies WHERE who=? AND kind=? AND remote=? ORDER BY id DESC LIMIT 1",
+                (who, kind, remote),
+            ).fetchone()
+            if row is not None and row["status"] == "normal":
+                return None
+            if row is not None and now - row["last_at"] < repeat_after:
+                self._db.execute(
+                    "UPDATE anomalies SET last_at=?, count=count+1, detail=?, context=? WHERE id=?",
+                    (now, detail, context, row["id"]),
+                )
+                return int(row["id"]), False
+            cur = self._db.execute(
+                "INSERT INTO anomalies (who, kind, remote, severity, detail, first_at, last_at, context)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (who, kind, remote, severity, detail, now, now, context),
+            )
+            return int(cur.lastrowid or 0), True
+
+    def anomalies(
+        self,
+        *,
+        who: str | None = None,
+        since: float | None = None,
+        status: str | None = None,
+        severity: Iterable[str] = (),
+        limit: int = 200,
+        since_id: int = 0,
+    ) -> list[dict[str, Any]]:
+        where, args = ["a.id > ?"], [since_id]
+        if who:
+            where.append("a.who = ?")
+            args.append(who)
+        if since is not None:
+            where.append("a.last_at >= ?")
+            args.append(since)
+        if status:
+            where.append("a.status = ?")
+            args.append(status)
+        severity = list(severity)
+        if severity:
+            where.append(f"a.severity IN ({','.join('?' * len(severity))})")
+            args += severity
+        rows = self._query(
+            "SELECT a.*, h.attrs AS who_attrs FROM anomalies a LEFT JOIN nodes h ON h.key = a.who"  # noqa: S608
+            f" WHERE {' AND '.join(where)} ORDER BY a.last_at DESC LIMIT ?",
+            [*args, limit],
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["who_name"] = json.loads(d.pop("who_attrs") or "{}").get("name")
+            d["context"] = json.loads(d["context"])
+            out.append(d)
+        return out
+
+    def anomaly(self, anomaly_id: int) -> dict[str, Any] | None:
+        rows = self._query(
+            "SELECT a.*, h.attrs AS who_attrs FROM anomalies a LEFT JOIN nodes h ON h.key = a.who WHERE a.id=?",
+            (anomaly_id,),
+        )
+        if not rows:
+            return None
+        d = dict(rows[0])
+        d["who_name"] = json.loads(d.pop("who_attrs") or "{}").get("name")
+        d["context"] = json.loads(d["context"])
+        return d
+
+    def set_anomaly_status(self, anomaly_id: int, status: str) -> bool:
+        with self._lock:
+            return (
+                self._db.execute("UPDATE anomalies SET status=? WHERE id=?", (status, anomaly_id)).rowcount
+                > 0
+            )
+
+    def prune_behaviour(self, older_than_days: float) -> int:
+        cutoff = time.time() - older_than_days * 86400
+        with self.transaction() as db:
+            n = db.execute("DELETE FROM activity WHERE hour < ?", (int(cutoff // 3600),)).rowcount
+            # anomalies you marked normal are rules: kept
+            return (
+                n
+                + db.execute(
+                    "DELETE FROM anomalies WHERE last_at < ? AND status != 'normal'", (cutoff,)
+                ).rowcount
+            )
+
     def edges_since(self, since: float, rels: Iterable[str], limit: int = 500) -> list[dict[str, Any]]:
         """Edges of the given relations recorded or seen again after ``since``, newest first."""
         rels = list(rels)
@@ -954,6 +1123,7 @@ class Store:
             db.execute("DELETE FROM routes WHERE at < ?", (cutoff,))
             log = db.execute("DELETE FROM conn_log WHERE last_seen < ?", (cutoff,)).rowcount
             log += db.execute("DELETE FROM dns_log WHERE last_seen < ?", (cutoff,)).rowcount
+            log += db.execute("DELETE FROM activity WHERE hour < ?", (int(cutoff // 3600),)).rowcount
             ev = db.execute("DELETE FROM evidence WHERE observed_at < ?", (cutoff,)).rowcount
             edges = db.execute("DELETE FROM edges WHERE last_seen < ?", (cutoff,)).rowcount
             nodes = db.execute(

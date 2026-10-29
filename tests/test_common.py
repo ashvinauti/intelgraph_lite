@@ -72,6 +72,13 @@ def busy(tmp_path):
     network.incidents(60)
     for _ in range(6):
         network.background()
+    for device, site in (
+        ("10.42.0.11", "maps.example"),
+        ("10.42.0.11", "news-site.example"),
+        ("10.42.0.23", "video-stream.example"),
+        ("10.42.0.23", "gaming.example"),
+    ):
+        network.visit(device, site)  # the sites the tests below look for, whatever the random traffic did
     watch.scan()
     try:
         yield engine
