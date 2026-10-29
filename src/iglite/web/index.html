@@ -150,6 +150,28 @@
   ul.feed li:hover { background: var(--surface-2); }
   ul.feed .sub { grid-column: 2 / 4; font-size: 12px; color: var(--text-secondary); }
 
+  /* behaviour */
+  .beh-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 1000px) { .beh-grid { grid-template-columns: 1fr; } }
+  ul.anoms { list-style: none; margin: 0; padding: 0; }
+  ul.anoms li { border: 1px solid var(--line); border-left: 4px solid var(--c, var(--st-neutral)); border-radius: 6px; padding: 9px 11px; margin-bottom: 8px; }
+  ul.anoms li.high { --c: var(--st-critical); } ul.anoms li.medium { --c: var(--st-warning); } ul.anoms li.low { --c: var(--st-neutral); }
+  ul.anoms li.done { opacity: .6; }
+  ul.anoms .h { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  ul.anoms .h b { font-weight: 600; }
+  ul.anoms .d { font-size: 13px; color: var(--text-secondary); margin: 4px 0 6px; }
+  ul.anoms .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .sev.high { --c: var(--st-critical); }
+  .hours { display: grid; grid-template-columns: repeat(24, 1fr); gap: 1px; height: 18px; margin: 6px 0 2px; }
+  .hours i { background: var(--accent); border-radius: 1px; align-self: end; min-height: 1px; }
+  .hours i.off { background: var(--grid); height: 3px !important; }
+  .hours-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); }
+  ul.bdevs { list-style: none; margin: 0; padding: 0; }
+  ul.bdevs li { padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 4px; }
+  ul.bdevs li:hover, ul.bdevs li[aria-current="true"] { background: var(--surface-2); }
+  ul.bdevs .t { display: flex; gap: 6px; align-items: center; font-weight: 600; font-size: 13px; }
+  ul.bdevs .m { font-size: 12px; color: var(--text-muted); }
+
   /* cases */
   .cases-grid { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(0, 2.4fr); gap: 16px; align-items: start; }
   @media (max-width: 900px) { .cases-grid { grid-template-columns: 1fr; } }
@@ -369,6 +391,7 @@
     <a href="#overview" data-view="overview">Overview</a>
     <a href="#live" data-view="live">Live network<span class="count" id="flag-count" hidden></span></a>
     <a href="#network" data-view="network">Network</a>
+    <a href="#behaviour" data-view="behaviour">Behaviour<span class="count" id="beh-count" hidden></span></a>
     <a href="#cases" data-view="cases">Cases<span class="count" id="case-count" hidden></span></a>
     <a href="#routes" data-view="routes">Routes</a>
     <a href="#graph" data-view="graph">Graph</a>
@@ -503,6 +526,23 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- BEHAVIOUR -->
+  <section class="view" id="view-behaviour">
+    <div class="toolbar">
+      <select id="b-status" aria-label="Show"><option value="open">Open</option><option value="">All</option><option value="dismissed">Dismissed</option><option value="normal">Marked normal</option></select>
+      <select id="b-severity" aria-label="Severity"><option value="">Any severity</option><option value="high">High</option><option value="high,medium">Medium and high</option></select>
+      <select id="b-since" aria-label="Time range"><option value="86400">Last 24 hours</option><option value="604800" selected>Last 7 days</option><option value="">Everything</option></select>
+      <span class="muted" id="b-device-filter"></span>
+      <span class="grow"></span>
+      <span class="muted" id="b-status-line" style="font-size:12px"></span>
+    </div>
+    <div class="beh-grid">
+      <div class="card"><div class="card-head"><h2>What changed</h2><span class="muted" style="font-size:12px">Things devices did that they normally don't</span></div><ul class="anoms" id="b-list"></ul></div>
+      <div class="card"><div class="card-head"><h2>Device baselines</h2><span class="muted" style="font-size:12px">Bars: hours of the day it is normally active</span></div><ul class="bdevs" id="b-devices"></ul></div>
+    </div>
+    <p class="muted" style="font-size:11.5px;margin-top:10px">Each device is watched for <span id="b-learn">7</span> days to learn its habits: the servers, sites and ports it uses, when it is active and how busy it gets. After that, changes are flagged here. Regular check-ins to one server (beaconing) and generated-looking domain names are flagged from day one. Common services never count. <b>This is normal</b> teaches it: that finding is never raised again.</p>
   </section>
 
   <!-- CASES -->
@@ -727,7 +767,7 @@ applyTheme(store.get("iglite-theme"));
 $("theme").onclick = () => { const next = isDark() ? "light" : "dark"; applyTheme(next); store.set("iglite-theme", next); };
 
 /* ---------- routing & shortcuts ---------- */
-const VIEWS = ["overview", "live", "network", "cases", "routes", "graph", "attack", "indicators", "analyst"];
+const VIEWS = ["overview", "live", "network", "behaviour", "cases", "routes", "graph", "attack", "indicators", "analyst"];
 let view = "overview";
 function route() {
   view = (location.hash || "#overview").slice(1);
@@ -1524,6 +1564,9 @@ const Drawer = {
       linkGroups(incoming, false),
       el("h3", { title: "Nodes this one points at" }, el("span", { class: "dir", style: "background:var(--edge-out)" }), `Outgoing (${outgoing.length})`),
       linkGroups(outgoing, true),
+      info.anomalies && info.anomalies.length ? el("h3", {}, `Behaviour (${info.anomalies.length})`) : null,
+      info.anomalies && info.anomalies.length ? el("ul", { class: "links" }, info.anomalies.map(x => el("li", { onclick: () => { BehaviourView.who = x.who; location.hash = "#behaviour"; } },
+        el("span", { class: "sev " + x.severity }, x.severity), el("span", {}, x.detail)))) : null,
       info.attack_entry ? AttackView.entry(info.attack_entry, n.kind) : null,
       tpanel ? el("h3", {}, "AI triage") : null,
       tpanel,
@@ -1650,6 +1693,74 @@ const Respond = {
     $("toasts").append(t); setTimeout(() => t.remove(), 9000);
   },
 };
+
+/* ---------- behaviour ---------- */
+const BehaviourView = {
+  data: null, who: null,
+  async count() {
+    try {
+      const r = await api(`/api/behaviour?status=open&anomalies_only=1&severity=high,medium&since=${Date.now() / 1000 - 86400}`);
+      this.badge(r.anomalies.length);
+    } catch (e) {}
+  },
+  badge(n) { const b = $("beh-count"); b.hidden = !n; b.textContent = n; b.title = `${n} open behaviour finding${n === 1 ? "" : "s"} in the last 24 hours`; },
+  async refresh() {
+    const p = new URLSearchParams();
+    if ($("b-status").value) p.set("status", $("b-status").value);
+    if ($("b-severity").value) p.set("severity", $("b-severity").value);
+    if ($("b-since").value) p.set("since", String(Date.now() / 1000 - +$("b-since").value));
+    if (this.who) p.set("who", this.who);
+    this.data = await api("/api/behaviour?" + p);
+    this.render();
+    this.count();
+  },
+  async mark(a, status) {
+    try { await api("/api/behaviour/anomaly", { id: a.id, status }); } catch (e) { alert(e.message); return; }
+    if (status === "normal") Respond.say("Learned", { ok: true, detail: `${a.label} for ${a.who_name || a.who.split(":")[1]} won't be raised again.` });
+    this.refresh(); this.count();
+  },
+  render() {
+    const d = this.data, st = d.status;
+    $("b-learn").textContent = st.learn_days;
+    $("b-status-line").textContent = !st.enabled ? "Behaviour analysis is off (behaviour = false)" :
+      `${plural(st.devices, "device")} · ${st.learning} still learning · ${plural(st.open, "open finding")} in 24 h`;
+    const dev = d.devices.find(x => x.who === this.who);
+    fill($("b-device-filter"), this.who ? ["Device: ", el("b", {}, dev && dev.name || this.who.split(":")[1]), " ",
+      el("button", { class: "ghost small", onclick: () => { this.who = null; this.refresh(); } }, "All devices")] : "");
+    const remoteKey = a => /^(ip|domain):/.test(a.remote) ? a.remote : a.context && a.context.remote ? "ip:" + a.context.remote : null;
+    fill($("b-list"), d.anomalies.length ? d.anomalies.map(a => {
+      const key = remoteKey(a), who = a.who_name || a.who.split(":").slice(1).join(":");
+      return el("li", { class: a.severity + (a.status !== "open" ? " done" : "") },
+        el("div", { class: "h" }, el("span", { class: "sev " + a.severity }, a.severity), el("b", {}, a.label),
+          el("a", { href: "#behaviour", onclick: ev => { ev.preventDefault(); this.who = a.who; this.refresh(); } }, who),
+          a.count > 1 ? el("span", { class: "muted" }, `×${a.count}`) : null,
+          el("span", { class: "muted", style: "margin-left:auto;font-size:12px", title: new Date(a.last_at * 1000).toLocaleString() },
+            a.status !== "open" ? `${a.status} · ` : "", timeAgo(a.last_at))),
+        el("div", { class: "d" }, a.detail),
+        el("div", { class: "acts" },
+          key ? el("button", { class: "ghost small", onclick: () => Drawer.open(key) }, "Details") : null,
+          el("button", { class: "ghost small", onclick: () => Drawer.open(a.who) }, "Device"),
+          key ? el("button", { class: "ghost small", title: "Show how the device reaches it", onclick: () => { Graph.findPath(a.who, key); location.hash = "#graph"; } }, "Show in graph") : null,
+          el("button", { class: "ghost small", onclick: () => CasePicker.open({ key: a.who, title: `${a.label} on ${who}` }) }, "Add to case"),
+          a.status === "open" ? el("button", { class: "ghost small", title: "Expected behaviour: never raise this again", onclick: () => this.mark(a, "normal") }, "This is normal") : null,
+          a.status === "open" ? el("button", { class: "ghost small", onclick: () => this.mark(a, "dismissed") }, "Dismiss")
+            : el("button", { class: "ghost small", onclick: () => this.mark(a, "open") }, "Reopen")));
+    }) : el("li", { class: "low", style: "--c:var(--st-good)" }, el("div", { class: "d" },
+      st.devices ? "Nothing unusual. Every device is behaving like it normally does." : "No devices yet. Baselines are built from live monitoring.")));
+    const maxH = 1;
+    fill($("b-devices"), d.devices.length ? d.devices.slice().sort((x, y) => (y.open - x.open) || (x.name || x.who).localeCompare(y.name || y.who)).map(x =>
+      el("li", { "aria-current": String(x.who === this.who), onclick: () => { this.who = x.who === this.who ? null : x.who; this.refresh(); } },
+        el("div", { class: "t" }, x.worst ? el("span", { class: "sev " + x.worst }, x.open) : null, x.name || x.who.split(":").slice(1).join(":"),
+          el("span", { class: "muted mono", style: "font-weight:400" }, x.name ? x.who.split(":").slice(1).join(":") : "")),
+        el("div", { class: "m" }, x.learning ? `Learning: ${x.days} of ${st.learn_days} days` : `Baseline from ${Math.round(x.days)} days`,
+          ` · ${plural(x.sites, "site")} · ${plural(x.remotes, "server")}`, x.inbound ? " · accepts inbound" : "", x.narrow ? " · few habits" : ""),
+        el("div", { class: "hours", title: "Share of days it was active, per hour of the day" },
+          x.hours.map((h, i) => el("i", { class: h ? null : "off", style: h ? `height:${Math.max(15, Math.round(100 * h / maxH))}%` : null, title: `${String(i).padStart(2, "0")}:00 ${Math.round(h * 100)}% of days` }))),
+        el("div", { class: "hours-axis" }, el("span", {}, "0"), el("span", {}, "6"), el("span", {}, "12"), el("span", {}, "18"), el("span", {}, "23")))) :
+      el("li", { class: "muted", style: "cursor:default" }, "No devices yet."));
+  },
+};
+["b-status", "b-severity", "b-since"].forEach(id => { $(id).onchange = () => BehaviourView.refresh(); });
 
 /* ---------- cases ---------- */
 const SEVERITIES = ["low", "medium", "high", "critical"], CASE_STATUSES = ["open", "investigating", "closed"];
@@ -2371,6 +2482,7 @@ async function refreshView() {
     else if (view === "attack") await AttackView.refresh();
     else if (view === "network") await Network.refresh();
     else if (view === "cases") await Cases.refresh();
+    else if (view === "behaviour") await BehaviourView.refresh();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
     else if (view === "graph" && !Graph.nodes.size) {
       await Graph.load(watch.mode === "gateway" ? "host:gateway" : "host:this-computer", true, 3);
@@ -2392,6 +2504,7 @@ async function poll() {
       if (view === "graph" && Graph.live) await Graph.pollLive();
       if (view === "network") await Network.refresh();
       if (view === "cases" && !Cases.editing()) await Cases.refresh(); else if (++pollTick % 6 === 1) Cases.count();
+      if (view === "behaviour") await BehaviourView.refresh(); else if (pollTick % 6 === 1) BehaviourView.count();
       if (view === "overview") { await refreshStats(); await Triage.refreshStatus(); if (watch.running) await Activity.refresh(); }
     } catch (e) {}
   }

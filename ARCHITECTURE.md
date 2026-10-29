@@ -183,6 +183,40 @@ techniques, software, groups, ASNs, the gateway) are never used as stepping
 stones unless asked, because they connect everything to everything and would
 make every answer meaningless.
 
+## Behaviour analysis
+
+`behaviour.py` runs once per scan, right after the connection log is written,
+on what that scan added:
+
+```
+scan ─► conn_log / dns_log rows ─┐
+     ─► activity (who, hour) +=  ├─► Behaviour.observe ─► anomalies ─► cases timeline, notifications
+     ─► collector.recent_starts ─┘          │                      └─► behaviour evidence ─► rescore
+                                    Profile per device (rebuilt every 10 min from the log):
+                                    remotes, sites, ports, inbound?, active share per hour of day,
+                                    95th percentile of hourly connections, learning?
+```
+
+* **Connection starts** are tracked in the gateway collector, keyed by flow and
+  counted once per source port, so a long-lived connection is one start and a
+  beacon's reconnects are many. Finished connections (TIME_WAIT/CLOSE in
+  conntrack, pf) are read only for this, since short beacons are often already
+  closed when the table is read. `beacon()` collapses starts seen in the same
+  second (scans see them in batches), then wants six or more over three periods
+  with a coefficient of variation of 0.25 or less.
+* **Generated domains** are scored on the registrable label only (`site()`), so
+  random CDN subdomains (`d3kq1x7z.cloudfront.net`) don't count: entropy,
+  vowel share, digits and consonant runs, 0 to 1, flagged at 0.7.
+* **Baseline detectors** compare against the profile and are skipped while a
+  device is learning. A connection that is both a new port and a new server is
+  one finding; a lookup and the connection to its address are one destination;
+  generated domains aren't reported again as new destinations.
+* **Storage**: `record_anomaly` dedupes on (who, kind, remote) for
+  `REPEAT_AFTER` (a day), bumping `count`; status `normal` is a permanent rule.
+* **Scoring**: evidence from source `behaviour` (trust 0.8 by default: your own
+  network's observation), suspicious, confidence 1.0 for beaconing, 0.8 for
+  generated domains and 0.35 for risky new ports, then `engine.rescore`.
+
 ## Live graph
 
 `GET /api/graph/live?since=T` returns the traffic edges (`routes_for`, `runs`,
@@ -313,6 +347,8 @@ blocks   (kind indicator|device, value, note, case_id, at)   UNIQUE(kind, value)
 conn_log (day, who, remote_ip, remote_port, proto, inbound, names, first_seen, last_seen, hits)
          PK(day, who, remote_ip, remote_port, proto, inbound)  INDEX(remote_ip), INDEX(last_seen)
 dns_log  (day, who, domain, first_seen, last_seen, hits)      PK(day, who, domain)
+activity (who, hour, flows, lookups)                         PK(who, hour)   behaviour baselines
+anomalies(id, who, kind, remote, severity, detail, first_at, last_at, count, status, context)
 ```
 
 * The connection log is written on every scan. In gateway mode only flows new
@@ -342,7 +378,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (177 tests, offline) | ~15 s |
+| Full test suite (188 tests, offline) | ~14 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 

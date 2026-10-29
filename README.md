@@ -60,6 +60,7 @@ iglite path host:10.42.0.52 http://cdn-update.example/setup.bin
 iglite notify --test
 iglite common update             # popular-domain list, so routine traffic stays out of the graph
 iglite connections --since 24h   # the database of every connection seen
+iglite behaviour                 # what devices did that they normally don't
 
 # Show it to someone: a simulated network with a minute of incidents, nothing to set up
 iglite demo
@@ -105,6 +106,8 @@ With Docker: `docker run --rm -p 8765:8765 iglite iglite demo --host 0.0.0.0 --n
 | any time | The C2 and dropper alerts have filed themselves into case #1, opened from the threat brief | Cases tab: timeline, ATT&CK, **Block** the C2 IP, **Quarantine** the Smart-Plug, **Copy report** |
 | any time | File the phishing alert into a new case | Recent alerts › **Add to case** |
 | any time | How did the laptop get the malware? | Work-Laptop › **Find path to…** the dropper URL |
+| ~40 s | The Ring-Doorbell starts checking in with a server no feed knows | Behaviour tab: **Regular check-ins** (high); the server turns *suspicious* on behaviour alone |
+| ~50 s | The Office-Printer looks up four machine-generated domains | Behaviour tab: **Generated-looking domain**; try **This is normal** on one |
 
 Good stops along the way: click a device in the **Network** tab to see its
 connections and lookups; open an alert and read *why* it scored that way; mark
@@ -432,6 +435,56 @@ iglite case report 1 -o case-1.md
 iglite case list
 ```
 
+## Behaviour analysis
+
+Threat intelligence only knows what someone has already reported. Behaviour
+analysis catches the rest by learning what each device normally does and
+flagging what changes, for example a smart plug that starts checking in with
+an unknown server every ten seconds, a printer that looks up random-looking
+domains, or a NAS that suddenly accepts SSH from the internet.
+
+Each device is watched for `behaviour_learn_days` (7) to learn its habits from
+the [connection database](#live-graph-and-connection-history): the servers,
+sites and ports it uses, whether anything ever connects in, the hours of the day
+it is active and how busy a normal hour is. Then every scan checks:
+
+| Finding | What it means | Needs a baseline |
+|---------|---------------|------------------|
+| **Regular check-ins** (beaconing) | New connections to one server at a steady rhythm: how malware talks to its controller | no |
+| **Generated-looking domain** (DGA) | Lookups of names like `kz8qw3vxn5rt.com`, which malware generates to find its controller | no |
+| **New inbound connection** | The internet connects in on a port that never received connections | yes |
+| **New port** | A port the device never used; high for risky ones (4444, 3333 mining, 22, 3389, 445, 23, Tor, IRC...) | yes |
+| **New destination** | A server or site outside the habits of a device with few habits (plugs, cameras, TVs, printers) | yes |
+| **Burst of new destinations** | Many never-seen destinations at once | yes |
+| **Unusual hour** | Activity at an hour of the day the device has been quiet every day | yes |
+| **Traffic spike** | Far more connections in an hour than its busiest normal hours | yes |
+
+Common services (Google, Apple, CDNs, see [Hide common services](#hide-common-services))
+never count as new destinations or check-ins. A finding is raised once per
+device, kind and target and counted, not repeated, for a day. **This is normal**
+teaches it never to raise that one again. **Dismiss** just closes it.
+
+Findings appear in the **Behaviour** tab (with each device's baseline and its
+normal hours), in a device's details panel, in the timeline of open cases about
+that device, and as notifications (`behaviour_notify = "high"`; `"medium"` or
+`"off"`). Check-ins, generated domains and risky new ports also add
+**behaviour** evidence to the target's score, so a server nobody has reported
+yet can turn *suspicious* on what your own network saw.
+
+```bash
+iglite behaviour                      # open findings
+iglite behaviour devices              # every device's baseline, with its active hours
+iglite behaviour --device 10.42.0.88  # one device
+iglite behaviour mark 12 normal       # never raise #12 again (or: dismissed, open)
+```
+
+How well check-ins are caught depends on the input: event logs (syslog,
+NetFlow, Zeek, Suricata) time each connection; reading the connection table
+(`--conntrack`, `--ssh`) sees connections at each scan, so with the default
+30 s scans it catches rhythms of about a minute or slower, and faster ones show
+up at the scan rhythm. Behaviour analysis needs the connection database
+(`connection_log`, on by default); switch it off with `behaviour = false`.
+
 ## Live graph and connection history
 
 **Live graph.** With **Live** on (the default) in the Graph tab, new
@@ -705,6 +758,7 @@ Windows and macOS include one.
 * **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort. **History** searches the database of every connection and DNS lookup ever seen, with CSV export.
 * **Network** (gateway mode): every device on the network as a card, a detail panel per device, and a live feed of DNS lookups.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
+* **Behaviour**: what devices did that they normally don't, with each device's learned habits (see [Behaviour analysis](#behaviour-analysis)).
 * **Cases**: incidents with their alerts, devices, indicators, ATT&CK techniques, notes and timeline (see [Cases](#cases-from-alerts-to-an-incident)).
 * **Graph**: updates live as connections happen, with active links animated (see [Live graph](#live-graph-and-connection-history)). Routine services (Google, Apple, CDNs...) are hidden by default, see [Hide common services](#hide-common-services). Two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
 * **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
@@ -712,7 +766,7 @@ Windows and macOS include one.
 * **Analyst**: chat with the optional AI analyst (see below).
 * **Details panel**: why an indicator got its score, its incoming and outgoing connections, attributes, the cases it is in, and buttons to investigate again, block or quarantine, add it to a case, or find a path to another node.
 
-Keyboard: `1`–`9` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`9` switch to the first nine tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -799,7 +853,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 177 offline tests, ~10 s
+.venv/bin/pytest            # 188 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

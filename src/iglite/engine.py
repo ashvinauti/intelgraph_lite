@@ -86,6 +86,7 @@ class Engine:
         self._triage: Any = None
         self._notifier: Any = None
         self._common: Any = None
+        self._behaviour: Any = None
         self.demo = False  # set by ``iglite demo``: simulated network and invented intel
 
     def agent_desk(self) -> Any:
@@ -121,6 +122,25 @@ class Engine:
 
             self._common = from_config(self.config)
         return self._common
+
+    def behaviour(self) -> Any:
+        """Behaviour analysis (per-device baselines and anomalies), created on first use."""
+        if self._behaviour is None:
+            from .behaviour import Behaviour
+
+            self._behaviour = Behaviour(self)
+        return self._behaviour
+
+    def on_anomalies(self, anomalies: list[dict[str, Any]]) -> None:
+        """New behaviour anomalies: note them in open cases about the device, and notify."""
+        for a in anomalies:
+            for case_id in self.store.cases_with_indicator(a["who"]):
+                case = self.store.case(case_id)
+                if case and case["status"] != "closed":
+                    self.store.add_case_event(
+                        case_id, "behaviour", f"Behaviour ({a['severity']}): {a['detail']}"
+                    )
+            self.notifier().on_anomaly(a)
 
     def notifier(self) -> Any:
         """Alert notifications (Slack, Teams, email, webhook), created on first use."""
@@ -159,7 +179,11 @@ class Engine:
 
     @property
     def trust(self) -> dict[str, float]:
-        return {s.name: s.trust for s in self.sources}
+        # behaviour: what your own network observed (behaviour.py); trusted more than a stranger's report
+        return {
+            "behaviour": self.config.trust.get("behaviour", 0.8),
+            **{s.name: s.trust for s in self.sources},
+        }
 
     # -- public API --------------------------------------------------------
 

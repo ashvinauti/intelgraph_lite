@@ -287,6 +287,61 @@ def cmd_connections(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_behaviour(engine: Engine, args: argparse.Namespace) -> int:
+    from .behaviour import describe
+
+    store = engine.store
+    if args.action == "mark":
+        if (
+            len(args.args) != 2
+            or not args.args[0].isdigit()
+            or args.args[1] not in ("normal", "dismissed", "open")
+        ):
+            raise SystemExit("usage: iglite behaviour mark ANOMALY_ID normal|dismissed|open")
+        if not store.set_anomaly_status(int(args.args[0]), args.args[1]):
+            raise SystemExit(f"error: no anomaly {args.args[0]}")
+        print(f"Anomaly #{args.args[0]}: {args.args[1]}")
+        return 0
+    who = None
+    if args.device:
+        who = args.device if ":" in args.device else f"host:{args.device}"
+    if args.action == "devices" or who:
+        beh = engine.behaviour()
+        for w in [who] if who else store.log_whos():
+            p = beh.profile(w).summary()
+            node = store.node(w) or {}
+            name = (node.get("attrs") or {}).get("name") or ""
+            state = (
+                f"learning ({p['days']:.1f} of {engine.config.behaviour_learn_days:g} days)"
+                if p["learning"]
+                else f"baseline from {p['days']:.0f} days"
+            )
+            hours = "".join("#" if h >= 0.5 else "+" if h > 0 else "." for h in p["hours"])
+            print(
+                f"{w:<22} {name:<16} {state:<26} {p['sites']:>3} sites {p['remotes']:>3} servers  hours 0-23 [{hours}]"
+                + ("  narrow" if p["narrow"] else "")
+            )
+        if not who:
+            return 0
+    rows = store.anomalies(who=who, status=None if args.all else "open", limit=args.limit)
+    if not rows:
+        print(
+            "No anomalies." if args.all else "No open anomalies (--all shows dismissed and normal ones too)."
+        )
+    for a in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(a["last_at"]))
+        device = a["who_name"] or a["who"].split(":", 1)[1]
+        paint = {"high": "malicious", "medium": "suspicious"}.get(a["severity"], "unknown")
+        times = f" x{a['count']}" if a["count"] > 1 else ""
+        print(
+            _paint(paint, f"#{a['id']:<4} {a['severity']:<7}")
+            + f" {when}  {device:<16} {describe(a['kind'])}{times}"
+            + (f"  [{a['status']}]" if a["status"] != "open" else "")
+        )
+        print(f"       {a['detail']}")
+    return 0
+
+
 def cmd_common(engine: Engine, args: argparse.Namespace) -> int:
     from . import common
 
@@ -1023,6 +1078,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--csv", metavar="FILE", help="write every matching row to a CSV file")
     sp.add_argument("--stats", action="store_true", help="how much is stored")
     sp.set_defaults(func=cmd_connections)
+
+    sp = sub.add_parser("behaviour", help="behaviour analysis: what devices do that they normally don't")
+    sp.add_argument("action", nargs="?", default="list", choices=["list", "devices", "mark"])
+    sp.add_argument("args", nargs="*", help="mark: ANOMALY_ID normal|dismissed|open")
+    sp.add_argument("--device", help="one device's baseline and anomalies (LAN IP)")
+    sp.add_argument("--all", action="store_true", help="include dismissed and normal anomalies")
+    sp.add_argument("--limit", type=int, default=50)
+    sp.set_defaults(func=cmd_behaviour)
 
     sp = sub.add_parser("common", help="common services hidden from the graph (Google, Apple, CDNs...)")
     sp.add_argument("action", nargs="?", default="list", choices=["list", "check", "update"])
