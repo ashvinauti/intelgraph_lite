@@ -120,11 +120,49 @@ def _proto(value: Any) -> str:
     return _PROTO_NUM.get(text, text or "tcp")
 
 
+def local_addresses(fib_trie: str = "/proc/net/fib_trie", if_inet6: str = "/proc/net/if_inet6") -> set[str]:
+    """This machine's own addresses (IPv4 from /proc/net/fib_trie, IPv6 from /proc/net/if_inet6)."""
+    out: set[str] = set()
+    try:
+        lines = Path(fib_trie).read_text().splitlines()
+        for prev, line in zip(lines, lines[1:], strict=False):
+            if "/32 host LOCAL" in line:
+                ip = prev.strip().lstrip("|-+ ").strip()
+                if ip:
+                    out.add(ip)
+    except OSError:
+        pass
+    try:
+        for line in Path(if_inet6).read_text().splitlines():
+            raw = line.split()[0]
+            out.add(str(ipaddress.ip_address(":".join(raw[i : i + 4] for i in range(0, 32, 4)))))
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
 class Lan:
     """Which addresses are inside the network. Default: every non-public address."""
 
-    def __init__(self, networks: Iterable[str] = ()) -> None:
+    def __init__(self, networks: Iterable[str] = (), own: Iterable[str] = ()) -> None:
         self.networks = [ipaddress.ip_network(n, strict=False) for n in networks]
+        self.own = set(own)  # the gateway's own addresses: never a "device"
+
+    def is_device(self, ip: str) -> bool:
+        """Could this address be a device on the network (not the gateway, broadcast or link-local)?"""
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if (
+            ip in self.own
+            or addr.is_multicast
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_unspecified
+        ):
+            return False
+        return self.inside(ip)
 
     def inside(self, ip: str) -> bool:
         addr = ipaddress.ip_address(ip)
@@ -138,9 +176,9 @@ class Lan:
             src_in, dst_in = self.inside(flow.src), self.inside(flow.dst)
         except ValueError:
             return None
-        if src_in and not dst_in and public_ip(flow.dst):
+        if src_in and not dst_in and public_ip(flow.dst) and self.is_device(flow.src):
             return flow.src, flow.dst, flow.dport, False
-        if dst_in and not src_in and public_ip(flow.src):
+        if dst_in and not src_in and public_ip(flow.src) and self.is_device(flow.dst):
             return flow.dst, flow.src, flow.dport, True
         return None
 
@@ -777,6 +815,7 @@ class GatewayCollector:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.lan = Lan(cfg.lan_networks)
+        self._own_checked = 0.0  # when running on the gateway: its own addresses, refreshed each minute
         self.senders = [ipaddress.ip_network(s, strict=False) for s in cfg.gateway_senders]
         self.devices: dict[str, str] = {str(k): str(v) for k, v in (cfg.devices or {}).items()}
         self._named = set(self.devices)  # names you set (config or dashboard) win over DHCP
@@ -1068,6 +1107,9 @@ class GatewayCollector:
         if not self.started:
             self.start()
         if self.cfg.gateway_conntrack:
+            if time.time() - self._own_checked > 60:  # this machine is the gateway: it isn't a device
+                self.lan.own = local_addresses()
+                self._own_checked = time.time()
             for flow in parse_conntrack(read_conntrack(), closed=True):
                 self.add(flow)
         if self.ssh is not None:

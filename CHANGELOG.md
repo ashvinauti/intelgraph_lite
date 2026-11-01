@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.2
+
+Found on a real hotspot gateway: the device list held the gateway's own
+addresses and upstream neighbours, not just hotspot clients.
+
+- **Multicast is not the internet.** Python's `ipaddress` calls `224.0.0.251`
+  (mDNS), `239.255.255.250` (SSDP) and `ff02::fb` "global", so every device
+  announcing itself on the local network looked like one talking to the
+  internet. Multicast is now never a public address.
+- **The gateway isn't a device.** When reading the connection table on the
+  gateway itself, its own addresses (uplink, hotspot, Docker/VM bridges) are
+  excluded, as are link-local, loopback and unspecified addresses.
+- The hotspot script passes `--lan 10.42.0.0/24`, so only hotspot clients
+  count as devices.
+- Addresses older versions recorded by mistake drop out of the device list,
+  the Behaviour tab and `iglite devices`; the connection history is kept.
+
 ## 0.2.1
 
 - **Active devices only, by default.** The Network tab and the graph show the

@@ -420,7 +420,7 @@ def _devices(engine: Engine, q: dict, body: dict) -> Any:
     inventory = {r["who"][5:]: r for r in store.inventory(kind="host")}
     hour = int(now // 3600)
     out, counts = [], dict.fromkeys(DEVICE_STATES, 0)
-    for ip in {*live, *inventory}:
+    for ip in {*live, *(ip for ip in inventory if engine.is_device(f"host:{ip}"))}:
         inv = inventory.get(ip)
         last = inv["last_seen"] if inv else None
         state = _device_state(last, now, active_secs)
@@ -945,7 +945,7 @@ def _behaviour(engine: Engine, q: dict, body: dict) -> Any:
             n["key"]: (n["attrs"] or {}).get("name") for n in engine.store.nodes(engine.store.log_whos())
         }
         recent = engine.store.anomalies(since=now - 86400, status="open", limit=2000)
-        for who in engine.store.log_whos()[:500]:
+        for who in [w for w in engine.store.log_whos() if engine.is_device(w)][:500]:
             d = beh.profile(who, now).summary()
             d["name"] = names.get(who)
             d["open"] = sum(a["who"] == who for a in recent)

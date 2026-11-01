@@ -157,3 +157,32 @@ def test_cli_devices(home, capsys, monkeypatch):
     assert main(["devices", "--all"]) == 0
     out = capsys.readouterr().out
     assert "Guest-Laptop" in out and "offline" in out
+
+
+def test_addresses_recorded_by_mistake_drop_out_of_the_lists(home, capsys, monkeypatch):
+    engine, *_ = home  # the demo's LAN is 10.42.0.0/24
+    now = time.time()
+    # an upstream neighbour and a link-local address, as older versions recorded them
+    engine.store.touch_devices(
+        [
+            ("host:192.168.0.234", now, 400, 0),
+            ("host:fe80::18ab:1", now, 50, 0),
+        ]
+    )
+    assert not engine.is_device("host:192.168.0.234") and not engine.is_device("host:fe80::18ab:1")
+    assert engine.is_device("host:10.42.0.61") and engine.is_device("process:firefox")
+    srv, get = _serve(engine)
+    try:
+        r = get("/api/devices?state=all")[1]
+        ips = {d["ip"] for d in r["devices"]}
+        assert not ips & {"192.168.0.234", "fe80::18ab:1"} and r["counts"]["all"] == 9
+        assert {d["who"] for d in get("/api/behaviour")[1]["devices"]} == {
+            f"host:{ip}" for ip in (*demo.DEVICES, demo.GUEST[0])
+        }
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    monkeypatch.setattr("iglite.cli.Engine", lambda cfg: engine)
+    monkeypatch.setattr(engine.store, "close", lambda: None)
+    assert main(["devices", "--all"]) == 0
+    assert "192.168.0.234" not in capsys.readouterr().out

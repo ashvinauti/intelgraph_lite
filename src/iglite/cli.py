@@ -291,7 +291,11 @@ def cmd_devices(engine: Engine, args: argparse.Namespace) -> int:
     now = time.time()
     active_secs = float(engine.config.device_active_secs)
     since = None if args.all else now - (86400 if args.today else active_secs)
-    rows = engine.store.inventory(since=since, kind=None if args.programs else "host")
+    rows = [
+        r
+        for r in engine.store.inventory(since=since, kind=None if args.programs else "host")
+        if engine.is_device(r["who"])
+    ]
     if not rows:
         print(
             "No active devices right now (--today or --all for the others)."
