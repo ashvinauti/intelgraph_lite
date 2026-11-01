@@ -258,6 +258,8 @@ class Behaviour:
         findings += self._beacons(starts, now, dns or {})
         findings += self._dga(lookups)
         for who in set(flows) | set(looks):
+            if not self.engine.is_device(who):
+                continue
             p = self.profile(who, now)
             if p.learning:
                 continue
@@ -534,7 +536,7 @@ class Behaviour:
 
     def status(self, now: float | None = None) -> dict[str, Any]:
         now = time.time() if now is None else now
-        whos = self.engine.store.log_whos()
+        whos = [w for w in self.engine.store.log_whos() if self.engine.is_device(w)]
         profiles = [self.profile(w, now) for w in whos[:500]]
         recent = self.engine.store.anomalies(since=now - 86400, limit=1000)
         open_ = [a for a in recent if a["status"] == "open"]

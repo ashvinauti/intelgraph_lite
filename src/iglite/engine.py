@@ -123,6 +123,22 @@ class Engine:
             self._common = from_config(self.config)
         return self._common
 
+    def is_device(self, who: str) -> bool:
+        """Is this ``host:<ip>`` a device on the monitored network (not the gateway itself,
+        multicast or link-local)? Programs (``process:``) always are. Filters out what older
+        versions recorded by mistake, without deleting any history."""
+        if not who.startswith("host:"):
+            return True
+        if who in ("host:gateway", "host:this-computer"):
+            return False
+        watch = self._netwatch
+        lan = watch.gateway.lan if watch is not None and watch.gateway is not None else None
+        if lan is None:
+            from .gateway import Lan, local_addresses
+
+            lan = Lan(self.config.lan_networks, local_addresses() if self.config.gateway_conntrack else ())
+        return lan.is_device(who[5:])
+
     def behaviour(self) -> Any:
         """Behaviour analysis (per-device baselines and anomalies), created on first use."""
         if self._behaviour is None:

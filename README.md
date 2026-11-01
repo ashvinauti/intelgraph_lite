@@ -209,6 +209,12 @@ one computer:
 From the command line: `iglite devices` (active now), `iglite devices --today`,
 `iglite devices --all`.
 
+Only addresses inside `lan_networks` count as devices (default: every private
+range). On a hotspot gateway set it to the hotspot's range so neighbours on the
+upstream network never appear: `lan_networks = ["10.42.0.0/24"]` (the hotspot
+script does this). The gateway's own addresses, multicast and link-local
+addresses are never devices.
+
 Names you give devices are kept across restarts and win over DHCP names.
 
 ### Ubuntu laptop or PC as the gateway (one command)
@@ -864,7 +870,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 193 offline tests, ~10 s
+.venv/bin/pytest            # 195 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 
