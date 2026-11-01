@@ -226,6 +226,28 @@ def connected(graph: dict[str, Any], roots: Iterable[str]) -> dict[str, Any]:
 ORIGINS = ("host:gateway", "host:this-computer")
 
 
+def real_devices(graph: dict[str, Any], is_device: Any, keep: Iterable[str] = ()) -> dict[str, Any]:
+    """Drop host nodes that aren't devices (the gateway's own or link-local addresses, neighbours
+    outside the LAN) that older versions recorded, and whatever only they led to."""
+    keep = set(keep)
+    junk = {
+        n["key"]
+        for n in graph["nodes"]
+        if n["kind"] == "host"
+        and n["key"] not in ORIGINS
+        and n["key"] not in keep
+        and not is_device(n["key"])
+    }
+    if not junk:
+        return graph
+    trimmed = {
+        **graph,
+        "nodes": [n for n in graph["nodes"] if n["key"] not in junk],
+        "edges": [e for e in graph["edges"] if e["src"] not in junk and e["dst"] not in junk],
+    }
+    return connected(trimmed, {graph.get("root"), *keep})
+
+
 def active_only(
     store: Any, graph: dict[str, Any], max_age: float, keep: Iterable[str] = (), now: float | None = None
 ) -> dict[str, Any]:

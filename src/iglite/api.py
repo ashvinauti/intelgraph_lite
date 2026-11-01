@@ -352,12 +352,11 @@ def _attack_navigator(engine: Engine, q: dict, body: dict) -> Any:
 def _graph(engine: Engine, q: dict, body: dict) -> Any:
     key, depth, limit = _key(q), _int(q, "depth", 1, 3), _int(q, "limit", 150, 1000)
     active = _int(q, "active", 0, 10**9)  # seconds: only devices with traffic this recently
-    if not _flag(q, "hide_common") and not active:
-        return engine.store.neighbourhood(key, depth, limit)
-    from .common import active_only, filter_graph
+    from .common import active_only, filter_graph, real_devices
 
     # Filtering eats the node budget, so look further and trim afterwards.
     graph = engine.store.neighbourhood(key, depth, min(2000, limit * 4))
+    graph = real_devices(graph, engine.is_device, keep=[key])
     if active:
         graph = active_only(engine.store, graph, active, keep=[key])
     if _flag(q, "hide_common"):
@@ -881,6 +880,14 @@ def _graph_live(engine: Engine, q: dict, body: dict) -> Any:
     now = time.time()
     since = _float(q, "since") or now - 300
     edges = engine.store.edges_since(since, LIVE_RELS, _int(q, "limit", 400, 2000))
+    edges = [
+        e
+        for e in edges
+        if all(
+            engine.is_device(k) or not k.startswith("host:") or k in ("host:gateway", "host:this-computer")
+            for k in (e["src"], e["dst"])
+        )
+    ]
     keys = {k for e in edges for k in (e["src"], e["dst"])}
     nodes = engine.store.nodes(keys)
     last = engine.store.last_active(n["key"] for n in nodes if n["kind"] in ("host", "process"))
