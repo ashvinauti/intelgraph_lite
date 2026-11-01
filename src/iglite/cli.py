@@ -377,18 +377,31 @@ def cmd_common(engine: Engine, args: argparse.Namespace) -> int:
 
     path = Path(engine.config.common_top_file or common.TRANCO_FILE).expanduser()
     if args.action == "update":
+        ok = True
         print(f"Downloading the Tranco top {args.top:,} popular domains (tranco-list.eu)...")
         try:
             domains, list_id = common.download_tranco(args.top)
-        except OSError as exc:
-            raise SystemExit(f"error: could not download the Tranco list: {exc}")
-        if not domains:
-            raise SystemExit("error: the Tranco list came back empty")
-        common.save_tranco(domains, list_id, path)
-        print(
-            f"Saved {len(domains):,} domains (list {list_id}) to {path}. Restart `iglite serve` to use them."
-        )
-        return 0
+            if not domains:
+                raise ValueError("the list came back empty")
+            common.save_tranco(domains, list_id, path)
+            print(f"  saved {len(domains):,} domains (list {list_id}) to {path}")
+        except (OSError, ValueError) as exc:
+            ok = False
+            print(f"  error: could not download the Tranco list: {exc}")
+        print("Downloading Google's and Amazon CloudFront's published address ranges...")
+        try:
+            ranges = common.download_ranges()
+            saved = common.save_ranges(ranges, path.with_name("ip_ranges.json"))
+            google = ranges["Google"]
+            print(
+                f"  saved to {saved}: Google {len(google['include'])} ranges, minus {len(google['exclude'])} "
+                f"rented as Google Cloud; CloudFront {len(ranges['Amazon CloudFront']['include'])} ranges"
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            ok = False
+            print(f"  error: could not download the address ranges: {exc}")
+        print("Restart `iglite serve` (or the iglite-gateway service) to use them.")
+        return 0 if ok else 1
     c = engine.common()
     if args.action == "check":
         if not args.names:
@@ -426,6 +439,12 @@ def cmd_common(engine: Engine, args: argparse.Namespace) -> int:
     print(
         f"Popular-site list: {header or 'not downloaded'} ({len(top):,} domains)"
         + ("" if top else "; run `iglite common update`")
+    )
+    _, when = common.read_ranges(path.with_name("ip_ranges.json"))
+    print(
+        "Address ranges: "
+        + ", ".join(name for name, _, _ in c.ranges)
+        + (f" (downloaded {when})" if when else "; run `iglite common update` for Google and CloudFront")
     )
     return 0
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.4
+
+- **Google's own addresses count as common.** `iglite common update` also
+  downloads Google's published address ranges minus those it rents out as
+  Google Cloud, and Amazon's CloudFront CDN ranges (saved to
+  `~/.iglite/ip_ranges.json`); Apple's 17.0.0.0/8 is built in. Phones using
+  Private DNS show up as bare addresses, so these used to fill the graph.
+  Rented cloud space (Google Cloud, EC2) still never counts.
+- `iglite common` lists which address ranges are loaded.
+
 ## 0.2.3
 
 - The graph and its live updates apply the same device rule as the device

@@ -236,7 +236,8 @@ make anything less detected.
 ```
 domain ─► parents (a.b.c.com → b.c.com → c.com) ─► ignore? abused? ─► no
                                                 └► catalogue / your list / Tranco top N ─► service label
-ip     ─► CDN-only operator (RDAP/Shodan owner) ─► label
+ip     ─► provider's own published range (Google minus Google Cloud, CloudFront, Apple 17/8) ─► label
+       └► CDN-only operator (RDAP/Shodan owner) ─► label
        └► every resolves_to name is common     ─► label
 ```
 
@@ -379,7 +380,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (196 tests, offline) | ~17 s |
+| Full test suite (198 tests, offline) | ~17 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 
