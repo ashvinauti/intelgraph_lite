@@ -870,7 +870,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 195 offline tests, ~10 s
+.venv/bin/pytest            # 196 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

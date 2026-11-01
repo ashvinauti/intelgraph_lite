@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+- The graph and its live updates apply the same device rule as the device
+  list: addresses older versions recorded by mistake (the gateway's own,
+  link-local, neighbours outside `lan_networks`) no longer hang off the
+  gateway. Asked for by name, such a node is still shown.
+
 ## 0.2.2
 
 Found on a real hotspot gateway: the device list held the gateway's own

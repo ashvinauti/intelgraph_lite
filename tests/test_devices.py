@@ -186,3 +186,31 @@ def test_addresses_recorded_by_mistake_drop_out_of_the_lists(home, capsys, monke
     monkeypatch.setattr(engine.store, "close", lambda: None)
     assert main(["devices", "--all"]) == 0
     assert "192.168.0.234" not in capsys.readouterr().out
+
+
+def test_graph_leaves_out_addresses_that_are_not_devices(home):
+    engine, *_ = home  # LAN 10.42.0.0/24
+    store = engine.store
+    gw = Indicator(Kind.HOST, "gateway")
+    for junk in ("192.168.0.135", "fe80::18ab:1"):  # an upstream neighbour, a link-local address
+        host = Indicator(Kind.HOST, junk)
+        store.upsert_node(host)
+        store.add_relation(Relation(gw, "routes_for", host), "netwatch")
+        store.touch_devices([(f"host:{junk}", time.time(), 10, 0)])
+    srv, get = _serve(engine)
+    try:
+        for path in (
+            "/api/graph?key=host:gateway&depth=2&limit=500",
+            "/api/graph?key=host:gateway&depth=2&limit=500&active=300&hide_common=1",
+            f"/api/graph/live?since={time.time() - 600}",
+        ):
+            keys = {n["key"] for n in get(path)[1]["nodes"]}
+            assert not keys & {"host:192.168.0.135", "host:fe80::18ab:1"}, path
+            assert "host:10.42.0.61" in keys, path
+        # asked for by name, it is still shown
+        assert "host:192.168.0.135" in {
+            n["key"] for n in get("/api/graph?key=host:192.168.0.135&depth=1")[1]["nodes"]
+        }
+    finally:
+        srv.shutdown()
+        srv.server_close()
