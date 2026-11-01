@@ -21,6 +21,9 @@ From a week of real traffic on the hotspot gateway:
   the DNS feed says when every recent lookup was a common service.
 - The live graph's counter counts only what is drawn (it counted nodes that
   were then hidden or dropped as inactive).
+- Opening the dashboard straight on the Graph tab in gateway mode no longer
+  draws old "This computer" data (traceroutes, earlier single-computer
+  monitoring) as a "not linked" column: the page now learns the mode first.
 
 ## 0.2.4
 
