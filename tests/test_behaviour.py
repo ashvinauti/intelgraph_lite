@@ -70,7 +70,7 @@ def test_ordinary_days_raise_nothing(home):
         network.background()
         watch.scan()
     assert engine.store.anomalies() == []
-    assert engine.behaviour().status()["learning"] == 0
+    assert engine.behaviour().status()["learning"] == 1  # only the guest laptop: 3 days of history
 
 
 def test_each_incident_shows_up_once_and_the_right_way(home):
@@ -238,7 +238,7 @@ def test_api_and_cli(home, capsys, monkeypatch):
 
     try:
         status, r = call("/api/behaviour?status=open&severity=high")
-        assert status == 200 and r["status"]["devices"] == 8 and r["status"]["high"] >= 7
+        assert status == 200 and r["status"]["devices"] == 9 and r["status"]["high"] >= 7
         assert {a["label"] for a in r["anomalies"]} >= {
             "New port",
             "New inbound connection",

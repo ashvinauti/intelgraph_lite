@@ -187,16 +187,27 @@ In gateway mode the dashboard's **Network** tab shows the network rather than
 one computer:
 
 * **Devices.** One card per device: its name (from DHCP, or one you give it),
-  IP address, how many connections, servers and sites, and whether anything it
-  touched is flagged. Flagged devices come first. Click a card to see the
-  device's alerts, MITRE ATT&CK techniques, connections and recent DNS lookups.
-  From there you can rename it, mute it, show it in the graph or ask the AI
-  analyst about it.
+  IP address, how many connections, servers and sites, its traffic over the
+  last 24 hours, and whether anything it touched is flagged. Flagged devices
+  come first. Click a card to see the device's traffic chart, alerts, MITRE
+  ATT&CK techniques, connections and DNS lookups (one row per site, with a
+  count). From there you can rename it, mute it, quarantine it, show it in the
+  graph or ask the AI analyst about it.
+* **Active now / Today / All devices.** By default only devices with traffic in
+  the last 5 minutes (`device_active_secs = 300`) are shown. **Today** adds
+  devices that went quiet in the last 24 hours; **All devices** is the full
+  inventory of every device ever seen, with when it was first and last active.
+  The graph has the same choice (**Active devices**, the default), and in live
+  mode a device that goes quiet leaves the graph with whatever only it was
+  connected to; anything flagged stays.
 * **Live DNS lookups.** Every lookup on the network as it happens, with the
   device that made it and the domain's verdict. Filter it to flagged lookups or
   pause it.
-* **Totals.** Devices, devices active now, flagged devices, open alerts and
-  lookups per minute.
+* **Totals.** Devices active now, seen today and known in all, flagged devices,
+  open alerts, lookups per minute and connections this hour.
+
+From the command line: `iglite devices` (active now), `iglite devices --today`,
+`iglite devices --all`.
 
 Names you give devices are kept across restarts and win over DHCP names.
 
@@ -853,7 +864,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 188 offline tests, ~10 s
+.venv/bin/pytest            # 193 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

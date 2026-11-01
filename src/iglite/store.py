@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -213,6 +213,16 @@ CREATE TABLE IF NOT EXISTS anomalies (
 CREATE INDEX IF NOT EXISTS anomalies_key ON anomalies(who, kind, remote);
 CREATE INDEX IF NOT EXISTS anomalies_last ON anomalies(last_at);
 
+-- Every device (or program) that ever sent traffic: when it was first and last active.
+CREATE TABLE IF NOT EXISTS inventory (
+    who         TEXT PRIMARY KEY,                  -- host:<lan ip> or process:<name>
+    first_seen  REAL NOT NULL,
+    last_seen   REAL NOT NULL,                     -- last time it sent or received traffic
+    flows       INTEGER NOT NULL DEFAULT 0,
+    lookups     INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS inventory_last ON inventory(last_seen);
+
 CREATE TABLE IF NOT EXISTS cache (
     key         TEXT PRIMARY KEY,
     status      INTEGER NOT NULL,
@@ -255,6 +265,13 @@ class Store:
                     cols = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
                     if column not in cols:
                         self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                if int(row["v"]) < 9:  # the device inventory is new: fill it from the connection log
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO inventory (who, first_seen, last_seen, flows, lookups)"
+                        " SELECT who, MIN(f), MAX(l), SUM(c), SUM(d) FROM ("
+                        "  SELECT who, first_seen AS f, last_seen AS l, hits AS c, 0 AS d FROM conn_log"
+                        "  UNION ALL SELECT who, first_seen, last_seen, 0, hits FROM dns_log) GROUP BY who"
+                    )
                 self._db.execute("UPDATE meta SET v=? WHERE k='schema_version'", (str(SCHEMA_VERSION),))
 
     def close(self) -> None:
@@ -926,6 +943,53 @@ class Store:
                 db.execute("DELETE FROM conn_log WHERE last_seen < ?", (cutoff,)).rowcount
                 + db.execute("DELETE FROM dns_log WHERE last_seen < ?", (cutoff,)).rowcount
             )
+
+    # -- device inventory ----------------------------------------------------
+
+    def touch_devices(self, rows: Iterable[tuple[str, float, int, int]]) -> None:
+        """(who, at, flows, lookups): it was active at ``at``."""
+        rows = list(rows)
+        if rows:
+            with self.transaction() as db:
+                db.executemany(
+                    "INSERT INTO inventory VALUES (?,?,?,?,?) ON CONFLICT(who) DO UPDATE SET"
+                    " last_seen = MAX(last_seen, excluded.last_seen), flows = flows + excluded.flows,"
+                    " lookups = lookups + excluded.lookups",
+                    [(who, at, at, flows, lookups) for who, at, flows, lookups in rows],
+                )
+
+    def inventory(self, since: float | None = None, kind: str | None = None) -> list[dict[str, Any]]:
+        """Devices/programs, most recently active first, with their names."""
+        where, args = ["1=1"], []
+        if since is not None:
+            where.append("i.last_seen >= ?")
+            args.append(since)
+        if kind:
+            where.append("i.who >= ? AND i.who < ?")
+            args += [f"{kind}:", f"{kind};"]
+        rows = self._query(
+            "SELECT i.*, n.attrs AS attrs FROM inventory i LEFT JOIN nodes n ON n.key = i.who"  # noqa: S608
+            f" WHERE {' AND '.join(where)} ORDER BY i.last_seen DESC",
+            args,
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["name"] = json.loads(d.pop("attrs") or "{}").get("name")
+            out.append(d)
+        return out
+
+    def last_active(self, keys: Iterable[str]) -> dict[str, float]:
+        keys = list(keys)
+        out: dict[str, float] = {}
+        for i in range(0, len(keys), 500):
+            chunk = keys[i : i + 500]
+            marks = ",".join("?" * len(chunk))
+            out.update(
+                (r["who"], r["last_seen"])
+                for r in self._query(f"SELECT who, last_seen FROM inventory WHERE who IN ({marks})", chunk)  # noqa: S608
+            )
+        return out
 
     # -- behaviour -----------------------------------------------------------
 

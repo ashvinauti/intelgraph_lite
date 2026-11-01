@@ -355,6 +355,14 @@
   .dcard .fl { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
   .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-neutral); flex: none; }
   .live-dot.on { background: var(--st-good); }
+  .live-dot.today { background: var(--st-warning); }
+  .spark { display: grid; grid-template-columns: repeat(24, 1fr); gap: 1px; height: 16px; margin-top: 6px; align-items: end; }
+  .spark i { background: var(--series-1); border-radius: 1px; min-height: 1px; opacity: .85; }
+  .spark i.zero { background: var(--grid); height: 2px !important; }
+  .dcard.off { opacity: .62; }
+  .traffic { display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; height: 70px; align-items: end; margin: 6px 0 2px; }
+  .traffic i { background: var(--series-1); border-radius: 2px 2px 0 0; min-height: 1px; }
+  .traffic i.zero { background: var(--grid); height: 2px !important; }
   .pill-n { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
   .pill-n.bad { background: color-mix(in srgb, var(--st-critical) 15%, transparent); border-color: var(--st-critical); }
   ul.feed.lookups li { grid-template-columns: auto 1fr auto; align-items: center; }
@@ -504,6 +512,11 @@
     </div>
     <div id="nw-main">
       <div class="toolbar">
+        <span class="seg" role="group" aria-label="Which devices">
+          <button id="nw-s-active" aria-pressed="true" title="Devices with traffic in the last few minutes">Active now</button>
+          <button id="nw-s-today" aria-pressed="false" title="Devices with traffic in the last 24 hours">Today</button>
+          <button id="nw-s-all" aria-pressed="false" title="Every device ever seen, with when it was last active">All devices</button>
+        </span>
         <input type="search" class="grow" id="nw-q" placeholder="Filter devices by name or IP">
         <label class="check"><input type="checkbox" id="nw-flagged"> Flagged devices only</label>
       </div>
@@ -587,6 +600,9 @@
       <button class="ghost" id="g-fit">Fit</button>
       <button class="ghost" id="g-labels" aria-pressed="true">Labels</button>
       <button class="ghost" id="g-clear">Clear</button>
+      <select id="g-devices" aria-label="Devices in the graph" title="Which devices the graph shows">
+        <option value="300">Active devices</option><option value="86400">Devices seen today</option><option value="">All devices</option>
+      </select>
       <button class="ghost" id="g-live" aria-pressed="true" title="Add connections to the graph as live monitoring sees them; active ones animate">Live</button>
       <span class="live-status" id="g-live-status"><span class="live-dot"></span><span></span></span>
       <button class="ghost" id="g-common" aria-pressed="true" title="Hide routine services (Google, Apple, Microsoft, Netflix, CDNs...) so only the connections that matter remain. Anything flagged, blocked or in a case is always shown.">Hide common services</button>
@@ -1292,11 +1308,19 @@ $("i-more").onclick = () => Indicators.load();
 /* ---------- network: devices behind the gateway ---------- */
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const Network = {
-  devices: [], status: null, selected: null, feed: [], paused: false,
+  devices: [], status: null, selected: null, feed: [], paused: false, counts: null,
+  state: store.get("iglite-device-state") || "active",
+  setState(state) {
+    this.state = state; store.set("iglite-device-state", state);
+    for (const s of ["active", "today", "all"]) $("nw-s-" + s).setAttribute("aria-pressed", String(s === state));
+    this.refresh();
+  },
   async refresh() {
     let data;
-    try { data = await api("/api/devices"); } catch (e) { $("nw-status").textContent = e.message; return; }
-    this.status = data.status; this.devices = data.devices;
+    try { data = await api("/api/devices?state=" + this.state); } catch (e) { $("nw-status").textContent = e.message; return; }
+    this.status = data.status; this.devices = data.devices; this.counts = data.counts || null; this.activeSecs = data.active_secs || 300;
+    if (this.counts) for (const [s, label] of [["active", "Active now"], ["today", "Today"], ["all", "All devices"]])
+      $("nw-s-" + s).textContent = `${label} (${s === "today" ? this.counts.active + this.counts.today : this.counts[s]})`;
     const gateway = data.status.mode === "gateway";
     $("nw-empty").hidden = gateway; $("nw-main").hidden = !gateway;
     if (!gateway) return;
@@ -1315,26 +1339,37 @@ const Network = {
     const lastMin = this.feed.filter(x => x.at > Date.now() / 1000 - 60).length;
     $("nw-status").textContent = `Gateway via ${(gw.inputs || []).join(", ")} · ${st.running ? `checking every ${st.interval}s` : "monitoring stopped"}` +
       (st.last_scan ? ` · last scan ${timeAgo(st.last_scan)}` : "") + ((gw.errors || []).length ? ` · input error: ${gw.errors[gw.errors.length - 1]}` : "");
+    const c = this.counts || { active: ds.length, today: 0, offline: 0, all: ds.length };
+    const perHour = ds.reduce((n, d) => n + (d.traffic ? d.traffic[d.traffic.length - 1] : 0), 0);
     const tiles = [
-      ["Devices", ds.length, null, () => { $("nw-flagged").checked = false; this.render(); }],
-      ["Active now", ds.filter(d => d.active).length, null, null],
+      ["Active now", c.active, null, () => { $("nw-flagged").checked = false; this.setState("active"); }],
+      ["Seen today", c.active + c.today, null, () => this.setState("today")],
+      ["Known devices", c.all, null, () => this.setState("all")],
       ["Flagged devices", flaggedDevices.length, flaggedDevices.length ? "malicious" : null, () => { $("nw-flagged").checked = true; this.render(); }],
       ["Open alerts", alerts, null, () => { location.hash = "#overview"; }],
       ["Lookups / min", lastMin, null, null],
+      ["Connections this hour", perHour, null, null],
     ];
     fill($("nw-tiles"), tiles.map(([label, value, verdict, go]) => el("button", { class: "tile", onclick: go, style: go ? null : "cursor:default" },
       el("div", { class: "label" }, verdict ? badge(verdict) : null, label), el("div", { class: "value" }, value.toLocaleString()))));
     const q = $("nw-q").value.trim().toLowerCase(), onlyFlagged = $("nw-flagged").checked;
     const shown = ds.filter(d => (!onlyFlagged || d.flagged) && (!q || [d.ip, d.name].some(s => s && s.toLowerCase().includes(q))));
-    fill($("nw-devices"), shown.length ? shown.map(d => el("button", { class: "dcard", "aria-pressed": String(this.selected === d.ip),
-        style: `--c:var(${d.flagged ? VCOLOR[d.worst] : "--st-good"})`, onclick: () => this.show(d.ip), title: `${d.ip}${d.first_seen ? " · first seen " + timeAgo(d.first_seen) : ""}` },
-      el("div", { class: "nm" }, el("span", { class: "live-dot" + (d.active ? " on" : ""), title: d.active ? "active in the last scan" : "seen recently" }), this.label(d)),
-      el("div", { class: "ip" }, d.ip),
-      el("div", { class: "st" }, `${plural(d.connections, "connection")} · ${plural(d.remotes, "server")} · ${plural(d.lookups, "site")}`),
+    const stateText = d => d.state === "active" ? (d.active ? "active now" : `active ${timeAgo(d.last_active || Date.now() / 1000)}`)
+      : d.state === "today" ? `idle · last traffic ${timeAgo(d.last_active)}` : `offline · last seen ${timeAgo(d.last_active)}`;
+    fill($("nw-devices"), shown.length ? shown.map(d => el("button", { class: "dcard" + (d.state === "offline" ? " off" : ""), "aria-pressed": String(this.selected === d.ip),
+        style: `--c:var(${d.flagged ? VCOLOR[d.worst] : d.state === "active" ? "--st-good" : "--st-neutral"})`, onclick: () => this.show(d.ip),
+        title: `${d.ip}${d.first_active ? " · first seen " + new Date(d.first_active * 1000).toLocaleString() : ""}` },
+      el("div", { class: "nm" }, el("span", { class: "live-dot" + (d.state === "active" ? " on" : d.state === "today" ? " today" : "") }), this.label(d)),
+      el("div", { class: "ip" }, d.ip, " · ", stateText(d)),
+      el("div", { class: "st" }, d.state === "active" || d.connections ? `${plural(d.connections, "connection")} · ${plural(d.remotes, "server")} · ${plural(d.lookups, "site")}`
+        : `${(d.flows_total || 0).toLocaleString()} connections in total`),
+      d.traffic ? sparkline(d.traffic) : null,
       el("div", { class: "fl" }, d.flagged ? badge(d.worst, d.score) : el("span", { class: "pill-n" }, "nothing flagged"),
         d.open_alerts ? el("span", { class: "pill-n bad" }, `${d.open_alerts} alert${d.open_alerts > 1 ? "s" : ""}`) : null,
         d.quarantined ? el("span", { class: "blocked-pill", title: "Cut off from the internet" }, "quarantined") : null)))
-      : el("p", { class: "empty", style: "grid-column:1/-1" }, ds.length ? "No device matches the filter." : "No devices seen yet. Traffic appears within one scan of reaching the gateway."));
+      : el("p", { class: "empty", style: "grid-column:1/-1" }, ds.length ? "No device matches the filter."
+        : this.state === "active" ? `No device has sent traffic in the last ${Math.round(this.activeSecs / 60)} minutes.` + (c.all ? " See Today or All devices for the others." : "")
+        : "No devices seen yet. Traffic appears within one scan of reaching the gateway."));
     const feedFlagged = $("nw-feed-flagged").checked;
     const hideCommon = $("nw-feed-common").checked;
     const items = this.feed.filter(x => (!feedFlagged || x.verdict === "malicious" || x.verdict === "suspicious") && !(hideCommon && x.common)).slice(0, 150);
@@ -1349,14 +1384,21 @@ const Network = {
     let d;
     try { d = await api("/api/device?ip=" + encodeURIComponent(ip)); } catch (e) { return; }
     const card = $("nw-detail-card"); card.hidden = false;
+    const summary = this.devices.find(x => x.ip === ip);
     const name = d.name || ip;
     const conns = d.connections.filter(r => r.proto !== "dns");
     fill($("nw-detail"),
       el("div", { class: "card-head" }, el("h2", { style: "text-transform:none;letter-spacing:0;font-size:15px;color:var(--text-primary)" }, name,
         d.name ? el("span", { class: "muted mono", style: "font-weight:400;margin-left:8px;font-size:12px" }, ip) : null),
         el("button", { class: "icon-btn", "aria-label": "Close device", onclick: () => { this.selected = null; card.hidden = true; this.render(); } }, "✕")),
-      el("p", { class: "muted", style: "margin:0 0 8px;font-size:12px" }, d.first_seen ? `First seen ${timeAgo(d.first_seen)} · last ${timeAgo(d.last_seen)}` : ""),
+      el("p", { class: "muted", style: "margin:0 0 8px;font-size:12px" }, (() => {
+        const first = summary && summary.first_active || d.first_seen, last = summary && summary.last_active || d.last_seen;
+        const state = summary ? { active: "active now", today: "idle", offline: "offline" }[summary.state] : null;
+        return first ? `${state ? state + " · " : ""}first seen ${new Date(first * 1000).toLocaleDateString()} · last traffic ${timeAgo(last)}` : "";
+      })()),
       d.quarantined ? el("div", { class: "warn", role: "note" }, el("b", {}, "Quarantined. "), "This device can reach the gateway but nothing beyond it.") : null,
+      summary && summary.traffic ? el("h3", {}, "Traffic, last 24 hours") : null,
+      summary && summary.traffic ? trafficChart(summary.traffic) : null,
       el("div", { class: "actions" },
         el("button", { class: d.quarantined ? "primary" : "ghost", title: d.quarantined ? "Let it reach the internet again" : "Cut it off from the internet (it can still reach the gateway)",
           onclick: () => Respond.toggle("host:" + ip, d.quarantined, name) }, d.quarantined ? "Release from quarantine" : "Quarantine"),
@@ -1375,11 +1417,12 @@ const Network = {
         badge(r.verdict, r.score), el("span", { class: "mono" }, `${r.inbound ? "← " : ""}${r.remote_ip}:${r.remote_port}`),
         el("span", { class: "muted mono", style: "margin-left:auto" }, (r.names || []).join(", ")))))
         : el("p", { class: "muted" }, "No connections in the current window."),
-      el("h3", {}, `Recent lookups (${d.lookups.length})`),
+      el("h3", {}, `Recent lookups (${plural(new Set(d.lookups.map(x => x.domain)).size, "site")}, ${plural(d.lookups.length, "lookup")})`),
       $("nw-feed-common").checked && d.lookups.some(x => x.common)
         ? el("p", { class: "muted", style: "margin:0 0 4px;font-size:12px" }, `${plural(d.lookups.filter(x => x.common).length, "lookup")} of common services hidden (see “Hide common” in Live DNS lookups)`) : null,
-      d.lookups.length ? el("ul", { class: "links" }, d.lookups.filter(x => !($("nw-feed-common").checked && x.common)).slice(0, 40).map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
-        badge(x.verdict || "pending", x.score), el("span", { class: "mono" }, x.domain), el("span", { class: "muted", style: "margin-left:auto" }, clock(x.at)))))
+      d.lookups.length ? el("ul", { class: "links" }, groupLookups(d.lookups.filter(x => !($("nw-feed-common").checked && x.common))).slice(0, 40).map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
+        badge(x.verdict || "pending", x.score), el("span", { class: "mono" }, x.domain), x.count > 1 ? el("span", { class: "muted" }, `×${x.count}`) : null,
+        el("span", { class: "muted", style: "margin-left:auto" }, clock(x.at)))))
         : el("p", { class: "muted" }, "No DNS lookups seen from this device yet."));
     if (scroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
   },
@@ -1391,6 +1434,29 @@ const Network = {
   },
 };
 $("nw-q").oninput = () => Network.render();
+for (const s of ["active", "today", "all"]) {
+  $("nw-s-" + s).onclick = () => Network.setState(s);
+  $("nw-s-" + s).setAttribute("aria-pressed", String(s === Network.state));
+}
+// One row per site, newest first, with how many times it was looked up.
+function groupLookups(items) {
+  const by = new Map();
+  for (const x of items) { const g = by.get(x.domain); if (g) { g.count++; g.at = Math.max(g.at, x.at); } else by.set(x.domain, { ...x, count: 1 }); }
+  return [...by.values()].sort((a, b) => b.at - a.at);
+}
+function sparkline(values) {
+  const max = Math.max(1, ...values);
+  return el("div", { class: "spark", title: "Connections per hour, last 24 hours" },
+    values.map(v => el("i", { class: v ? null : "zero", style: v ? `height:${Math.max(8, Math.round(100 * v / max))}%` : null })));
+}
+function trafficChart(values) {
+  const max = Math.max(1, ...values), now = new Date();
+  return [el("div", { class: "traffic", role: "img", "aria-label": "Connections per hour over the last 24 hours" },
+      values.map((v, i) => { const h = new Date(now - (values.length - 1 - i) * 3600e3).getHours();
+        return el("i", { class: v ? null : "zero", style: v ? `height:${Math.max(4, Math.round(100 * v / max))}%` : null, title: `${String(h).padStart(2, "0")}:00 · ${v.toLocaleString()} connections and lookups` }); })),
+    el("div", { class: "hours-axis" }, el("span", {}, "24 h ago"), el("span", {}, "12 h ago"), el("span", {}, "now")),
+    el("p", { class: "muted", style: "font-size:12px;margin:4px 0 0" }, `${values.reduce((a, b) => a + b, 0).toLocaleString()} connections and lookups in 24 hours · busiest hour ${max.toLocaleString()}`)];
+}
 $("nw-flagged").onchange = () => Network.render();
 $("nw-feed-flagged").onchange = () => Network.render();
 $("nw-feed-common").onchange = () => Network.render();
@@ -1948,7 +2014,7 @@ const Graph = {
 
   async load(key, expand, depth = 1) {
     try {
-      const g = await api(`/api/graph?depth=${depth}&limit=${expand ? 120 : 30}${this.hideCommon ? "&hide_common=1" : ""}&key=` + encodeURIComponent(key));
+      const g = await api(`/api/graph?depth=${depth}&limit=${expand ? 120 : 30}${this.hideCommon ? "&hide_common=1" : ""}${this.activeSecs ? "&active=" + this.activeSecs : ""}&key=` + encodeURIComponent(key));
       if (g.hidden) { for (const [k, label] of Object.entries(g.hidden.keys || {})) if (!this.nodes.has(k)) this.commonHidden.set(k, label); this.commonNote(); }
       // Only re-lay out when something is new, so clicking around doesn't shuffle the graph.
       const fresh = g.nodes.some(n => !this.nodes.has(n.key)) || g.edges.some(e => !this.edges.has(`${e.src}|${e.rel}|${e.dst}`));
@@ -1969,10 +2035,10 @@ const Graph = {
     const cx = anchor ? anchor.x : (this.w / 2 - this.view.x) / this.view.k, cy = anchor ? anchor.y : (this.h / 2 - this.view.y) / this.view.k;
     for (const n of g.nodes) {
       const old = this.nodes.get(n.key);
-      if (old) { Object.assign(old, { verdict: n.verdict, score: n.score }); continue; }
+      if (old) { Object.assign(old, { verdict: n.verdict, score: n.score }); if (n.last_active) old.lastActive = n.last_active; continue; }
       const t = Math.random() * Math.PI * 2, r = n.key === root ? 0 : 30 + Math.random() * 40;
       const attrs = n.attrs ? { name: n.attrs.name, "attack.name": n.attrs["attack.name"] } : {};
-      this.nodes.set(n.key, { key: n.key, kind: n.kind, value: n.value, verdict: n.verdict, score: n.score, attrs,
+      this.nodes.set(n.key, { key: n.key, kind: n.kind, value: n.value, verdict: n.verdict, score: n.score, attrs, lastActive: n.last_active,
         x: cx + Math.cos(t) * r, y: cy + Math.sin(t) * r, vx: 0, vy: 0, fixed: false });
     }
     for (const e of g.edges) this.edges.set(`${e.src}|${e.rel}|${e.dst}`, e);
@@ -1994,6 +2060,27 @@ const Graph = {
   degree(key) { let d = 0; for (const e of this.edges.values()) if (e.src === key || e.dst === key) d++; return d; },
   hiddenKinds: new Set(JSON.parse(store.get("iglite-hidden-kinds") || "[]")),
   hideCommon: store.get("iglite-hide-common") !== "0", commonHidden: new Map(),
+  activeSecs: store.get("iglite-graph-devices") ?? "300",
+  setDevices(value) {
+    this.activeSecs = value; store.set("iglite-graph-devices", value);
+    const keep = this.root || this.selected;
+    this.nodes.clear(); this.edges.clear(); this.commonHidden.clear(); this.build();
+    if (keep) this.load(keep, true, 2).then(() => setTimeout(() => this.fit(), 450)); else refreshView();
+  },
+  /* With a device filter on, devices that went quiet leave the graph, with what only they connected to. */
+  dropInactive() {
+    if (!this.activeSecs) return;
+    const cutoff = Date.now() / 1000 - +this.activeSecs, last = new Map();
+    for (const e of this.edges.values()) if (e.active) for (const k of [e.src, e.dst]) last.set(k, Math.max(last.get(k) || 0, e.active));
+    const stale = [...this.nodes.values()].filter(n => (n.kind === "host" || n.kind === "process") && !isOrigin(n)
+      && n.key !== this.selected && n.key !== this.root && Math.max(n.lastActive || 0, last.get(n.key) || 0) < cutoff && (n.lastActive || last.has(n.key)));
+    if (!stale.length) return;
+    for (const n of stale) this.nodes.delete(n.key);
+    for (const [id, e] of this.edges) if (!this.nodes.has(e.src) || !this.nodes.has(e.dst)) this.edges.delete(id);
+    for (const n of [...this.nodes.values()])  // what is left hanging, unless it matters
+      if (!isOrigin(n) && n.key !== this.selected && n.key !== this.root && n.verdict !== "malicious" && n.verdict !== "suspicious" && !this.degree(n.key)) this.nodes.delete(n.key);
+    this.build(); this.relayout();
+  },
   live: store.get("iglite-graph-live") !== "0", liveSince: null, liveCount: [],
   setLive(on) {
     this.live = on; store.set("iglite-graph-live", on ? "1" : "0");
@@ -2020,6 +2107,7 @@ const Graph = {
       for (const n of fresh) { const x = this.nodes.get(n.key); if (x) x.newAt = now; }
       this.liveCount.push(...fresh.map(() => now));
     }
+    this.dropInactive();
     this.applyLive(); this.liveStatus();
   },
   applyLive() {
@@ -2347,6 +2435,8 @@ const Graph = {
   $("g-clear").onclick = () => { Graph.nodes.clear(); Graph.edges.clear(); Graph.commonHidden.clear(); Graph.commonNote(); Graph.root = null; Graph.build(); fill($("cols")); $("g-root").hidden = true; };
   $("g-common").onclick = () => Graph.setHideCommon(!Graph.hideCommon);
   $("g-live").onclick = () => Graph.setLive(!Graph.live);
+  $("g-devices").value = Graph.activeSecs;
+  $("g-devices").onchange = ev => Graph.setDevices(ev.target.value);
   $("g-live").setAttribute("aria-pressed", String(Graph.live));
   $("g-common").setAttribute("aria-pressed", String(Graph.hideCommon));
   $("g-labels").onclick = ev => { Graph.labels = !Graph.labels; ev.target.setAttribute("aria-pressed", Graph.labels); Graph.build(); Graph.relayout(); };

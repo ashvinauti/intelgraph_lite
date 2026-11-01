@@ -132,6 +132,7 @@ class Config:
     # Database of every connection and DNS lookup live monitoring sees (one row per endpoint per day).
     connection_log: bool = True
     connection_log_days: float = 90  # older rows are deleted; 0 keeps everything
+    device_active_secs: float = 300  # a device counts as active if it had traffic this recently
     # Behaviour analysis: per-device baselines from the connection log (see behaviour.py).
     behaviour: bool = True
     behaviour_learn_days: float = 7  # days a device is watched before anomalies count against its habits

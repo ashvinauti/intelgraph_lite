@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1
+
+- **Active devices only, by default.** The Network tab and the graph show the
+  devices with traffic in the last 5 minutes (`device_active_secs`); **Today**
+  and **All devices** bring back the quiet and the offline ones. In the live
+  graph a device that goes quiet leaves, with whatever only it connected to.
+- **Device inventory**: every device ever active, with first and last activity,
+  total connections and lookups (filled from the connection log on upgrade).
+  `iglite devices [--today|--all]`, `/api/devices?state=active|today|all`.
+- **Traffic per device**: a 24-hour strip on each device card and a per-hour
+  chart in its details; a "connections this hour" total.
+- A device's DNS lookups are grouped by site with a count.
+- Database schema 9.
+
 ## 0.2.0
 
 ### Behaviour analysis (new)
