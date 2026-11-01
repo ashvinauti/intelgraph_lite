@@ -96,6 +96,8 @@ HABITS = {
     "10.42.0.88": ["doorbell-cloud.example"],
 }
 
+GUEST = ("10.42.0.95", "Guest-Laptop")  # in the history only: shows up under "All devices" as offline
+
 # Behaviour-only incidents: no feed knows these, only the devices' habits give them away.
 DOORBELL_C2, DOORBELL_NAME = "203.0.113.200", "cam-sync-relay.example"
 DGA_DOMAINS = ("xq7vk2zp9tl.example", "kz8qw3vxn5rt.example", "p9xv2kqz7wml.example", "tq4zx8vkr2pn.example")
@@ -323,10 +325,17 @@ def seed_history(store: Any, now: float, days: int = 8, seed: int = 11) -> None:
                 lookups.append((day, who, site_name))
             hour0 = int(day // 3600) - time.localtime(day).tm_hour  # midnight, local time
             activity += [(who, hour0 + h, rng.randint(3, 40), rng.randint(1, 20)) for h in range(24)]
+        if d in (2, 3):  # a visitor's laptop, on the Wi-Fi two and three days ago: offline now
+            who = f"host:{GUEST[0]}"
+            conns.append((day, who, "198.51.100.10", 443, "tcp", False, "news-site.example", 40))
+            lookups.append((day, who, "news-site.example"))
+            hour0 = int(day // 3600) - time.localtime(day).tm_hour
+            activity += [(who, hour0 + h, rng.randint(5, 30), rng.randint(1, 8)) for h in range(14, 18)]
         store.log_connections(conns)
         store.log_lookups(lookups)
         store.add_activity(activity)
-    for ip, name in DEVICES.items():
+        store.touch_devices((c[1], c[0], c[7], 0) for c in conns)
+    for ip, name in (*DEVICES.items(), GUEST):
         store.upsert_node(Indicator(Kind.HOST, ip), {"name": name})
 
 

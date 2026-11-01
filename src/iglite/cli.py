@@ -287,6 +287,32 @@ def cmd_connections(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_devices(engine: Engine, args: argparse.Namespace) -> int:
+    now = time.time()
+    active_secs = float(engine.config.device_active_secs)
+    since = None if args.all else now - (86400 if args.today else active_secs)
+    rows = engine.store.inventory(since=since, kind=None if args.programs else "host")
+    if not rows:
+        print(
+            "No active devices right now (--today or --all for the others)."
+            if since
+            else "No devices seen yet."
+        )
+        return 0
+    for r in rows:
+        age = now - r["last_seen"]
+        state = "active" if age <= active_secs else "idle" if age <= 86400 else "offline"
+        when = "now" if age < 60 else time.strftime("%m-%d %H:%M", time.localtime(r["last_seen"]))
+        first = time.strftime("%Y-%m-%d", time.localtime(r["first_seen"]))
+        who = r["who"].split(":", 1)[1]
+        paint = {"active": "benign", "idle": "suspicious"}.get(state, "unknown")
+        print(
+            _paint(paint, f"{state:<8}") + f" {who:<16} {(r['name'] or ''):<18} last {when:<12} since {first}"
+            f"  {r['flows']:>8,} connections {r['lookups']:>7,} lookups"
+        )
+    return 0
+
+
 def cmd_behaviour(engine: Engine, args: argparse.Namespace) -> int:
     from .behaviour import describe
 
@@ -1078,6 +1104,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--csv", metavar="FILE", help="write every matching row to a CSV file")
     sp.add_argument("--stats", action="store_true", help="how much is stored")
     sp.set_defaults(func=cmd_connections)
+
+    sp = sub.add_parser("devices", help="devices on the network: active now, --today or --all ever seen")
+    sp.add_argument("--today", action="store_true", help="every device with traffic in the last 24 hours")
+    sp.add_argument("--all", action="store_true", help="every device ever seen, with when it was last active")
+    sp.add_argument(
+        "--programs", action="store_true", help="this-computer mode: programs instead of LAN devices"
+    )
+    sp.set_defaults(func=cmd_devices)
 
     sp = sub.add_parser("behaviour", help="behaviour analysis: what devices do that they normally don't")
     sp.add_argument("action", nargs="?", default="list", choices=["list", "devices", "mark"])

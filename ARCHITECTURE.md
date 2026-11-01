@@ -348,6 +348,7 @@ conn_log (day, who, remote_ip, remote_port, proto, inbound, names, first_seen, l
          PK(day, who, remote_ip, remote_port, proto, inbound)  INDEX(remote_ip), INDEX(last_seen)
 dns_log  (day, who, domain, first_seen, last_seen, hits)      PK(day, who, domain)
 activity (who, hour, flows, lookups)                         PK(who, hour)   behaviour baselines
+inventory(who, first_seen, last_seen, flows, lookups)        PK(who)  every device ever active
 anomalies(id, who, kind, remote, severity, detail, first_at, last_at, count, status, context)
 ```
 
@@ -378,7 +379,7 @@ From a benchmark on the CI container, with 100k indicators and 300k relations:
 | Rescore 50 seeds and their neighbours (~330 nodes) | ~60 ms |
 | Peak memory of the process | ~94 MB |
 | Repeat investigation (cached) | 0 network calls |
-| Full test suite (188 tests, offline) | ~14 s |
+| Full test suite (193 tests, offline) | ~15 s |
 
 ## Compared with [IntelGraph](https://github.com/Berkayy123-h/intelgraph)
 

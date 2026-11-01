@@ -592,6 +592,16 @@ class NetWatch:
                 self._logged_lookups = max(t for t, _, _ in items)
                 lookups = [(t, f"host:{dev}", dom) for t, dev, dom in items]
                 store.log_lookups(lookups)
+        active: dict[str, list[float]] = {}  # who -> [last, flows, lookups]
+        for at, who, *_rest, hits in rows:
+            a = active.setdefault(who, [at, 0, 0])
+            a[0], a[1] = max(a[0], at), a[1] + hits
+        for at, who, _domain in lookups:
+            a = active.setdefault(who, [at, 0, 0])
+            a[0], a[2] = max(a[0], at), a[2] + 1
+        store.touch_devices(
+            (who, last, int(flows), int(looks)) for who, (last, flows, looks) in active.items()
+        )
         days = float(self.engine.config.connection_log_days or 0)
         if days > 0 and now - self._log_pruned > 3600:
             self._log_pruned = now

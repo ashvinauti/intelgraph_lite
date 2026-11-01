@@ -7,7 +7,7 @@ Endpoints
     GET  /api/sources
     GET  /api/indicators?verdict=&kind=&q=&limit=&offset=
     GET  /api/indicator?key=        node, assessment, evidence, edges
-    GET  /api/graph?key=&depth=&limit=&hide_common=0
+    GET  /api/graph?key=&depth=&limit=&hide_common=0&active=SECONDS
                                     hide_common=1 drops routine services (Google, Apple, CDNs...)
     GET  /api/graph/live?since=&hide_common=1   edges live monitoring recorded since a time
     GET  /api/connlog?dns=0&who=&q=&since=&until=&verdict=&limit=&offset=
@@ -20,7 +20,8 @@ Endpoints
     GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
     GET  /api/attack/technique?id=  one technique and its indicators
     GET  /api/attack/navigator      ATT&CK Navigator layer
-    GET  /api/devices               gateway mode: one summary per LAN device
+    GET  /api/devices?state=active|today|all   gateway mode: one summary per LAN device, with its
+                                    state, last activity and connections per hour for 24 h
     GET  /api/device?ip=            one device: connections, DNS lookups, alerts, techniques
     POST /api/device/name           {"ip": "...", "name": "..."} name a device (empty name clears)
     GET  /api/lookups?since=        live feed of DNS lookups across the network
@@ -350,13 +351,24 @@ def _attack_navigator(engine: Engine, q: dict, body: dict) -> Any:
 
 def _graph(engine: Engine, q: dict, body: dict) -> Any:
     key, depth, limit = _key(q), _int(q, "depth", 1, 3), _int(q, "limit", 150, 1000)
-    if not _flag(q, "hide_common"):
+    active = _int(q, "active", 0, 10**9)  # seconds: only devices with traffic this recently
+    if not _flag(q, "hide_common") and not active:
         return engine.store.neighbourhood(key, depth, limit)
-    from .common import filter_graph
+    from .common import active_only, filter_graph
 
-    # Common services eat the node budget, so look further and trim after filtering.
+    # Filtering eats the node budget, so look further and trim afterwards.
     graph = engine.store.neighbourhood(key, depth, min(2000, limit * 4))
-    return filter_graph(engine.common(), engine.store, graph, keep=[key], limit=limit)
+    if active:
+        graph = active_only(engine.store, graph, active, keep=[key])
+    if _flag(q, "hide_common"):
+        inactive = graph.get("inactive", 0)
+        graph = filter_graph(engine.common(), engine.store, graph, keep=[key], limit=limit)
+        graph["inactive"] = inactive
+    else:
+        graph["nodes"] = graph["nodes"][:limit]
+        present = {n["key"] for n in graph["nodes"]}
+        graph["edges"] = [e for e in graph["edges"] if e["src"] in present and e["dst"] in present]
+    return graph
 
 
 def _export(engine: Engine, q: dict, body: dict) -> Any:
@@ -388,9 +400,73 @@ def _device_ip(raw: Any) -> str:
     return ind.value
 
 
+DEVICE_STATES = ("active", "today", "offline")
+
+
+def _device_state(last: float | None, now: float, active_secs: float) -> str:
+    if last is None or now - last <= active_secs:
+        return "active"
+    return "today" if now - last <= 86400 else "offline"
+
+
 def _devices(engine: Engine, q: dict, body: dict) -> Any:
-    watch = engine.watcher()
-    return {"status": watch.status(), "devices": watch.devices()}
+    """Devices on the network: active now (default), seen today, or every device ever seen."""
+    want = q.get("state") or "active"
+    if want not in ("active", "today", "all"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "state must be active, today or all")
+    watch, store, now = engine.watcher(), engine.store, time.time()
+    active_secs = float(engine.config.device_active_secs)
+    live = {d["ip"]: d for d in watch.devices()}
+    inventory = {r["who"][5:]: r for r in store.inventory(kind="host")}
+    hour = int(now // 3600)
+    out, counts = [], dict.fromkeys(DEVICE_STATES, 0)
+    for ip in {*live, *inventory}:
+        inv = inventory.get(ip)
+        last = inv["last_seen"] if inv else None
+        state = _device_state(last, now, active_secs)
+        counts[state] += 1
+        if want == "active" and state != "active" or want == "today" and state == "offline":
+            continue
+        d = live.get(ip) or {
+            "ip": ip,
+            "key": f"host:{ip}",
+            "name": inv["name"] if inv else None,
+            "connections": 0,
+            "remotes": 0,
+            "lookups": 0,
+            "flagged": 0,
+            "worst": "private",
+            "score": None,
+            "active": False,
+            "open_alerts": 0,
+            "quarantined": False,
+            "first_seen": None,
+            "last_seen": None,
+        }
+        per_hour = {h: f + lk for h, f, lk in store.activity(f"host:{ip}", hour - 23)}
+        out.append(
+            {
+                **d,
+                "name": d.get("name") or (inv["name"] if inv else None),
+                "state": state,
+                "last_active": last,
+                "first_active": inv["first_seen"] if inv else None,
+                "flows_total": inv["flows"] if inv else None,
+                "traffic": [
+                    per_hour.get(h, 0) for h in range(hour - 23, hour + 1)
+                ],  # last 24 hours, oldest first
+            }
+        )
+    rank = {"malicious": 0, "suspicious": 1}
+    out.sort(
+        key=lambda d: (rank.get(d["worst"], 2), DEVICE_STATES.index(d["state"]), -(d["last_active"] or now))
+    )
+    return {
+        "status": watch.status(),
+        "devices": out,
+        "counts": {**counts, "all": sum(counts.values())},
+        "active_secs": active_secs,
+    }
 
 
 def _device(engine: Engine, q: dict, body: dict) -> Any:
@@ -807,6 +883,10 @@ def _graph_live(engine: Engine, q: dict, body: dict) -> Any:
     edges = engine.store.edges_since(since, LIVE_RELS, _int(q, "limit", 400, 2000))
     keys = {k for e in edges for k in (e["src"], e["dst"])}
     nodes = engine.store.nodes(keys)
+    last = engine.store.last_active(n["key"] for n in nodes if n["kind"] in ("host", "process"))
+    for n in nodes:
+        if n["key"] in last:
+            n["last_active"] = last[n["key"]]
     out: dict[str, Any] = {"now": now, "since": since, "nodes": nodes, "edges": edges}
     if _flag(q, "hide_common"):
         from .common import protected

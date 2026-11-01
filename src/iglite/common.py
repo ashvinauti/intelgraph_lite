@@ -204,6 +204,57 @@ def from_config(cfg: Any) -> Common:
 
 # -- graph filtering ---------------------------------------------------------------------------
 
+
+def connected(graph: dict[str, Any], roots: Iterable[str]) -> dict[str, Any]:
+    """Only the nodes (and edges) still reachable from ``roots``."""
+    adj: dict[str, list[str]] = {}
+    for e in graph["edges"]:
+        adj.setdefault(e["src"], []).append(e["dst"])
+        adj.setdefault(e["dst"], []).append(e["src"])
+    seen = {k for k in roots if k}
+    stack = list(seen)
+    while stack:
+        for nxt in adj.get(stack.pop(), ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    nodes = [n for n in graph["nodes"] if n["key"] in seen]
+    edges = [e for e in graph["edges"] if e["src"] in seen and e["dst"] in seen]
+    return {**graph, "nodes": nodes, "edges": edges}
+
+
+ORIGINS = ("host:gateway", "host:this-computer")
+
+
+def active_only(
+    store: Any, graph: dict[str, Any], max_age: float, keep: Iterable[str] = (), now: float | None = None
+) -> dict[str, Any]:
+    """Drop devices and programs with no traffic in the last ``max_age`` seconds, and what only they lead to.
+
+    Anything flagged stays when it is still reachable some other way; devices the
+    inventory has never seen (logging off) are kept. Each remaining device gets
+    ``last_active`` for the dashboard.
+    """
+    import time as _time
+
+    now = _time.time() if now is None else now
+    keep = set(keep)
+    whos = [n["key"] for n in graph["nodes"] if n["kind"] in ("host", "process") and n["key"] not in ORIGINS]
+    last = store.last_active(whos)
+    stale = {k for k in whos if k in last and last[k] < now - max_age and k not in keep}
+    trimmed = {
+        **graph,
+        "nodes": [n for n in graph["nodes"] if n["key"] not in stale],
+        "edges": [e for e in graph["edges"] if e["src"] not in stale and e["dst"] not in stale],
+    }
+    out = connected(trimmed, {graph.get("root"), *keep})
+    for n in out["nodes"]:
+        if n["key"] in last:
+            n["last_active"] = last[n["key"]]
+    out["inactive"] = len(stale)
+    return out
+
+
 FLAGGED = ("malicious", "suspicious")
 
 
