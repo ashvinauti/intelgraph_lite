@@ -558,10 +558,17 @@ What counts as common:
   Run it on the gateway now and then, then restart the service.
 * **Your own**: `common_domains = ["mycompany.com"]` in `iglite.toml`. Use
   `common_ignore` for anything that should never be hidden.
-* **IPs**: an address counts if it belongs to a CDN-only operator (Akamai,
-  Cloudflare, Fastly, Apple, Meta...) or if every name seen resolving to it is
-  common. Google, Microsoft and Amazon addresses don't count by owner alone,
-  because their clouds rent servers to anyone, attackers included.
+* **IPs**: an address counts if it is in a range the provider itself publishes
+  for its own services, if it belongs to a CDN-only operator (Akamai,
+  Cloudflare, Fastly, Apple, Meta...), or if every name seen resolving to it is
+  common. `iglite common update` downloads Google's list of its ranges minus
+  the ones it rents out as Google Cloud (so Search, YouTube, Gmail and Play
+  count, a server someone rents on Google Cloud doesn't) and Amazon's
+  CloudFront CDN ranges; Apple's 17.0.0.0/8 is built in. This matters when
+  phones use Private DNS (DNS over TLS to `dns.google` or Cloudflare): the
+  gateway then sees addresses without names. Google Cloud, Amazon EC2 and
+  Azure never count by owner alone, because anyone can rent a server there,
+  attackers included.
 
 What is **never hidden**, however popular:
 
@@ -578,7 +585,7 @@ Hiding only changes what you see. Every connection is still looked up, scored
 and alerted on.
 
 ```bash
-iglite common update                # download the Tranco top 10,000 (needs internet)
+iglite common update                # Tranco top 10,000 + Google/CloudFront address ranges (needs internet)
 iglite common check docs.google.com cdn.example.net 142.250.180.14
 iglite common                       # what is in the catalogue
 iglite graph host:gateway --hide-common
@@ -870,7 +877,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 196 offline tests, ~10 s
+.venv/bin/pytest            # 198 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 
