@@ -317,9 +317,32 @@ class Engine:
             self.trust,
             neighbours or (),
             shared_infra=self.shared_infra(node) if node else None,
+            popular=self.popular(node) if node else None,
             feedback=self.store.feedback(key),
             half_life_days=self.config.evidence_half_life_days,
         )
+
+    def popular(self, node: dict[str, Any]) -> str | None:
+        """The well-known service an IP or domain belongs to (Google, Popular site...), if any.
+        URLs are left out on purpose: a malware download on a popular host is still specific."""
+        if node["kind"] not in (Kind.IP.value, Kind.DOMAIN.value):
+            return None
+        try:
+            return self.common().classify(self.store, [node]).get(node["key"])
+        except Exception:  # never let the classifier break scoring
+            return None
+
+    def rescore_flagged(self, limit: int = 5000) -> int:
+        """Rescore everything currently malicious or suspicious (after scoring rules change). Returns
+        how many changed verdict."""
+        changed = 0
+        for verdict in ("malicious", "suspicious"):
+            for n in self.store.search(verdict=verdict, limit=limit):
+                a = self._assess(n["key"], neighbours=self._bad_neighbours(n["key"]))
+                if a.verdict.value != n["verdict"] or a.score != n["score"]:
+                    self.store.set_assessment(n["key"], a.score, a.verdict)
+                    changed += a.verdict.value != n["verdict"]
+        return changed
 
     def shared_infra(self, node: dict[str, Any]) -> str | None:
         """Name of the CDN/cloud operator if this IP is shared infrastructure."""

@@ -627,6 +627,7 @@
   <section class="view" id="view-attack">
     <div class="toolbar">
       <label class="check" title="Also show the known techniques of malware and threat groups that feed tags name. These are what that malware can do, not what was seen."><input type="checkbox" id="at-assoc"> Include techniques of linked malware and groups</label>
+      <label class="check" title="Also count techniques that feeds tag on indicators that aren't flagged (often popular services listed in a feed)"><input type="checkbox" id="at-unflagged"> Include unflagged indicators</label>
       <label class="check"><input type="checkbox" id="at-all"> All tactics</label>
       <input type="search" class="grow" id="at-q" placeholder="Filter techniques by ID or name, e.g. T1071 or phishing">
       <a class="ghost" id="at-nav" href="/api/attack/navigator" download="iglite-attack-layer.json" title="Open in the MITRE ATT&CK Navigator">Navigator layer</a>
@@ -1376,7 +1377,9 @@ const Network = {
     fill($("nw-feed"), items.length ? items.map(x => el("li", { onclick: () => Drawer.open("domain:" + x.domain) },
       badge(x.verdict, x.score), el("span", { class: "mono" }, x.domain), el("span", { class: "muted nowrap", style: "font-size:12px" }, clock(x.at)),
       el("span", { class: "who" }, this.label(x), x.device_name ? el("span", { class: "muted" }, ` ${x.device}`) : null)))
-      : el("li", { class: "muted", style: "display:block;cursor:default" }, feedFlagged ? "No flagged lookups yet." : "No DNS lookups yet. They appear here as devices browse (needs DNS logs: dnsmasq, Pi-hole, Unbound, Zeek or Suricata)."));
+      : el("li", { class: "muted", style: "display:block;cursor:default" }, feedFlagged ? "No flagged lookups yet."
+        : this.feed.length ? `All ${plural(this.feed.length, "recent lookup")} are common services (Google, Apple, CDNs...). Untick “Hide common” to see them.`
+        : "No DNS lookups yet. They appear here as devices browse (needs DNS logs: dnsmasq, Pi-hole, Unbound, Zeek or Suricata)."));
   },
   async show(ip, scroll = true) {
     this.selected = ip;
@@ -1386,7 +1389,9 @@ const Network = {
     const card = $("nw-detail-card"); card.hidden = false;
     const summary = this.devices.find(x => x.ip === ip);
     const name = d.name || ip;
-    const conns = d.connections.filter(r => r.proto !== "dns");
+    const allConns = d.connections.filter(r => r.proto !== "dns");
+    const conns = $("nw-feed-common").checked ? allConns.filter(r => !r.common) : allConns;
+    const commonConns = allConns.length - conns.length;
     fill($("nw-detail"),
       el("div", { class: "card-head" }, el("h2", { style: "text-transform:none;letter-spacing:0;font-size:15px;color:var(--text-primary)" }, name,
         d.name ? el("span", { class: "muted mono", style: "font-weight:400;margin-left:8px;font-size:12px" }, ip) : null),
@@ -1412,11 +1417,12 @@ const Network = {
         badge(a.verdict, a.score), el("span", { class: "mono" }, a.key), el("span", { class: "muted", style: "margin-left:auto" }, a.status === "open" ? timeAgo(a.at) : a.status.replace("_", " "))))) : null,
       d.attack.length ? el("h3", {}, `MITRE ATT&CK (${d.attack.length})`) : null,
       d.attack.length ? AttackView.list(d.attack) : null,
-      el("h3", {}, `Connections (${conns.length})`),
+      el("h3", {}, `Connections (${allConns.length})`),
+      commonConns ? el("p", { class: "muted", style: "margin:0 0 4px;font-size:12px" }, `${plural(commonConns, "connection")} to common services hidden (see “Hide common” in Live DNS lookups)`) : null,
       conns.length ? el("ul", { class: "links" }, conns.slice(0, 40).map(r => el("li", { onclick: () => Drawer.open(r.key) },
         badge(r.verdict, r.score), el("span", { class: "mono" }, `${r.inbound ? "← " : ""}${r.remote_ip}:${r.remote_port}`),
         el("span", { class: "muted mono", style: "margin-left:auto" }, (r.names || []).join(", ")))))
-        : el("p", { class: "muted" }, "No connections in the current window."),
+        : el("p", { class: "muted" }, allConns.length ? "Only common services right now." : "No connections in the current window."),
       el("h3", {}, `Recent lookups (${plural(new Set(d.lookups.map(x => x.domain)).size, "site")}, ${plural(d.lookups.length, "lookup")})`),
       $("nw-feed-common").checked && d.lookups.some(x => x.common)
         ? el("p", { class: "muted", style: "margin:0 0 4px;font-size:12px" }, `${plural(d.lookups.filter(x => x.common).length, "lookup")} of common services hidden (see “Hide common” in Live DNS lookups)`) : null,
@@ -1470,9 +1476,10 @@ const basisChips = basis => basis.map(b => el("span", { class: "basis", title: B
 const AttackView = {
   data: null, selected: null,
   async refresh() {
-    const assoc = $("at-assoc").checked;
-    $("at-nav").href = "/api/attack/navigator" + (assoc ? "?associated=1" : "");
-    try { this.data = await api("/api/attack" + (assoc ? "?associated=1" : "")); } catch (e) { $("at-status").textContent = e.message; return; }
+    const assoc = $("at-assoc").checked, all = $("at-unflagged").checked;
+    const qs = "?associated=" + (assoc ? 1 : 0) + "&all=" + (all ? 1 : 0);
+    $("at-nav").href = "/api/attack/navigator" + qs;
+    try { this.data = await api("/api/attack" + qs); } catch (e) { $("at-status").textContent = e.message; return; }
     this.render();
     if (this.selected) this.show(this.selected);
   },
@@ -1522,6 +1529,7 @@ const AttackView = {
   },
 };
 $("at-assoc").onchange = () => AttackView.refresh();
+$("at-unflagged").onchange = () => AttackView.refresh();
 $("at-all").onchange = () => AttackView.data && AttackView.render();
 $("at-q").oninput = () => AttackView.data && AttackView.render();
 

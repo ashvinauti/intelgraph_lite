@@ -318,11 +318,24 @@ def from_connection(port: int | None) -> str:
 _RANK = {"malicious": 4, "suspicious": 3, "unknown": 2, "benign": 1}
 
 
-def summary(store: Any, *, associated: bool = False) -> dict[str, Any]:
-    """Techniques seen across the knowledge base, grouped by tactic in matrix order."""
+def summary(store: Any, *, associated: bool = False, unflagged: bool = False) -> dict[str, Any]:
+    """Techniques seen across the knowledge base, grouped by tactic in matrix order.
+
+    By default only links that matter: to indicators flagged malicious or suspicious,
+    to devices and programs (live alerts), or observed by an IDS / named in a report you
+    ingested. ``unflagged`` adds the rest (a feed's technique tags on harmless indicators).
+    """
     cat = catalogue()
     links = _links(store, associated)
     nodes = {n["key"]: n for n in store.nodes({src for src, _, _ in links})}
+    if not unflagged:
+        links = [
+            (src, tid, basis)
+            for src, tid, basis in links
+            if basis in ("observed", "report")
+            or src.split(":", 1)[0] in ("host", "process", "report")
+            or (nodes.get(src) or {}).get("verdict") in ("malicious", "suspicious")
+        ]
     per_tech: dict[str, dict[str, Any]] = {}
     for src, tid, basis in links:
         t = per_tech.setdefault(tid, {"indicators": {}, "basis": set()})
@@ -404,9 +417,11 @@ def techniques_of(store: Any, key: str, *, associated: bool = True) -> list[dict
     return result
 
 
-def navigator_layer(store: Any, *, associated: bool = False, name: str = "IntelGraph Lite") -> dict[str, Any]:
+def navigator_layer(
+    store: Any, *, associated: bool = False, unflagged: bool = False, name: str = "IntelGraph Lite"
+) -> dict[str, Any]:
     """An ATT&CK Navigator layer (https://mitre-attack.github.io/attack-navigator/)."""
-    s = summary(store, associated=associated)
+    s = summary(store, associated=associated, unflagged=unflagged)
     seen: dict[str, dict[str, Any]] = {}
     for tactic in s["tactics"]:
         for t in tactic["techniques"]:

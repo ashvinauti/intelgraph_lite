@@ -283,3 +283,54 @@ def test_ranges_load_from_next_to_the_popular_site_list(tmp_path):
     )
     cfg = SimpleNamespace(common_top_file=str(tmp_path / "tranco.txt"), common_domains=[], common_ignore=[])
     assert common.from_config(cfg).network("142.251.1.1") == "Google"
+
+
+def test_feeds_count_at_half_weight_for_popular_services(make_engine):
+    from iglite.model import Evidence, Verdict
+    from iglite.scoring import assess
+
+    trust = {"otx": 0.6, "behaviour": 0.8}
+    plain = assess([Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)], trust)
+    popular = assess([Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)], trust, popular="Google")
+    assert plain.verdict.value == "suspicious" and popular.verdict.value == "unknown"
+    assert any("popular service (Google)" in r.detail for r in popular.reasons)
+    beh = assess([Evidence("behaviour", Verdict.SUSPICIOUS, "beacons", 1.0)], trust, popular="Google")
+    assert beh.score == assess([Evidence("behaviour", Verdict.SUSPICIOUS, "beacons", 1.0)], trust).score
+
+    engine = make_engine()
+    store = engine.store
+    for ind in (
+        Indicator(Kind.DOMAIN, "gmail.com"),
+        Indicator(Kind.DOMAIN, "odd-site.example"),
+        Indicator(Kind.URL, "https://github.com/x/y/releases/download/v1/a.exe"),
+    ):
+        store.upsert_node(ind)
+        store.replace_evidence(ind.key, "otx", [Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)])
+        a = engine.assess(ind.key)
+        store.set_assessment(ind.key, a.score, a.verdict)
+    v = {
+        k: store.node(k)["verdict"]
+        for k in (
+            "domain:gmail.com",
+            "domain:odd-site.example",
+            "url:https://github.com/x/y/releases/download/v1/a.exe",
+        )
+    }
+    assert v["domain:gmail.com"] == "unknown"  # a popular service listed by one feed
+    assert v["domain:odd-site.example"] != "unknown"  # an unknown site: full weight
+    assert (
+        v["url:https://github.com/x/y/releases/download/v1/a.exe"] != "unknown"
+    )  # a specific URL: full weight
+
+
+def test_rescore_flagged_rejudges_old_verdicts(make_engine):
+    from iglite.model import Evidence, Verdict
+
+    engine = make_engine()
+    store = engine.store
+    store.upsert_node(Indicator(Kind.DOMAIN, "gmail.com"))
+    store.replace_evidence("domain:gmail.com", "otx", [Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)])
+    store.set_assessment("domain:gmail.com", 44, Verdict.SUSPICIOUS)  # as an older version scored it
+    assert engine.rescore_flagged() == 1
+    assert store.node("domain:gmail.com")["verdict"] == "unknown"
+    assert engine.rescore_flagged() == 0
