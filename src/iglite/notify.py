@@ -57,6 +57,20 @@ def message(
     return {"title": title, "lines": lines, "link": link, "alert": alert, "case_id": case_id}
 
 
+def anomaly_message(a: dict[str, Any], dashboard: str | None = None) -> dict[str, Any]:
+    from .behaviour import describe
+
+    who = a.get("who_name") or a["who"].split(":", 1)[1]
+    return {
+        "title": f"Behaviour: {describe(a['kind'])} on {who} ({a['severity']})",
+        "lines": [a["detail"]],
+        "link": f"{dashboard.rstrip('/')}/#behaviour" if dashboard else None,
+        "alert": None,
+        "anomaly": a,
+        "case_id": None,
+    }
+
+
 def _post(url: str, payload: dict[str, Any], timeout: float = 10.0) -> None:
     req = urllib.request.Request(  # noqa: S310 - the person's own configured destination
         url,
@@ -109,6 +123,7 @@ def send_webhook(url: str, msg: dict[str, Any], **_: Any) -> None:
             "link": msg["link"],
             "case_id": msg["case_id"],
             "alert": msg["alert"],
+            "anomaly": msg.get("anomaly"),
         },
     )
 
@@ -159,6 +174,15 @@ class Notifier:
         floor = RANK.get(self.cfg.notify_min_verdict, 2)
         return RANK.get(alert["verdict"], 0) >= floor
 
+    def on_anomaly(self, anomaly: dict[str, Any]) -> bool:
+        """Queue a behaviour anomaly at or above ``behaviour_notify`` severity."""
+        floor = {"low": 0, "medium": 1, "high": 2}.get(str(self.cfg.behaviour_notify).lower())
+        if floor is None or not self.channels or self.cfg.offline:
+            return False
+        if {"low": 0, "medium": 1, "high": 2}.get(anomaly["severity"], 0) < floor:
+            return False
+        return self._queue(anomaly_message(anomaly, self.cfg.dashboard_url), f"anomaly {anomaly['id']}")
+
     def on_alert(self, alert_id: int) -> bool:
         """Queue an alert if it should go out. Returns whether it was queued."""
         if not self.channels or self.cfg.offline:
@@ -166,6 +190,9 @@ class Notifier:
         alert = self.store.alert(alert_id)
         if alert is None or not self.wanted(alert):
             return False
+        return self._queue(message(alert, alert.get("case_id"), self.cfg.dashboard_url), f"alert {alert_id}")
+
+    def _queue(self, msg: dict[str, Any], what: str) -> bool:
         now = time.time()
         while self.sent and self.sent[0] < now - 3600:
             self.sent.popleft()
@@ -175,13 +202,13 @@ class Notifier:
                     "at": now,
                     "channel": "*",
                     "ok": False,
-                    "detail": f"hourly cap reached; alert {alert_id} not sent",
+                    "detail": f"hourly cap reached; {what} not sent",
                 }
             )
             return False
         self.sent.append(now)
         try:
-            self._q.put_nowait(message(alert, alert.get("case_id"), self.cfg.dashboard_url))
+            self._q.put_nowait(msg)
         except queue.Full:
             return False
         self._ensure_thread()

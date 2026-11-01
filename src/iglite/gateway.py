@@ -120,11 +120,49 @@ def _proto(value: Any) -> str:
     return _PROTO_NUM.get(text, text or "tcp")
 
 
+def local_addresses(fib_trie: str = "/proc/net/fib_trie", if_inet6: str = "/proc/net/if_inet6") -> set[str]:
+    """This machine's own addresses (IPv4 from /proc/net/fib_trie, IPv6 from /proc/net/if_inet6)."""
+    out: set[str] = set()
+    try:
+        lines = Path(fib_trie).read_text().splitlines()
+        for prev, line in zip(lines, lines[1:], strict=False):
+            if "/32 host LOCAL" in line:
+                ip = prev.strip().lstrip("|-+ ").strip()
+                if ip:
+                    out.add(ip)
+    except OSError:
+        pass
+    try:
+        for line in Path(if_inet6).read_text().splitlines():
+            raw = line.split()[0]
+            out.add(str(ipaddress.ip_address(":".join(raw[i : i + 4] for i in range(0, 32, 4)))))
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
 class Lan:
     """Which addresses are inside the network. Default: every non-public address."""
 
-    def __init__(self, networks: Iterable[str] = ()) -> None:
+    def __init__(self, networks: Iterable[str] = (), own: Iterable[str] = ()) -> None:
         self.networks = [ipaddress.ip_network(n, strict=False) for n in networks]
+        self.own = set(own)  # the gateway's own addresses: never a "device"
+
+    def is_device(self, ip: str) -> bool:
+        """Could this address be a device on the network (not the gateway, broadcast or link-local)?"""
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if (
+            ip in self.own
+            or addr.is_multicast
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_unspecified
+        ):
+            return False
+        return self.inside(ip)
 
     def inside(self, ip: str) -> bool:
         addr = ipaddress.ip_address(ip)
@@ -138,9 +176,9 @@ class Lan:
             src_in, dst_in = self.inside(flow.src), self.inside(flow.dst)
         except ValueError:
             return None
-        if src_in and not dst_in and public_ip(flow.dst):
+        if src_in and not dst_in and public_ip(flow.dst) and self.is_device(flow.src):
             return flow.src, flow.dst, flow.dport, False
-        if dst_in and not src_in and public_ip(flow.src):
+        if dst_in and not src_in and public_ip(flow.src) and self.is_device(flow.dst):
             return flow.dst, flow.src, flow.dport, True
         return None
 
@@ -402,8 +440,13 @@ _CT_STATES = {
 }
 
 
-def parse_conntrack(text: str) -> list[Flow]:
-    """``/proc/net/nf_conntrack`` or ``conntrack -L``: the *original* tuple of each entry."""
+def parse_conntrack(text: str, closed: bool = False) -> list[Flow]:
+    """``/proc/net/nf_conntrack`` or ``conntrack -L``: the *original* tuple of each entry.
+
+    Finished connections (TIME_WAIT, CLOSE) are left out, or with ``closed`` returned
+    with action "closed": they still show that a connection was made, which is what
+    beacon detection counts.
+    """
     out = []
     for line in text.splitlines():
         parts = line.split()
@@ -411,7 +454,8 @@ def parse_conntrack(text: str) -> list[Flow]:
         if proto is None:
             continue
         state = next((p for p in parts[:6] if p in _CT_STATES), "")
-        if state in ("TIME_WAIT", "CLOSE"):
+        done = state in ("TIME_WAIT", "CLOSE")
+        if done and not closed:
             continue
         kv: dict[str, str] = {}
         for p in parts:
@@ -420,7 +464,16 @@ def parse_conntrack(text: str) -> list[Flow]:
                 kv[k] = v  # first occurrence = original direction
         src, dst = _ip(kv.get("src")), _ip(kv.get("dst"))
         if src and dst:
-            out.append(Flow(src, dst, _port(kv.get("sport")), _port(kv.get("dport")), proto, "pass"))
+            out.append(
+                Flow(
+                    src,
+                    dst,
+                    _port(kv.get("sport")),
+                    _port(kv.get("dport")),
+                    proto,
+                    "closed" if done else "pass",
+                )
+            )
     return out
 
 
@@ -460,12 +513,15 @@ def _pf_endpoint(text: str) -> tuple[str | None, int | None]:
     return _ip(text), None
 
 
-def parse_pf_states(text: str) -> list[Flow]:
+def parse_pf_states(text: str, closed: bool = False) -> list[Flow]:
     """pfSense / OPNsense ``pfctl -ss``. NAT shows the LAN address in parentheses."""
     out = []
     for line in text.splitlines():
         m = _PF_STATE.match(line.strip())
-        if not m or m.group("state").split(":")[0] in ("TIME_WAIT", "CLOSED", "FIN_WAIT_2"):
+        if not m:
+            continue
+        done = m.group("state").split(":")[0] in ("TIME_WAIT", "CLOSED", "FIN_WAIT_2")
+        if done and not closed:
             continue
         a_ip, a_port = _pf_endpoint(m.group("a_orig") or m.group("a"))
         b_ip, b_port = _pf_endpoint(m.group("b_orig") or m.group("b"))
@@ -473,9 +529,9 @@ def parse_pf_states(text: str) -> list[Flow]:
             continue
         proto = "icmp" if m.group("proto").startswith(("icmp", "ipv6")) else m.group("proto")
         if m.group("dir") == "->":  # a opened a connection to b
-            out.append(Flow(a_ip, b_ip, a_port, b_port, proto, "pass"))
+            out.append(Flow(a_ip, b_ip, a_port, b_port, proto, "closed" if done else "pass"))
         else:  # "a <- b": b connected in to a
-            out.append(Flow(b_ip, a_ip, b_port, a_port, proto, "pass"))
+            out.append(Flow(b_ip, a_ip, b_port, a_port, proto, "closed" if done else "pass"))
     return out
 
 
@@ -485,7 +541,9 @@ _LEASES_MARK = "#iglite-leases"
 # Fixed, read-only commands. The first that works wins: Linux conntrack, then pf (BSD).
 SSH_STATE_CMD = (
     # "grep ." fails on an empty file, so an empty /proc table falls through to the next reader.
-    "grep . /proc/net/nf_conntrack 2>/dev/null || conntrack -L 2>/dev/null || pfctl -ss 2>/dev/null; "
+    # ip_conntrack: older 2.6-kernel routers (e.g. ASUS RT-AC68U on stock firmware).
+    "grep . /proc/net/nf_conntrack 2>/dev/null || grep . /proc/net/ip_conntrack 2>/dev/null"
+    " || conntrack -L 2>/dev/null || pfctl -ss 2>/dev/null; "
     f"echo '{_LEASES_MARK}'; "
     "cat /tmp/dhcp.leases /var/lib/misc/dnsmasq.leases /tmp/dnsmasq.leases /var/dhcpd/var/db/dhcpd.leases "
     "2>/dev/null; true"
@@ -539,7 +597,9 @@ class SshSource:
         if done.returncode == 255:  # ssh itself failed: unreachable, refused, auth
             raise RuntimeError(f"ssh {self.target}: {_ssh_error(self.target, done.stderr, 'failed')}")
         table, _, leases = done.stdout.partition(_LEASES_MARK)
-        flows = parse_conntrack(table) if "src=" in table else parse_pf_states(table)
+        flows = (
+            parse_conntrack(table, closed=True) if "src=" in table else parse_pf_states(table, closed=True)
+        )
         return flows, parse_leases(leases)
 
     def follow(self, on_line: Any, stop: threading.Event, on_error: Any) -> None:
@@ -755,6 +815,7 @@ class GatewayCollector:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.lan = Lan(cfg.lan_networks)
+        self._own_checked = 0.0  # when running on the gateway: its own addresses, refreshed each minute
         self.senders = [ipaddress.ip_network(s, strict=False) for s in cfg.gateway_senders]
         self.devices: dict[str, str] = {str(k): str(v) for k, v in (cfg.devices or {}).items()}
         self._named = set(self.devices)  # names you set (config or dashboard) win over DHCP
@@ -774,6 +835,10 @@ class GatewayCollector:
         # Rolling window of what was seen: flow key -> (count, last seen); (domain, client) -> last seen.
         self._recent: dict[tuple, tuple[int, float]] = {}
         self._recent_queries: dict[tuple[str, str], float] = {}
+        # Connection starts per (device, proto, remote, port, inbound), for beacon detection:
+        # a new source port is a new connection; a long-lived one is counted once.
+        self._sports: OrderedDict[tuple, float] = OrderedDict()
+        self._starts: dict[tuple, deque[float]] = {}
         self.netflow = NetFlowParser()
         self.ssh = (
             SshSource(cfg.gateway_ssh, port=cfg.gateway_ssh_port, key=cfg.gateway_ssh_key)
@@ -949,16 +1014,44 @@ class GatewayCollector:
                 self.stats.internal_skipped += 1
                 return
             device, remote, port, inbound = oriented
+            key = (device, event.proto, remote, port, inbound)
+            self._start(key, event.sport)
+            if event.action == "closed":  # finished: counts as a connection start only
+                return
             if event.signature:
                 if len(self._ids) < 1000:
                     self._ids.append((device, remote, event.signature, event.techniques))
-            key = (device, event.proto, remote, port, inbound)
             if key in self._flows:
                 self._flows[key] += 1
             elif len(self._flows) < MAX_FLOWS:
                 self._flows[key] = 1
             else:
                 self.stats.dropped += 1
+
+    def _start(self, key: tuple, sport: int | None, now: float | None = None) -> None:
+        """Record a connection start, once per source port (caller holds the lock)."""
+        now = time.time() if now is None else now
+        if sport is not None:
+            if (key, sport) in self._sports:
+                return
+            self._sports[(key, sport)] = now
+            while len(self._sports) > 50_000:
+                self._sports.popitem(last=False)
+        starts = self._starts.get(key)
+        if starts is None:
+            if len(self._starts) >= MAX_FLOWS:
+                return
+            starts = self._starts[key] = deque(maxlen=64)
+        starts.append(now)
+
+    def recent_starts(self, window: float = 3600.0, now: float | None = None) -> dict[tuple, list[float]]:
+        """Connection start times in the last ``window`` seconds, per flow key; forgets older ones."""
+        now = time.time() if now is None else now
+        cutoff = now - window
+        with self._lock:
+            for key in [k for k, v in self._starts.items() if not v or v[-1] < cutoff]:
+                del self._starts[key]
+            return {k: [t for t in v if t >= cutoff] for k, v in self._starts.items()}
 
     def _dns(self, event: DnsEvent) -> None:
         name = event.name.lower()
@@ -1014,7 +1107,10 @@ class GatewayCollector:
         if not self.started:
             self.start()
         if self.cfg.gateway_conntrack:
-            for flow in parse_conntrack(read_conntrack()):
+            if time.time() - self._own_checked > 60:  # this machine is the gateway: it isn't a device
+                self.lan.own = local_addresses()
+                self._own_checked = time.time()
+            for flow in parse_conntrack(read_conntrack(), closed=True):
                 self.add(flow)
         if self.ssh is not None:
             try:

@@ -72,6 +72,13 @@ def busy(tmp_path):
     network.incidents(60)
     for _ in range(6):
         network.background()
+    for device, site in (
+        ("10.42.0.11", "maps.example"),
+        ("10.42.0.11", "news-site.example"),
+        ("10.42.0.23", "video-stream.example"),
+        ("10.42.0.23", "gaming.example"),
+    ):
+        network.visit(device, site)  # the sites the tests below look for, whatever the random traffic did
     watch.scan()
     try:
         yield engine
@@ -199,8 +206,17 @@ def test_cli_common(make_engine, capsys, monkeypatch, tmp_path):
     monkeypatch.setattr("iglite.cli.Engine", lambda cfg: engine)
     monkeypatch.setattr(engine.store, "close", lambda: None)
     monkeypatch.setattr(common, "download_tranco", lambda top: (["popular-shop.example"], "XYZ"))
+    monkeypatch.setattr(
+        common,
+        "download_ranges",
+        lambda: {
+            "Google": {"include": ["142.250.0.0/15"], "exclude": []},
+            "Amazon CloudFront": {"include": ["13.32.0.0/15"]},
+        },
+    )
     assert main(["common", "update", "--top", "5"]) == 0
-    assert "Saved 1 domains" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "saved 1 domains" in out and "Google 1 ranges" in out
     engine._common = None
     assert main(["common", "check", "www.popular-shop.example", "docs.google.com", "evil.example"]) == 0
     out = capsys.readouterr().out
@@ -208,3 +224,113 @@ def test_cli_common(make_engine, capsys, monkeypatch, tmp_path):
     assert "docs.google.com: popular but often abused" in out and "evil.example: not a common service" in out
     assert main(["common"]) == 0
     assert "Google:" in capsys.readouterr().out
+
+
+GOOG = {
+    "syncToken": "1",
+    "prefixes": [
+        {"ipv4Prefix": "8.8.8.0/24"},
+        {"ipv4Prefix": "142.250.0.0/15"},
+        {"ipv4Prefix": "34.0.0.0/9"},
+        {"ipv6Prefix": "2a00:1450::/32"},
+    ],
+}
+CLOUD = {
+    "syncToken": "1",
+    "prefixes": [{"ipv4Prefix": "34.0.0.0/9", "service": "Google Cloud", "scope": "us-east1"}],
+}
+AWS_RANGES = {
+    "prefixes": [
+        {"ip_prefix": "13.32.0.0/15", "region": "GLOBAL", "service": "CLOUDFRONT"},
+        {"ip_prefix": "3.0.0.0/15", "region": "eu-west-1", "service": "EC2"},
+    ],
+    "ipv6_prefixes": [{"ipv6_prefix": "2600:9000::/28", "region": "GLOBAL", "service": "CLOUDFRONT"}],
+}
+
+
+def test_provider_ranges_cover_their_own_services_not_rented_servers(make_engine, tmp_path):
+    docs = {common.GOOGLE_ALL: GOOG, common.GOOGLE_CLOUD: CLOUD, common.AWS: AWS_RANGES}
+    ranges = common.download_ranges(get=lambda url, timeout=0: json.dumps(docs[url]).encode())
+    assert ranges["Google"]["exclude"] == ["34.0.0.0/9"]
+    assert ranges["Amazon CloudFront"]["include"] == ["13.32.0.0/15", "2600:9000::/28"]
+    path = common.save_ranges(ranges, tmp_path / "ip_ranges.json")
+    loaded, when = common.read_ranges(path)
+    assert loaded == ranges and when
+    c = Common(ranges=loaded)
+    assert c.network("142.250.180.14") == "Google" and c.network("2a00:1450:4009::1") == "Google"
+    assert c.network("8.8.8.8") == "Google"
+    assert c.network("34.120.1.1") is None  # Google Cloud: anyone can rent it
+    assert c.network("13.33.10.10") == "Amazon CloudFront"
+    assert c.network("3.0.5.5") is None  # EC2
+    assert c.network("17.253.1.1") == "Apple"  # from the built-in catalogue
+    assert c.network("not an ip") is None
+
+    store = make_engine().store
+    for ip in ("142.250.180.14", "34.120.1.1", "198.51.100.1"):
+        store.upsert_node(Indicator(Kind.IP, ip))
+    labels = c.classify(store, store.nodes(["ip:142.250.180.14", "ip:34.120.1.1"]))
+    assert labels == {"ip:142.250.180.14": "Google"}
+
+    with pytest.raises(ValueError):  # an empty list is refused, not saved
+        common.download_ranges(get=lambda url, timeout=0: json.dumps({"prefixes": []}).encode())
+
+
+def test_ranges_load_from_next_to_the_popular_site_list(tmp_path):
+    from types import SimpleNamespace
+
+    common.save_ranges(
+        {"Google": {"include": ["142.250.0.0/15"], "exclude": []}}, tmp_path / "ip_ranges.json"
+    )
+    cfg = SimpleNamespace(common_top_file=str(tmp_path / "tranco.txt"), common_domains=[], common_ignore=[])
+    assert common.from_config(cfg).network("142.251.1.1") == "Google"
+
+
+def test_feeds_count_at_half_weight_for_popular_services(make_engine):
+    from iglite.model import Evidence, Verdict
+    from iglite.scoring import assess
+
+    trust = {"otx": 0.6, "behaviour": 0.8}
+    plain = assess([Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)], trust)
+    popular = assess([Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)], trust, popular="Google")
+    assert plain.verdict.value == "suspicious" and popular.verdict.value == "unknown"
+    assert any("popular service (Google)" in r.detail for r in popular.reasons)
+    beh = assess([Evidence("behaviour", Verdict.SUSPICIOUS, "beacons", 1.0)], trust, popular="Google")
+    assert beh.score == assess([Evidence("behaviour", Verdict.SUSPICIOUS, "beacons", 1.0)], trust).score
+
+    engine = make_engine()
+    store = engine.store
+    for ind in (
+        Indicator(Kind.DOMAIN, "gmail.com"),
+        Indicator(Kind.DOMAIN, "odd-site.example"),
+        Indicator(Kind.URL, "https://github.com/x/y/releases/download/v1/a.exe"),
+    ):
+        store.upsert_node(ind)
+        store.replace_evidence(ind.key, "otx", [Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)])
+        a = engine.assess(ind.key)
+        store.set_assessment(ind.key, a.score, a.verdict)
+    v = {
+        k: store.node(k)["verdict"]
+        for k in (
+            "domain:gmail.com",
+            "domain:odd-site.example",
+            "url:https://github.com/x/y/releases/download/v1/a.exe",
+        )
+    }
+    assert v["domain:gmail.com"] == "unknown"  # a popular service listed by one feed
+    assert v["domain:odd-site.example"] != "unknown"  # an unknown site: full weight
+    assert (
+        v["url:https://github.com/x/y/releases/download/v1/a.exe"] != "unknown"
+    )  # a specific URL: full weight
+
+
+def test_rescore_flagged_rejudges_old_verdicts(make_engine):
+    from iglite.model import Evidence, Verdict
+
+    engine = make_engine()
+    store = engine.store
+    store.upsert_node(Indicator(Kind.DOMAIN, "gmail.com"))
+    store.replace_evidence("domain:gmail.com", "otx", [Evidence("otx", Verdict.MALICIOUS, "pulse", 0.9)])
+    store.set_assessment("domain:gmail.com", 44, Verdict.SUSPICIOUS)  # as an older version scored it
+    assert engine.rescore_flagged() == 1
+    assert store.node("domain:gmail.com")["verdict"] == "unknown"
+    assert engine.rescore_flagged() == 0

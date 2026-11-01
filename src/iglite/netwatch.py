@@ -420,8 +420,13 @@ class NetWatch:
 
         if self.engine.config.connection_log:
             try:
-                self._log(snap, live, now)
-            except Exception as exc:  # the log must never stop monitoring
+                conns, lookups = self._log(snap, live, now)
+                if self.engine.config.behaviour:
+                    starts = self.gateway.recent_starts(now=now) if self.gateway is not None else {}
+                    self.engine.on_anomalies(
+                        self.engine.behaviour().observe(conns, lookups, starts, now, snap.dns)
+                    )
+            except Exception as exc:  # the log and behaviour analysis must never stop monitoring
                 self.last_error = f"connection log: {type(exc).__name__}: {exc}"
 
         # Record who talks to whom (cheap, local) before any lookups.
@@ -558,8 +563,10 @@ class NetWatch:
 
     # -- devices (gateway mode) ---------------------------------------------------
 
-    def _log(self, snap: Snapshot, live: list[Connection], now: float) -> None:
-        """Append this snapshot to the connection and DNS log (one row per endpoint per day)."""
+    def _log(
+        self, snap: Snapshot, live: list[Connection], now: float
+    ) -> tuple[list[tuple[float, str, str, int, str, bool, str, int]], list[tuple[float, str, str]]]:
+        """Append this snapshot to the connection and DNS log; returns what was added."""
         rows = []
         for c in live:
             try:
@@ -578,15 +585,29 @@ class NetWatch:
             rows.append((now, who, c.remote_ip, int(c.remote_port or 0), c.proto, c.inbound, names, hits))
         store = self.engine.store
         store.log_connections(rows)
+        lookups: list[tuple[float, str, str]] = []
         if self.gateway is not None:
             items = self.gateway.recent_lookups(self._logged_lookups, 5000)
             if items:
                 self._logged_lookups = max(t for t, _, _ in items)
-                store.log_lookups((t, f"host:{dev}", dom) for t, dev, dom in items)
+                lookups = [(t, f"host:{dev}", dom) for t, dev, dom in items]
+                store.log_lookups(lookups)
+        active: dict[str, list[float]] = {}  # who -> [last, flows, lookups]
+        for at, who, *_rest, hits in rows:
+            a = active.setdefault(who, [at, 0, 0])
+            a[0], a[1] = max(a[0], at), a[1] + hits
+        for at, who, _domain in lookups:
+            a = active.setdefault(who, [at, 0, 0])
+            a[0], a[2] = max(a[0], at), a[2] + 1
+        store.touch_devices(
+            (who, last, int(flows), int(looks)) for who, (last, flows, looks) in active.items()
+        )
         days = float(self.engine.config.connection_log_days or 0)
         if days > 0 and now - self._log_pruned > 3600:
             self._log_pruned = now
             store.prune_connection_log(days)
+            store.prune_behaviour(days)
+        return rows, lookups
 
     def devices(self) -> list[dict[str, Any]]:
         """One summary per LAN device: activity in the current window, worst verdict, alerts."""

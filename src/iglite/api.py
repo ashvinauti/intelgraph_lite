@@ -7,18 +7,22 @@ Endpoints
     GET  /api/sources
     GET  /api/indicators?verdict=&kind=&q=&limit=&offset=
     GET  /api/indicator?key=        node, assessment, evidence, edges
-    GET  /api/graph?key=&depth=&limit=&hide_common=0
+    GET  /api/graph?key=&depth=&limit=&hide_common=0&active=SECONDS
                                     hide_common=1 drops routine services (Google, Apple, CDNs...)
     GET  /api/graph/live?since=&hide_common=1   edges live monitoring recorded since a time
     GET  /api/connlog?dns=0&who=&q=&since=&until=&verdict=&limit=&offset=
                                     the database of every connection (dns=1: DNS lookups)
     GET  /api/connlog/stats; GET /api/connlog.csv?... (same filters)
+    GET  /api/behaviour?status=&severity=&who=&since=   anomalies and per-device baselines
+    POST /api/behaviour/anomaly     {"id", "status": open|dismissed|normal}  (normal: never raise it again)
     GET  /api/common                the common-services catalogue in use; POST /api/common/check {"name"}
     GET  /api/export/{json,csv,stix}
-    GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
+    GET  /api/attack?associated=0&all=0   MITRE ATT&CK matrix of techniques seen (all=1: also
+                                    techniques feeds tag on unflagged indicators)
     GET  /api/attack/technique?id=  one technique and its indicators
     GET  /api/attack/navigator      ATT&CK Navigator layer
-    GET  /api/devices               gateway mode: one summary per LAN device
+    GET  /api/devices?state=active|today|all   gateway mode: one summary per LAN device, with its
+                                    state, last activity and connections per hour for 24 h
     GET  /api/device?ip=            one device: connections, DNS lookups, alerts, techniques
     POST /api/device/name           {"ip": "...", "name": "..."} name a device (empty name clears)
     GET  /api/lookups?since=        live feed of DNS lookups across the network
@@ -48,6 +52,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import time
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -298,6 +303,12 @@ def _indicator(engine: Engine, q: dict, body: dict) -> Any:
         "attack": attack.techniques_of(engine.store, key),
         "attack_entry": _attack_entry(key),
         "blocked": key in respond.blocked_keys(engine.store),
+        # behaviour findings about this device/program, or about this server/domain
+        "anomalies": [
+            a
+            for a in engine.store.anomalies(since=time.time() - 7 * 86400, status="open", limit=500)
+            if a["who"] == key or a["remote"] == key or (a["context"] or {}).get("remote") == node["value"]
+        ][:20],
         "common": None
         if node["verdict"] in ("malicious", "suspicious") or protected(engine.store, [node])
         else engine.common().classify(engine.store, [node]).get(key),
@@ -323,7 +334,7 @@ def _flag(q: dict[str, str], name: str) -> bool:
 
 
 def _attack(engine: Engine, q: dict, body: dict) -> Any:
-    return attack.summary(engine.store, associated=_flag(q, "associated"))
+    return attack.summary(engine.store, associated=_flag(q, "associated"), unflagged=_flag(q, "all"))
 
 
 def _attack_technique(engine: Engine, q: dict, body: dict) -> Any:
@@ -335,19 +346,29 @@ def _attack_technique(engine: Engine, q: dict, body: dict) -> Any:
 
 def _attack_navigator(engine: Engine, q: dict, body: dict) -> Any:
     return json.dumps(
-        attack.navigator_layer(engine.store, associated=_flag(q, "associated"))
+        attack.navigator_layer(engine.store, associated=_flag(q, "associated"), unflagged=_flag(q, "all"))
     ), "application/json"
 
 
 def _graph(engine: Engine, q: dict, body: dict) -> Any:
     key, depth, limit = _key(q), _int(q, "depth", 1, 3), _int(q, "limit", 150, 1000)
-    if not _flag(q, "hide_common"):
-        return engine.store.neighbourhood(key, depth, limit)
-    from .common import filter_graph
+    active = _int(q, "active", 0, 10**9)  # seconds: only devices with traffic this recently
+    from .common import active_only, filter_graph, real_devices
 
-    # Common services eat the node budget, so look further and trim after filtering.
+    # Filtering eats the node budget, so look further and trim afterwards.
     graph = engine.store.neighbourhood(key, depth, min(2000, limit * 4))
-    return filter_graph(engine.common(), engine.store, graph, keep=[key], limit=limit)
+    graph = real_devices(graph, engine.is_device, keep=[key])
+    if active:
+        graph = active_only(engine.store, graph, active, keep=[key])
+    if _flag(q, "hide_common"):
+        inactive = graph.get("inactive", 0)
+        graph = filter_graph(engine.common(), engine.store, graph, keep=[key], limit=limit)
+        graph["inactive"] = inactive
+    else:
+        graph["nodes"] = graph["nodes"][:limit]
+        present = {n["key"] for n in graph["nodes"]}
+        graph["edges"] = [e for e in graph["edges"] if e["src"] in present and e["dst"] in present]
+    return graph
 
 
 def _export(engine: Engine, q: dict, body: dict) -> Any:
@@ -379,9 +400,73 @@ def _device_ip(raw: Any) -> str:
     return ind.value
 
 
+DEVICE_STATES = ("active", "today", "offline")
+
+
+def _device_state(last: float | None, now: float, active_secs: float) -> str:
+    if last is None or now - last <= active_secs:
+        return "active"
+    return "today" if now - last <= 86400 else "offline"
+
+
 def _devices(engine: Engine, q: dict, body: dict) -> Any:
-    watch = engine.watcher()
-    return {"status": watch.status(), "devices": watch.devices()}
+    """Devices on the network: active now (default), seen today, or every device ever seen."""
+    want = q.get("state") or "active"
+    if want not in ("active", "today", "all"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "state must be active, today or all")
+    watch, store, now = engine.watcher(), engine.store, time.time()
+    active_secs = float(engine.config.device_active_secs)
+    live = {d["ip"]: d for d in watch.devices()}
+    inventory = {r["who"][5:]: r for r in store.inventory(kind="host")}
+    hour = int(now // 3600)
+    out, counts = [], dict.fromkeys(DEVICE_STATES, 0)
+    for ip in {*live, *(ip for ip in inventory if engine.is_device(f"host:{ip}"))}:
+        inv = inventory.get(ip)
+        last = inv["last_seen"] if inv else None
+        state = _device_state(last, now, active_secs)
+        counts[state] += 1
+        if want == "active" and state != "active" or want == "today" and state == "offline":
+            continue
+        d = live.get(ip) or {
+            "ip": ip,
+            "key": f"host:{ip}",
+            "name": inv["name"] if inv else None,
+            "connections": 0,
+            "remotes": 0,
+            "lookups": 0,
+            "flagged": 0,
+            "worst": "private",
+            "score": None,
+            "active": False,
+            "open_alerts": 0,
+            "quarantined": False,
+            "first_seen": None,
+            "last_seen": None,
+        }
+        per_hour = {h: f + lk for h, f, lk in store.activity(f"host:{ip}", hour - 23)}
+        out.append(
+            {
+                **d,
+                "name": d.get("name") or (inv["name"] if inv else None),
+                "state": state,
+                "last_active": last,
+                "first_active": inv["first_seen"] if inv else None,
+                "flows_total": inv["flows"] if inv else None,
+                "traffic": [
+                    per_hour.get(h, 0) for h in range(hour - 23, hour + 1)
+                ],  # last 24 hours, oldest first
+            }
+        )
+    rank = {"malicious": 0, "suspicious": 1}
+    out.sort(
+        key=lambda d: (rank.get(d["worst"], 2), DEVICE_STATES.index(d["state"]), -(d["last_active"] or now))
+    )
+    return {
+        "status": watch.status(),
+        "devices": out,
+        "counts": {**counts, "all": sum(counts.values())},
+        "active_secs": active_secs,
+    }
 
 
 def _device(engine: Engine, q: dict, body: dict) -> Any:
@@ -389,6 +474,16 @@ def _device(engine: Engine, q: dict, body: dict) -> Any:
     common = engine.common()
     for x in d["lookups"]:
         x["common"] = None if x["verdict"] in ("malicious", "suspicious") else common.domain(x["domain"])
+    keys = {r["key"] for r in d["connections"] if r["key"].startswith("ip:")}
+    labels = common.classify(engine.store, engine.store.nodes(keys))
+    for r in d["connections"]:
+        flagged = r["verdict"] in ("malicious", "suspicious")
+        r["common"] = (
+            None
+            if flagged
+            else labels.get(r["key"])
+            or next((label for n in r.get("names") or [] if (label := common.domain(n))), None)
+        )
     return d
 
 
@@ -796,8 +891,20 @@ def _graph_live(engine: Engine, q: dict, body: dict) -> Any:
     now = time.time()
     since = _float(q, "since") or now - 300
     edges = engine.store.edges_since(since, LIVE_RELS, _int(q, "limit", 400, 2000))
+    edges = [
+        e
+        for e in edges
+        if all(
+            engine.is_device(k) or not k.startswith("host:") or k in ("host:gateway", "host:this-computer")
+            for k in (e["src"], e["dst"])
+        )
+    ]
     keys = {k for e in edges for k in (e["src"], e["dst"])}
     nodes = engine.store.nodes(keys)
+    last = engine.store.last_active(n["key"] for n in nodes if n["kind"] in ("host", "process"))
+    for n in nodes:
+        if n["key"] in last:
+            n["last_active"] = last[n["key"]]
     out: dict[str, Any] = {"now": now, "since": since, "nodes": nodes, "edges": edges}
     if _flag(q, "hide_common"):
         from .common import protected
@@ -815,6 +922,68 @@ def _graph_live(engine: Engine, q: dict, body: dict) -> Any:
         out["edges"] = [e for e in edges if e["src"] not in hidden and e["dst"] not in hidden]
         out["hidden"] = {"common": len(hidden), "keys": hidden}
     return out
+
+
+# -- behaviour -------------------------------------------------------------------------------
+
+
+def _who(raw: Any) -> str | None:
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    if raw.startswith(("host:", "process:")):
+        return raw
+    return f"host:{_device_ip(raw)}"
+
+
+def _behaviour(engine: Engine, q: dict, body: dict) -> Any:
+    import time
+
+    from .behaviour import describe
+
+    status = q.get("status") or None
+    if status and status not in ("open", "dismissed", "normal"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "status must be open, dismissed or normal")
+    severity = [s for s in (q.get("severity") or "").split(",") if s]
+    anomalies = engine.store.anomalies(
+        who=_who(q.get("who")),
+        since=_float(q, "since"),
+        status=status,
+        severity=severity,
+        limit=_int(q, "limit", 200, 2000),
+        since_id=_int(q, "since_id", 0, 2**62),
+    )
+    for a in anomalies:
+        a["label"] = describe(a["kind"])
+    beh = engine.behaviour()
+    now = time.time()
+    devices = []
+    if not _flag(q, "anomalies_only"):
+        names = {
+            n["key"]: (n["attrs"] or {}).get("name") for n in engine.store.nodes(engine.store.log_whos())
+        }
+        recent = engine.store.anomalies(since=now - 86400, status="open", limit=2000)
+        for who in [w for w in engine.store.log_whos() if engine.is_device(w)][:500]:
+            d = beh.profile(who, now).summary()
+            d["name"] = names.get(who)
+            d["open"] = sum(a["who"] == who for a in recent)
+            d["worst"] = max(
+                (a["severity"] for a in recent if a["who"] == who),
+                key=lambda s: {"low": 0, "medium": 1, "high": 2}[s],
+                default=None,
+            )
+            devices.append(d)
+    return {"status": beh.status(now), "anomalies": anomalies, "devices": devices}
+
+
+def _behaviour_mark(engine: Engine, q: dict, body: dict) -> Any:
+    status = str(body.get("status") or "")
+    if status not in ("open", "dismissed", "normal"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "status must be open, dismissed or normal")
+    anomaly_id = _int({"id": str(body.get("id", ""))}, "id", 0, 2**62)
+    if not engine.store.set_anomaly_status(anomaly_id, status):
+        raise ApiError(HTTPStatus.NOT_FOUND, f"no anomaly {anomaly_id}")
+    return engine.store.anomaly(anomaly_id)
 
 
 # -- common services ---------------------------------------------------------------------------
@@ -945,6 +1114,8 @@ ROUTES = {
     ("POST", "/api/unblock"): _unblock,
     ("GET", "/api/path"): _path,
     ("GET", "/api/graph/live"): _graph_live,
+    ("GET", "/api/behaviour"): _behaviour,
+    ("POST", "/api/behaviour/anomaly"): _behaviour_mark,
     ("GET", "/api/connlog"): _connlog,
     ("GET", "/api/connlog/stats"): _connlog_stats,
     ("GET", "/api/connlog.csv"): _connlog_csv,

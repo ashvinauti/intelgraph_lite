@@ -75,6 +75,7 @@ def assess(
     neighbours: Iterable[tuple[str, str]] = (),
     *,
     shared_infra: str | None = None,
+    popular: str | None = None,
     feedback: Mapping[str, str] | None = None,
     half_life_days: float = HALF_LIFE_DAYS,
     now: float | None = None,
@@ -84,7 +85,10 @@ def assess(
     ``neighbours`` are ``(neighbour_key, rel)`` pairs for adjacent indicators
     that are themselves *directly* malicious (computed by the caller so there
     are no feedback loops). ``shared_infra`` names the CDN/cloud operator when
-    the indicator is an IP on shared infrastructure. ``feedback`` is the
+    the indicator is an IP on shared infrastructure; ``popular`` names the
+    well-known service a domain or IP belongs to (common.py), whose reputation
+    from feeds also counts at half weight: community feeds often list big
+    services by mistake (a pulse full of Google and Microsoft addresses). ``feedback`` is the
     analyst's mark (``{"verdict": ..., "note": ...}``), if any.
     """
     now = time.time() if now is None else now
@@ -99,7 +103,7 @@ def assess(
             if fresh < 0.99:
                 c *= fresh
                 notes.append(f"last seen {_age(ev.last_seen, now)}, weight {fresh:.0%}")
-            if shared_infra:
+            if shared_infra or (popular and ev.source != "behaviour"):
                 c *= SHARED_INFRA_FACTOR
         best = strongest.get(ev.source)
         if best is None or abs(c) > abs(best[0]):
@@ -109,6 +113,15 @@ def assess(
         Reason(ev.source, ev.verdict, c, f"{ev.detail} ({note})" if note else ev.detail)
         for c, ev, note in strongest.values()
     ]
+    if popular and not shared_infra and any(r.contribution > 0 for r in reasons):
+        reasons.append(
+            Reason(
+                "context",
+                Verdict.UNKNOWN,
+                0.0,
+                f"popular service ({popular}): feed reputation counted at half weight",
+            )
+        )
     if shared_infra and any(r.contribution > 0 for r in reasons):
         reasons.append(
             Reason(

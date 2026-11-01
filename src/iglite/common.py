@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import csv
 import io
+import ipaddress
 import json
 import time
 import urllib.request
@@ -65,6 +66,7 @@ class Common:
         top: Iterable[str] = (),
         catalogue: dict[str, Any] | None = None,
         extra_label: str = "Your common services",
+        ranges: dict[str, dict[str, list[str]]] | None = None,
     ) -> None:
         cat = catalogue or _load_catalogue()
         self.service: dict[str, str] = {}
@@ -77,6 +79,27 @@ class Common:
         self.ignore = {d.lower().strip(".") for d in ignore}
         self.top = {d.lower() for d in top}
         self.operators = [o.lower() for o in cat.get("operators", [])]
+        # Address ranges that belong to one service only: name -> (include, exclude), from the
+        # catalogue (e.g. Apple's 17.0.0.0/8) and from the providers' own published lists.
+        self.ranges: list[tuple[str, list[Any], list[Any]]] = []
+        for name, spec in {**cat.get("networks", {}), **(ranges or {})}.items():
+            inc = [ipaddress.ip_network(n, strict=False) for n in spec.get("include", [])]
+            exc = [ipaddress.ip_network(n, strict=False) for n in spec.get("exclude", [])]
+            if inc:
+                self.ranges.append((name, inc, exc))
+
+    def network(self, ip: str) -> str | None:
+        """The service whose own address range holds ``ip`` (not a range it rents to customers)."""
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        for name, inc, exc in self.ranges:
+            if any(addr in n for n in inc if n.version == addr.version) and not any(
+                addr in n for n in exc if n.version == addr.version
+            ):
+                return name
+        return None
 
     @staticmethod
     def _parents(name: str) -> list[str]:
@@ -123,7 +146,7 @@ class Common:
                 if host and (label := self.domain(host)):
                     out[n["key"]] = label
             elif kind == "ip":
-                if label := self.operator(n.get("attrs") or {}):
+                if label := self.network(value) or self.operator(n.get("attrs") or {}):
                     out[n["key"]] = label
                 else:
                     ips.append(n["key"])
@@ -197,12 +220,148 @@ def read_top(path: Path = TRANCO_FILE) -> tuple[list[str], str | None]:
     return [x for x in lines if x and not x.startswith("#")], header
 
 
+# -- providers' published address ranges ---------------------------------------------------
+
+GOOGLE_ALL = "https://www.gstatic.com/ipranges/goog.json"
+GOOGLE_CLOUD = "https://www.gstatic.com/ipranges/cloud.json"  # rented to customers: not "Google"
+AWS = "https://ip-ranges.amazonaws.com/ip-ranges.json"
+RANGES_FILE = Path("~/.iglite/ip_ranges.json").expanduser()
+
+
+def _prefixes(doc: dict[str, Any], *keys: str, service: str | None = None) -> list[str]:
+    out = []
+    for section in ("prefixes", "ipv6_prefixes"):
+        for p in doc.get(section, []):
+            if service is not None and p.get("service") != service:
+                continue
+            out += [p[k] for k in keys if p.get(k)]
+    return out
+
+
+def download_ranges(get: Any = None) -> dict[str, dict[str, list[str]]]:
+    """Google's own services (all Google ranges minus Google Cloud) and Amazon CloudFront (a CDN).
+
+    Google Cloud, Amazon EC2 and other rented space stay out on purpose: anyone can run a
+    server there, attackers included. Raises OSError/ValueError when a list can't be fetched.
+    """
+    get = get or _get
+    goog, cloud, aws = (json.loads(get(url, 60.0)) for url in (GOOGLE_ALL, GOOGLE_CLOUD, AWS))
+    out = {
+        "Google": {
+            "include": _prefixes(goog, "ipv4Prefix", "ipv6Prefix"),
+            "exclude": _prefixes(cloud, "ipv4Prefix", "ipv6Prefix"),
+        },
+        "Amazon CloudFront": {"include": _prefixes(aws, "ip_prefix", "ipv6_prefix", service="CLOUDFRONT")},
+    }
+    if not out["Google"]["include"] or not out["Amazon CloudFront"]["include"]:
+        raise ValueError("a provider's address list came back empty")
+    for spec in out.values():  # fail here, not when the dashboard loads them
+        for n in (*spec["include"], *spec.get("exclude", [])):
+            ipaddress.ip_network(n, strict=False)
+    return out
+
+
+def save_ranges(ranges: dict[str, Any], path: Path = RANGES_FILE) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps({"downloaded": time.strftime("%Y-%m-%d", time.gmtime()), "ranges": ranges}),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return path
+
+
+def read_ranges(path: Path = RANGES_FILE) -> tuple[dict[str, Any], str | None]:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        return doc.get("ranges", {}), doc.get("downloaded")
+    except (OSError, ValueError):
+        return {}, None
+
+
 def from_config(cfg: Any) -> Common:
     top, _ = read_top(Path(cfg.common_top_file).expanduser()) if cfg.common_top_file else ([], None)
-    return Common(cfg.common_domains, cfg.common_ignore, top)
+    ranges: dict[str, Any] = {}
+    if cfg.common_top_file:  # downloaded next to the Tranco list
+        ranges, _ = read_ranges(Path(cfg.common_top_file).expanduser().with_name("ip_ranges.json"))
+    return Common(cfg.common_domains, cfg.common_ignore, top, ranges=ranges)
 
 
 # -- graph filtering ---------------------------------------------------------------------------
+
+
+def connected(graph: dict[str, Any], roots: Iterable[str]) -> dict[str, Any]:
+    """Only the nodes (and edges) still reachable from ``roots``."""
+    adj: dict[str, list[str]] = {}
+    for e in graph["edges"]:
+        adj.setdefault(e["src"], []).append(e["dst"])
+        adj.setdefault(e["dst"], []).append(e["src"])
+    seen = {k for k in roots if k}
+    stack = list(seen)
+    while stack:
+        for nxt in adj.get(stack.pop(), ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    nodes = [n for n in graph["nodes"] if n["key"] in seen]
+    edges = [e for e in graph["edges"] if e["src"] in seen and e["dst"] in seen]
+    return {**graph, "nodes": nodes, "edges": edges}
+
+
+ORIGINS = ("host:gateway", "host:this-computer")
+
+
+def real_devices(graph: dict[str, Any], is_device: Any, keep: Iterable[str] = ()) -> dict[str, Any]:
+    """Drop host nodes that aren't devices (the gateway's own or link-local addresses, neighbours
+    outside the LAN) that older versions recorded, and whatever only they led to."""
+    keep = set(keep)
+    junk = {
+        n["key"]
+        for n in graph["nodes"]
+        if n["kind"] == "host"
+        and n["key"] not in ORIGINS
+        and n["key"] not in keep
+        and not is_device(n["key"])
+    }
+    if not junk:
+        return graph
+    trimmed = {
+        **graph,
+        "nodes": [n for n in graph["nodes"] if n["key"] not in junk],
+        "edges": [e for e in graph["edges"] if e["src"] not in junk and e["dst"] not in junk],
+    }
+    return connected(trimmed, {graph.get("root"), *keep})
+
+
+def active_only(
+    store: Any, graph: dict[str, Any], max_age: float, keep: Iterable[str] = (), now: float | None = None
+) -> dict[str, Any]:
+    """Drop devices and programs with no traffic in the last ``max_age`` seconds, and what only they lead to.
+
+    Anything flagged stays when it is still reachable some other way; devices the
+    inventory has never seen (logging off) are kept. Each remaining device gets
+    ``last_active`` for the dashboard.
+    """
+    import time as _time
+
+    now = _time.time() if now is None else now
+    keep = set(keep)
+    whos = [n["key"] for n in graph["nodes"] if n["kind"] in ("host", "process") and n["key"] not in ORIGINS]
+    last = store.last_active(whos)
+    stale = {k for k in whos if k in last and last[k] < now - max_age and k not in keep}
+    trimmed = {
+        **graph,
+        "nodes": [n for n in graph["nodes"] if n["key"] not in stale],
+        "edges": [e for e in graph["edges"] if e["src"] not in stale and e["dst"] not in stale],
+    }
+    out = connected(trimmed, {graph.get("root"), *keep})
+    for n in out["nodes"]:
+        if n["key"] in last:
+            n["last_active"] = last[n["key"]]
+    out["inactive"] = len(stale)
+    return out
+
 
 FLAGGED = ("malicious", "suspicious")
 

@@ -86,6 +86,7 @@ class Engine:
         self._triage: Any = None
         self._notifier: Any = None
         self._common: Any = None
+        self._behaviour: Any = None
         self.demo = False  # set by ``iglite demo``: simulated network and invented intel
 
     def agent_desk(self) -> Any:
@@ -121,6 +122,41 @@ class Engine:
 
             self._common = from_config(self.config)
         return self._common
+
+    def is_device(self, who: str) -> bool:
+        """Is this ``host:<ip>`` a device on the monitored network (not the gateway itself,
+        multicast or link-local)? Programs (``process:``) always are. Filters out what older
+        versions recorded by mistake, without deleting any history."""
+        if not who.startswith("host:"):
+            return True
+        if who in ("host:gateway", "host:this-computer"):
+            return False
+        watch = self._netwatch
+        lan = watch.gateway.lan if watch is not None and watch.gateway is not None else None
+        if lan is None:
+            from .gateway import Lan, local_addresses
+
+            lan = Lan(self.config.lan_networks, local_addresses() if self.config.gateway_conntrack else ())
+        return lan.is_device(who[5:])
+
+    def behaviour(self) -> Any:
+        """Behaviour analysis (per-device baselines and anomalies), created on first use."""
+        if self._behaviour is None:
+            from .behaviour import Behaviour
+
+            self._behaviour = Behaviour(self)
+        return self._behaviour
+
+    def on_anomalies(self, anomalies: list[dict[str, Any]]) -> None:
+        """New behaviour anomalies: note them in open cases about the device, and notify."""
+        for a in anomalies:
+            for case_id in self.store.cases_with_indicator(a["who"]):
+                case = self.store.case(case_id)
+                if case and case["status"] != "closed":
+                    self.store.add_case_event(
+                        case_id, "behaviour", f"Behaviour ({a['severity']}): {a['detail']}"
+                    )
+            self.notifier().on_anomaly(a)
 
     def notifier(self) -> Any:
         """Alert notifications (Slack, Teams, email, webhook), created on first use."""
@@ -159,7 +195,11 @@ class Engine:
 
     @property
     def trust(self) -> dict[str, float]:
-        return {s.name: s.trust for s in self.sources}
+        # behaviour: what your own network observed (behaviour.py); trusted more than a stranger's report
+        return {
+            "behaviour": self.config.trust.get("behaviour", 0.8),
+            **{s.name: s.trust for s in self.sources},
+        }
 
     # -- public API --------------------------------------------------------
 
@@ -277,9 +317,32 @@ class Engine:
             self.trust,
             neighbours or (),
             shared_infra=self.shared_infra(node) if node else None,
+            popular=self.popular(node) if node else None,
             feedback=self.store.feedback(key),
             half_life_days=self.config.evidence_half_life_days,
         )
+
+    def popular(self, node: dict[str, Any]) -> str | None:
+        """The well-known service an IP or domain belongs to (Google, Popular site...), if any.
+        URLs are left out on purpose: a malware download on a popular host is still specific."""
+        if node["kind"] not in (Kind.IP.value, Kind.DOMAIN.value):
+            return None
+        try:
+            return self.common().classify(self.store, [node]).get(node["key"])
+        except Exception:  # never let the classifier break scoring
+            return None
+
+    def rescore_flagged(self, limit: int = 5000) -> int:
+        """Rescore everything currently malicious or suspicious (after scoring rules change). Returns
+        how many changed verdict."""
+        changed = 0
+        for verdict in ("malicious", "suspicious"):
+            for n in self.store.search(verdict=verdict, limit=limit):
+                a = self._assess(n["key"], neighbours=self._bad_neighbours(n["key"]))
+                if a.verdict.value != n["verdict"] or a.score != n["score"]:
+                    self.store.set_assessment(n["key"], a.score, a.verdict)
+                    changed += a.verdict.value != n["verdict"]
+        return changed
 
     def shared_infra(self, node: dict[str, Any]) -> str | None:
         """Name of the CDN/cloud operator if this IP is shared infrastructure."""
