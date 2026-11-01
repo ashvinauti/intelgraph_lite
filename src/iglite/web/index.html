@@ -2126,10 +2126,12 @@ const Graph = {
   liveStatus() {
     const box = $("g-live-status"), now = Date.now() / 1000;
     this.liveCount = this.liveCount.filter(t => now - t < 60);
-    const active = [...this.edges.values()].filter(e => e.active && now - e.active < 60).length;
+    // count what is drawn: nodes that arrived and were then hidden or dropped don't count
+    const fresh = [...this.nodes.values()].filter(n => n._el && n.newAt && now - n.newAt < 60).length;
+    const active = [...this.edges.values()].filter(e => e._el && e.active && now - e.active < 60).length;
     box.classList.toggle("on", this.live && !!watch.running);
     box.lastChild.textContent = !this.live ? "" : !watch.running ? "monitoring is off" :
-      `${plural(this.liveCount.length, "new node")} · ${plural(active, "active link")} in the last minute`;
+      `${plural(fresh, "new node")} · ${plural(active, "active link")} in the last minute`;
   },
   setHideCommon(on) {
     this.hideCommon = on; store.set("iglite-hide-common", on ? "1" : "0");
