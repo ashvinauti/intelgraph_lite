@@ -554,7 +554,8 @@ def test_ssh_snapshot_reads_conntrack_or_pf_and_leases(monkeypatch):
     flows, found = _ssh(monkeypatch, FakeSsh(ct + _LEASES_MARK + "\n" + leases)).snapshot()
     assert [(f.src, f.dst, f.dport) for f in flows] == [(LAN, BAD, 443)] and found == [Lease(LAN, "pixel-7")]
     flows, _ = _ssh(monkeypatch, FakeSsh(PF_STATES + _LEASES_MARK + "\n")).snapshot()
-    assert len(flows) == 5
+    assert len([f for f in flows if f.action != "closed"]) == 5
+    assert [f.dport for f in flows if f.action == "closed"] == [443]  # TIME_WAIT: a connection start only
     with pytest.raises(RuntimeError, match="Permission denied"):
         _ssh(monkeypatch, FakeSsh("", 255, "root@192.168.1.1: Permission denied (publickey).\n")).snapshot()
 
@@ -704,3 +705,62 @@ def test_dhcp_names_are_remembered_across_restarts(make_engine, feeds):
         "dnsmasq-dhcp[1]: DHCPACK(wlp2s0) 10.42.0.23 aa:bb:cc:dd:ee:ff pixel-8"
     )  # a newer DHCP name wins
     assert gw2.devices["10.42.0.23"] == "pixel-8"
+
+
+def test_old_ip_conntrack_format_from_asus_stock_firmware():
+    from iglite.gateway import SSH_STATE_CMD, parse_conntrack
+
+    assert "/proc/net/ip_conntrack" in SSH_STATE_CMD
+    line = (
+        "tcp      6 431998 ESTABLISHED src=192.168.50.23 dst=203.0.113.66 sport=51234 dport=443 "
+        "src=203.0.113.66 dst=81.2.3.4 sport=443 dport=51234 [ASSURED] use=1"
+    )
+    flows = parse_conntrack(line)
+    assert [(f.src, f.dst, f.sport, f.dport, f.proto) for f in flows] == [
+        ("192.168.50.23", "203.0.113.66", 51234, 443, "tcp")
+    ]
+
+
+def test_connection_starts_count_new_source_ports_once():
+    gw = GatewayCollector(Config())
+    gw.started = True
+    t = 1_000_000.0
+    for i, sport in enumerate([50001, 50001, 50002, 50003]):  # 50001 seen twice: one connection
+        with gw._lock:
+            key = ("192.168.1.23", "tcp", "45.155.205.9", 443, False)
+            gw._start(key, sport, t + i * 10)
+    gw.add(Flow("192.168.1.23", "45.155.205.9", 50004, 443, "tcp", "closed"))  # TIME_WAIT: start only
+    starts = gw.recent_starts(window=10**10)
+    assert len(starts[("192.168.1.23", "tcp", "45.155.205.9", 443, False)]) == 4
+    assert gw.collect().connections == []  # the closed one isn't a live flow
+
+
+def test_multicast_link_local_and_the_gateway_itself_are_not_devices(tmp_path):
+    from iglite.extract import public_ip
+    from iglite.gateway import local_addresses
+
+    assert not public_ip("224.0.0.251") and not public_ip("ff02::fb") and not public_ip("239.255.255.250")
+    fib = tmp_path / "fib_trie"
+    fib.write_text(
+        "Main:\n  +-- 0.0.0.0/0 3 0 5\n     |-- 0.0.0.0\n        /0 universe UNICAST\n"
+        "     +-- 10.42.0.0/24 2 0 2\n        |-- 10.42.0.1\n           /32 host LOCAL\n"
+        "     |-- 192.168.0.193\n        /32 host LOCAL\n"
+    )
+    inet6 = tmp_path / "if_inet6"
+    inet6.write_text("fe80000000000000a1b2c3fffed4e5f6 03 40 20 80   wlp2s0\n")
+    own = local_addresses(str(fib), str(inet6))
+    assert own == {"10.42.0.1", "192.168.0.193", "fe80::a1b2:c3ff:fed4:e5f6"}
+    lan = Lan(own=own)
+    assert lan.orient(Flow("192.168.0.234", "224.0.0.251", 5353, 5353, "udp")) is None  # mDNS
+    assert lan.orient(Flow("fe80::18ab:1", "ff02::fb", 5353, 5353, "udp")) is None
+    assert lan.orient(Flow("192.168.1.9", "239.255.255.250", 1900, 1900, "udp")) is None  # SSDP
+    assert lan.orient(Flow("192.168.0.193", "160.79.104.10", 50000, 443)) is None  # the gateway's own traffic
+    assert lan.orient(Flow("10.42.0.201", "160.79.104.10", 50000, 443)) == (
+        "10.42.0.201",
+        "160.79.104.10",
+        443,
+        False,
+    )
+    hotspot = Lan(["10.42.0.0/24"], own)
+    assert not hotspot.is_device("192.168.0.52") and hotspot.is_device("10.42.0.201")
+    assert not hotspot.is_device("10.42.0.1")

@@ -60,6 +60,7 @@ iglite path host:10.42.0.52 http://cdn-update.example/setup.bin
 iglite notify --test
 iglite common update             # popular-domain list, so routine traffic stays out of the graph
 iglite connections --since 24h   # the database of every connection seen
+iglite behaviour                 # what devices did that they normally don't
 
 # Show it to someone: a simulated network with a minute of incidents, nothing to set up
 iglite demo
@@ -105,6 +106,8 @@ With Docker: `docker run --rm -p 8765:8765 iglite iglite demo --host 0.0.0.0 --n
 | any time | The C2 and dropper alerts have filed themselves into case #1, opened from the threat brief | Cases tab: timeline, ATT&CK, **Block** the C2 IP, **Quarantine** the Smart-Plug, **Copy report** |
 | any time | File the phishing alert into a new case | Recent alerts › **Add to case** |
 | any time | How did the laptop get the malware? | Work-Laptop › **Find path to…** the dropper URL |
+| ~40 s | The Ring-Doorbell starts checking in with a server no feed knows | Behaviour tab: **Regular check-ins** (high); the server turns *suspicious* on behaviour alone |
+| ~50 s | The Office-Printer looks up four machine-generated domains | Behaviour tab: **Generated-looking domain**; try **This is normal** on one |
 
 Good stops along the way: click a device in the **Network** tab to see its
 connections and lookups; open an alert and read *why* it scored that way; mark
@@ -184,16 +187,33 @@ In gateway mode the dashboard's **Network** tab shows the network rather than
 one computer:
 
 * **Devices.** One card per device: its name (from DHCP, or one you give it),
-  IP address, how many connections, servers and sites, and whether anything it
-  touched is flagged. Flagged devices come first. Click a card to see the
-  device's alerts, MITRE ATT&CK techniques, connections and recent DNS lookups.
-  From there you can rename it, mute it, show it in the graph or ask the AI
-  analyst about it.
+  IP address, how many connections, servers and sites, its traffic over the
+  last 24 hours, and whether anything it touched is flagged. Flagged devices
+  come first. Click a card to see the device's traffic chart, alerts, MITRE
+  ATT&CK techniques, connections and DNS lookups (one row per site, with a
+  count). From there you can rename it, mute it, quarantine it, show it in the
+  graph or ask the AI analyst about it.
+* **Active now / Today / All devices.** By default only devices with traffic in
+  the last 5 minutes (`device_active_secs = 300`) are shown. **Today** adds
+  devices that went quiet in the last 24 hours; **All devices** is the full
+  inventory of every device ever seen, with when it was first and last active.
+  The graph has the same choice (**Active devices**, the default), and in live
+  mode a device that goes quiet leaves the graph with whatever only it was
+  connected to; anything flagged stays.
 * **Live DNS lookups.** Every lookup on the network as it happens, with the
   device that made it and the domain's verdict. Filter it to flagged lookups or
   pause it.
-* **Totals.** Devices, devices active now, flagged devices, open alerts and
-  lookups per minute.
+* **Totals.** Devices active now, seen today and known in all, flagged devices,
+  open alerts, lookups per minute and connections this hour.
+
+From the command line: `iglite devices` (active now), `iglite devices --today`,
+`iglite devices --all`.
+
+Only addresses inside `lan_networks` count as devices (default: every private
+range). On a hotspot gateway set it to the hotspot's range so neighbours on the
+upstream network never appear: `lan_networks = ["10.42.0.0/24"]` (the hotspot
+script does this). The gateway's own addresses, multicast and link-local
+addresses are never devices.
 
 Names you give devices are kept across restarts and win over DHCP names.
 
@@ -259,6 +279,24 @@ switch on DNS query logging so lookups reach the log:
 
 Settings: `gateway_ssh = "root@192.168.1.1"`, `gateway_ssh_port`,
 `gateway_ssh_key`, `gateway_ssh_logs = false` to read only the connection table.
+
+**ASUS routers** (stock ASUSWRT firmware or Asuswrt-Merlin) work the same way:
+
+1. In the router's web page: **Administration › System › Enable SSH: LAN only**,
+   and paste the contents of `~/.ssh/router.pub` into **Authorized Keys**. Apply.
+2. Log in as the router's admin user (not `root`):
+   `iglite serve --ssh admin@192.168.50.1 --ssh-key ~/.ssh/router`.
+
+Connections and device names work on stock firmware. DNS lookups don't: stock
+firmware doesn't log them, so the graph shows addresses without the site names
+behind them. With **Asuswrt-Merlin** (free, for most current models), switch on
+**Administration › System › Enable JFFS custom scripts and configs**, then add
+DNS logging over SSH and restart dnsmasq:
+
+```bash
+echo "log-queries" >> /jffs/configs/dnsmasq.conf.add
+service restart_dnsmasq
+```
 
 ### Web proxy
 
@@ -414,6 +452,56 @@ iglite case report 1 -o case-1.md
 iglite case list
 ```
 
+## Behaviour analysis
+
+Threat intelligence only knows what someone has already reported. Behaviour
+analysis catches the rest by learning what each device normally does and
+flagging what changes, for example a smart plug that starts checking in with
+an unknown server every ten seconds, a printer that looks up random-looking
+domains, or a NAS that suddenly accepts SSH from the internet.
+
+Each device is watched for `behaviour_learn_days` (7) to learn its habits from
+the [connection database](#live-graph-and-connection-history): the servers,
+sites and ports it uses, whether anything ever connects in, the hours of the day
+it is active and how busy a normal hour is. Then every scan checks:
+
+| Finding | What it means | Needs a baseline |
+|---------|---------------|------------------|
+| **Regular check-ins** (beaconing) | New connections to one server at a steady rhythm: how malware talks to its controller | no |
+| **Generated-looking domain** (DGA) | Lookups of names like `kz8qw3vxn5rt.com`, which malware generates to find its controller | no |
+| **New inbound connection** | The internet connects in on a port that never received connections | yes |
+| **New port** | A port the device never used; high for risky ones (4444, 3333 mining, 22, 3389, 445, 23, Tor, IRC...) | yes |
+| **New destination** | A server or site outside the habits of a device with few habits (plugs, cameras, TVs, printers) | yes |
+| **Burst of new destinations** | Many never-seen destinations at once | yes |
+| **Unusual hour** | Activity at an hour of the day the device has been quiet every day | yes |
+| **Traffic spike** | Far more connections in an hour than its busiest normal hours | yes |
+
+Common services (Google, Apple, CDNs, see [Hide common services](#hide-common-services))
+never count as new destinations or check-ins. A finding is raised once per
+device, kind and target and counted, not repeated, for a day. **This is normal**
+teaches it never to raise that one again. **Dismiss** just closes it.
+
+Findings appear in the **Behaviour** tab (with each device's baseline and its
+normal hours), in a device's details panel, in the timeline of open cases about
+that device, and as notifications (`behaviour_notify = "high"`; `"medium"` or
+`"off"`). Check-ins, generated domains and risky new ports also add
+**behaviour** evidence to the target's score, so a server nobody has reported
+yet can turn *suspicious* on what your own network saw.
+
+```bash
+iglite behaviour                      # open findings
+iglite behaviour devices              # every device's baseline, with its active hours
+iglite behaviour --device 10.42.0.88  # one device
+iglite behaviour mark 12 normal       # never raise #12 again (or: dismissed, open)
+```
+
+How well check-ins are caught depends on the input: event logs (syslog,
+NetFlow, Zeek, Suricata) time each connection; reading the connection table
+(`--conntrack`, `--ssh`) sees connections at each scan, so with the default
+30 s scans it catches rhythms of about a minute or slower, and faster ones show
+up at the scan rhythm. Behaviour analysis needs the connection database
+(`connection_log`, on by default); switch it off with `behaviour = false`.
+
 ## Live graph and connection history
 
 **Live graph.** With **Live** on (the default) in the Graph tab, new
@@ -470,10 +558,17 @@ What counts as common:
   Run it on the gateway now and then, then restart the service.
 * **Your own**: `common_domains = ["mycompany.com"]` in `iglite.toml`. Use
   `common_ignore` for anything that should never be hidden.
-* **IPs**: an address counts if it belongs to a CDN-only operator (Akamai,
-  Cloudflare, Fastly, Apple, Meta...) or if every name seen resolving to it is
-  common. Google, Microsoft and Amazon addresses don't count by owner alone,
-  because their clouds rent servers to anyone, attackers included.
+* **IPs**: an address counts if it is in a range the provider itself publishes
+  for its own services, if it belongs to a CDN-only operator (Akamai,
+  Cloudflare, Fastly, Apple, Meta...), or if every name seen resolving to it is
+  common. `iglite common update` downloads Google's list of its ranges minus
+  the ones it rents out as Google Cloud (so Search, YouTube, Gmail and Play
+  count, a server someone rents on Google Cloud doesn't) and Amazon's
+  CloudFront CDN ranges; Apple's 17.0.0.0/8 is built in. This matters when
+  phones use Private DNS (DNS over TLS to `dns.google` or Cloudflare): the
+  gateway then sees addresses without names. Google Cloud, Amazon EC2 and
+  Azure never count by owner alone, because anyone can rent a server there,
+  attackers included.
 
 What is **never hidden**, however popular:
 
@@ -490,7 +585,7 @@ Hiding only changes what you see. Every connection is still looked up, scored
 and alerted on.
 
 ```bash
-iglite common update                # download the Tranco top 10,000 (needs internet)
+iglite common update                # Tranco top 10,000 + Google/CloudFront address ranges (needs internet)
 iglite common check docs.google.com cdn.example.net 142.250.180.14
 iglite common                       # what is in the catalogue
 iglite graph host:gateway --hide-common
@@ -559,6 +654,7 @@ list.
 |-------|---------------------------|
 | **Stale evidence**: an IP flagged years ago, since reassigned | Bad evidence carries the date the source last saw it, and its weight halves every 180 days (`evidence_half_life_days`), down to 10%. The reason says e.g. *"last seen 2 years ago, weight 6%"*. |
 | **Shared infrastructure**: one Cloudflare/Google/Akamai IP serves thousands of sites | IP reputation on known CDN and big-platform networks counts at half weight (`shared_infra` list in `iglite.toml`). |
+| **Popular services in community feeds**: a pulse listing `gmail.com`, `claude.ai` or Google's addresses | Feed reputation of a domain or IP that is a [common service](#hide-common-services) (built-in catalogue, Tranco top list, providers' own address ranges) counts at half weight, so one community report can't make it suspicious. URLs keep full weight: a malware download on a popular host is still specific. Behaviour evidence from your own network keeps full weight too. After upgrading, `serve` re-judges everything already flagged (or run `iglite rescore`). |
 | **Noisy signals** | VirusTotal: 1 engine = ignored, 2–4 = suspicious, 5+ = malicious. Shodan/InternetDB `vpn`, `proxy` and `honeypot` tags are recorded but aren't evidence. OTX's own "whitelisted" and "reported false positive" data counts *against* a flag. |
 | **Weak single-source hits** | Shown in the Live network table but not alerted. Alerts need a score of at least 60 (`alert_min_score`). |
 | **Things only you know** | **Mark false positive** or **Confirm malicious** from an alert, the details panel, or `iglite fp` / `iglite confirm`. Your mark overrides the verdict, resolves its alerts, and stops it spreading suspicion to related indicators. `iglite unmark` undoes it. |
@@ -687,14 +783,15 @@ Windows and macOS include one.
 * **Live network**: live connections with the process (or, in gateway mode, the LAN device), remote address, domain and verdict. Start/stop monitoring, scan now, filter and sort. **History** searches the database of every connection and DNS lookup ever seen, with CSV export.
 * **Network** (gateway mode): every device on the network as a card, a detail panel per device, and a live feed of DNS lookups.
 * **Routes**: run a traceroute and watch the hops appear live, each colored by verdict and labeled with its owner, plus a round-trip-time chart. Recent traces can be replayed.
+* **Behaviour**: what devices did that they normally don't, with each device's learned habits (see [Behaviour analysis](#behaviour-analysis)).
 * **Cases**: incidents with their alerts, devices, indicators, ATT&CK techniques, notes and timeline (see [Cases](#cases-from-alerts-to-an-incident)).
 * **Graph**: updates live as connections happen, with active links animated (see [Live graph](#live-graph-and-connection-history)). Routine services (Google, Apple, CDNs...) are hidden by default, see [Hide common services](#hide-common-services). Two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
-* **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
+* **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export. By default it counts techniques tied to flagged indicators, devices, IDS observations and your reports; **Include unflagged indicators** adds the technique tags feeds put on harmless ones.
 * **Indicators**: a searchable, sortable list with STIX export.
 * **Analyst**: chat with the optional AI analyst (see below).
 * **Details panel**: why an indicator got its score, its incoming and outgoing connections, attributes, the cases it is in, and buttons to investigate again, block or quarantine, add it to a case, or find a path to another node.
 
-Keyboard: `1`–`9` switch tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
+Keyboard: `1`–`9` switch to the first nine tabs, `/` focuses search, `Esc` closes details. New alerts pop up as notifications. Polling pauses while the browser tab is
 hidden, so an idle dashboard costs nothing.
 
 Example output:
@@ -781,7 +878,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 176 offline tests, ~10 s
+.venv/bin/pytest            # 203 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

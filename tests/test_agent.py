@@ -296,7 +296,8 @@ def test_real_sdk_sends_gateway_request_to_the_configured_url(engine):
         seen.update(
             url=str(req.url),
             beta=req.headers.get("anthropic-beta"),
-            key=req.headers.get("x-api-key"),
+            # SDK 2.x sends the key as a bearer token; older ones as x-api-key
+            key=req.headers.get("x-api-key") or req.headers.get("authorization", "").removeprefix("Bearer "),
             body=json.loads(req.content),
         )
         return httpx2.Response(

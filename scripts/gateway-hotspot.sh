@@ -26,6 +26,7 @@ CON=iglite-hotspot
 SSID="" PASSWORD="" WIFI="" WAN="" BAND=bg TOKEN="" DRY=0 UNINSTALL=0 KEEP_AWAKE=1 SERVICE=1
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFIX=/opt/iglite ETC=/etc/iglite DATA=/var/lib/iglite DNSLOG=/var/log/hotspot-dns.log
+HOTSPOT_LAN=10.42.0.0/24   # NetworkManager's shared-connection range: only its clients are devices
 
 usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
@@ -178,7 +179,7 @@ WorkingDirectory=$ETC
 EnvironmentFile=$ETC/.env
 ExecStartPre=-$ETC/hotspot-forward.sh
 ExecStart=$PREFIX/venv/bin/iglite --db $DATA/iglite.db serve --host 0.0.0.0 --conntrack --tail $DNSLOG \\
-  --leases /var/lib/NetworkManager/dnsmasq-$WIFI.leases --enforce nftables --block-hosts $DATA/blocked.hosts
+  --leases /var/lib/NetworkManager/dnsmasq-$WIFI.leases --enforce nftables --block-hosts $DATA/blocked.hosts --lan $HOTSPOT_LAN
 Restart=on-failure
 RestartSec=10
 

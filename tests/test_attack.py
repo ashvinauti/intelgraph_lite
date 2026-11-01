@@ -223,3 +223,14 @@ def test_user_copy_of_the_catalogue_takes_precedence(tmp_path, monkeypatch):
         assert attack.catalogue().version == "123.4"
     finally:
         attack._cached = None
+
+
+def test_matrix_counts_techniques_of_flagged_indicators_by_default(make_engine, lists):
+    engine = _linked_engine(make_engine, lists)  # 203.0.113.66: malicious, T1071.001
+    harmless = classify("gmail.com")
+    engine.store.upsert_node(harmless)
+    engine.link_technique(harmless, "T1566", "uses_technique", "otx")  # a feed's tag on a harmless indicator
+    ids = lambda s: {t["id"] for tac in s["tactics"] for t in tac["techniques"]}  # noqa: E731
+    assert ids(attack.summary(engine.store)) == {"T1071.001"}
+    assert ids(attack.summary(engine.store, unflagged=True)) == {"T1071.001", "T1566"}
+    assert [t["techniqueID"] for t in attack.navigator_layer(engine.store)["techniques"]] == ["T1071.001"]

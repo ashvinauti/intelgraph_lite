@@ -287,23 +287,132 @@ def cmd_connections(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rescore(engine: Engine, args: argparse.Namespace) -> int:
+    before = {v: len(engine.store.search(verdict=v, limit=100_000)) for v in ("malicious", "suspicious")}
+    changed = engine.rescore_flagged()
+    after = {v: len(engine.store.search(verdict=v, limit=100_000)) for v in ("malicious", "suspicious")}
+    print(
+        f"{changed} indicator(s) changed verdict. Malicious {before['malicious']} -> {after['malicious']}, "
+        f"suspicious {before['suspicious']} -> {after['suspicious']}."
+    )
+    return 0
+
+
+def cmd_devices(engine: Engine, args: argparse.Namespace) -> int:
+    now = time.time()
+    active_secs = float(engine.config.device_active_secs)
+    since = None if args.all else now - (86400 if args.today else active_secs)
+    rows = [
+        r
+        for r in engine.store.inventory(since=since, kind=None if args.programs else "host")
+        if engine.is_device(r["who"])
+    ]
+    if not rows:
+        print(
+            "No active devices right now (--today or --all for the others)."
+            if since
+            else "No devices seen yet."
+        )
+        return 0
+    for r in rows:
+        age = now - r["last_seen"]
+        state = "active" if age <= active_secs else "idle" if age <= 86400 else "offline"
+        when = "now" if age < 60 else time.strftime("%m-%d %H:%M", time.localtime(r["last_seen"]))
+        first = time.strftime("%Y-%m-%d", time.localtime(r["first_seen"]))
+        who = r["who"].split(":", 1)[1]
+        paint = {"active": "benign", "idle": "suspicious"}.get(state, "unknown")
+        print(
+            _paint(paint, f"{state:<8}") + f" {who:<16} {(r['name'] or ''):<18} last {when:<12} since {first}"
+            f"  {r['flows']:>8,} connections {r['lookups']:>7,} lookups"
+        )
+    return 0
+
+
+def cmd_behaviour(engine: Engine, args: argparse.Namespace) -> int:
+    from .behaviour import describe
+
+    store = engine.store
+    if args.action == "mark":
+        if (
+            len(args.args) != 2
+            or not args.args[0].isdigit()
+            or args.args[1] not in ("normal", "dismissed", "open")
+        ):
+            raise SystemExit("usage: iglite behaviour mark ANOMALY_ID normal|dismissed|open")
+        if not store.set_anomaly_status(int(args.args[0]), args.args[1]):
+            raise SystemExit(f"error: no anomaly {args.args[0]}")
+        print(f"Anomaly #{args.args[0]}: {args.args[1]}")
+        return 0
+    who = None
+    if args.device:
+        who = args.device if ":" in args.device else f"host:{args.device}"
+    if args.action == "devices" or who:
+        beh = engine.behaviour()
+        for w in [who] if who else store.log_whos():
+            p = beh.profile(w).summary()
+            node = store.node(w) or {}
+            name = (node.get("attrs") or {}).get("name") or ""
+            state = (
+                f"learning ({p['days']:.1f} of {engine.config.behaviour_learn_days:g} days)"
+                if p["learning"]
+                else f"baseline from {p['days']:.0f} days"
+            )
+            hours = "".join("#" if h >= 0.5 else "+" if h > 0 else "." for h in p["hours"])
+            print(
+                f"{w:<22} {name:<16} {state:<26} {p['sites']:>3} sites {p['remotes']:>3} servers  hours 0-23 [{hours}]"
+                + ("  narrow" if p["narrow"] else "")
+            )
+        if not who:
+            return 0
+    rows = store.anomalies(who=who, status=None if args.all else "open", limit=args.limit)
+    if not rows:
+        print(
+            "No anomalies." if args.all else "No open anomalies (--all shows dismissed and normal ones too)."
+        )
+    for a in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(a["last_at"]))
+        device = a["who_name"] or a["who"].split(":", 1)[1]
+        paint = {"high": "malicious", "medium": "suspicious"}.get(a["severity"], "unknown")
+        times = f" x{a['count']}" if a["count"] > 1 else ""
+        print(
+            _paint(paint, f"#{a['id']:<4} {a['severity']:<7}")
+            + f" {when}  {device:<16} {describe(a['kind'])}{times}"
+            + (f"  [{a['status']}]" if a["status"] != "open" else "")
+        )
+        print(f"       {a['detail']}")
+    return 0
+
+
 def cmd_common(engine: Engine, args: argparse.Namespace) -> int:
     from . import common
 
     path = Path(engine.config.common_top_file or common.TRANCO_FILE).expanduser()
     if args.action == "update":
+        ok = True
         print(f"Downloading the Tranco top {args.top:,} popular domains (tranco-list.eu)...")
         try:
             domains, list_id = common.download_tranco(args.top)
-        except OSError as exc:
-            raise SystemExit(f"error: could not download the Tranco list: {exc}")
-        if not domains:
-            raise SystemExit("error: the Tranco list came back empty")
-        common.save_tranco(domains, list_id, path)
-        print(
-            f"Saved {len(domains):,} domains (list {list_id}) to {path}. Restart `iglite serve` to use them."
-        )
-        return 0
+            if not domains:
+                raise ValueError("the list came back empty")
+            common.save_tranco(domains, list_id, path)
+            print(f"  saved {len(domains):,} domains (list {list_id}) to {path}")
+        except (OSError, ValueError) as exc:
+            ok = False
+            print(f"  error: could not download the Tranco list: {exc}")
+        print("Downloading Google's and Amazon CloudFront's published address ranges...")
+        try:
+            ranges = common.download_ranges()
+            saved = common.save_ranges(ranges, path.with_name("ip_ranges.json"))
+            google = ranges["Google"]
+            print(
+                f"  saved to {saved}: Google {len(google['include'])} ranges, minus {len(google['exclude'])} "
+                f"rented as Google Cloud; CloudFront {len(ranges['Amazon CloudFront']['include'])} ranges"
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            ok = False
+            print(f"  error: could not download the address ranges: {exc}")
+        print("Restart `iglite serve` (or the iglite-gateway service) to use them.")
+        return 0 if ok else 1
     c = engine.common()
     if args.action == "check":
         if not args.names:
@@ -341,6 +450,12 @@ def cmd_common(engine: Engine, args: argparse.Namespace) -> int:
     print(
         f"Popular-site list: {header or 'not downloaded'} ({len(top):,} domains)"
         + ("" if top else "; run `iglite common update`")
+    )
+    _, when = common.read_ranges(path.with_name("ip_ranges.json"))
+    print(
+        "Address ranges: "
+        + ", ".join(name for name, _, _ in c.ranges)
+        + (f" (downloaded {when})" if when else "; run `iglite common update` for Google and CloudFront")
     )
     return 0
 
@@ -696,6 +811,15 @@ def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
     from .api import serve
 
     _apply_gateway(engine, args)
+
+    def rescore() -> None:  # scoring rules can change between versions: re-judge what is flagged
+        changed = engine.rescore_flagged()
+        if changed:
+            print(f"Rescored flagged indicators: {changed} changed verdict")
+
+    import threading
+
+    threading.Thread(target=rescore, name="iglite-rescore", daemon=True).start()
     if args.watch or engine.config.gateway:
         engine.watcher(args.interval).start()
         print(f"Watching live connections every {engine.watcher().interval:.0f}s")
@@ -1023,6 +1147,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--csv", metavar="FILE", help="write every matching row to a CSV file")
     sp.add_argument("--stats", action="store_true", help="how much is stored")
     sp.set_defaults(func=cmd_connections)
+
+    sub.add_parser(
+        "rescore", help="re-judge every flagged indicator with the current scoring rules"
+    ).set_defaults(func=cmd_rescore)
+
+    sp = sub.add_parser("devices", help="devices on the network: active now, --today or --all ever seen")
+    sp.add_argument("--today", action="store_true", help="every device with traffic in the last 24 hours")
+    sp.add_argument("--all", action="store_true", help="every device ever seen, with when it was last active")
+    sp.add_argument(
+        "--programs", action="store_true", help="this-computer mode: programs instead of LAN devices"
+    )
+    sp.set_defaults(func=cmd_devices)
+
+    sp = sub.add_parser("behaviour", help="behaviour analysis: what devices do that they normally don't")
+    sp.add_argument("action", nargs="?", default="list", choices=["list", "devices", "mark"])
+    sp.add_argument("args", nargs="*", help="mark: ANOMALY_ID normal|dismissed|open")
+    sp.add_argument("--device", help="one device's baseline and anomalies (LAN IP)")
+    sp.add_argument("--all", action="store_true", help="include dismissed and normal anomalies")
+    sp.add_argument("--limit", type=int, default=50)
+    sp.set_defaults(func=cmd_behaviour)
 
     sp = sub.add_parser("common", help="common services hidden from the graph (Google, Apple, CDNs...)")
     sp.add_argument("action", nargs="?", default="list", choices=["list", "check", "update"])

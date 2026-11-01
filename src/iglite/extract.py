@@ -155,6 +155,10 @@ def treat_as_public(networks: list[str]) -> None:
 def public_ip(value: str) -> bool:
     """True for an internet address (or one in a network added by ``treat_as_public``)."""
     addr = ipaddress.ip_address(value)
+    if (
+        addr.is_multicast
+    ):  # ipaddress calls 224.0.0.251 (mDNS) and ff02::fb "global": they never leave the LAN
+        return False
     return addr.is_global or any(addr in n for n in _EXTRA_PUBLIC if n.version == addr.version)
 
 
