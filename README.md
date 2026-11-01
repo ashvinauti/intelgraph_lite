@@ -654,6 +654,7 @@ list.
 |-------|---------------------------|
 | **Stale evidence**: an IP flagged years ago, since reassigned | Bad evidence carries the date the source last saw it, and its weight halves every 180 days (`evidence_half_life_days`), down to 10%. The reason says e.g. *"last seen 2 years ago, weight 6%"*. |
 | **Shared infrastructure**: one Cloudflare/Google/Akamai IP serves thousands of sites | IP reputation on known CDN and big-platform networks counts at half weight (`shared_infra` list in `iglite.toml`). |
+| **Popular services in community feeds**: a pulse listing `gmail.com`, `claude.ai` or Google's addresses | Feed reputation of a domain or IP that is a [common service](#hide-common-services) (built-in catalogue, Tranco top list, providers' own address ranges) counts at half weight, so one community report can't make it suspicious. URLs keep full weight: a malware download on a popular host is still specific. Behaviour evidence from your own network keeps full weight too. After upgrading, `serve` re-judges everything already flagged (or run `iglite rescore`). |
 | **Noisy signals** | VirusTotal: 1 engine = ignored, 2–4 = suspicious, 5+ = malicious. Shodan/InternetDB `vpn`, `proxy` and `honeypot` tags are recorded but aren't evidence. OTX's own "whitelisted" and "reported false positive" data counts *against* a flag. |
 | **Weak single-source hits** | Shown in the Live network table but not alerted. Alerts need a score of at least 60 (`alert_min_score`). |
 | **Things only you know** | **Mark false positive** or **Confirm malicious** from an alert, the details panel, or `iglite fp` / `iglite confirm`. Your mark overrides the verdict, resolves its alerts, and stops it spreading suspicion to related indicators. `iglite unmark` undoes it. |
@@ -785,7 +786,7 @@ Windows and macOS include one.
 * **Behaviour**: what devices did that they normally don't, with each device's learned habits (see [Behaviour analysis](#behaviour-analysis)).
 * **Cases**: incidents with their alerts, devices, indicators, ATT&CK techniques, notes and timeline (see [Cases](#cases-from-alerts-to-an-incident)).
 * **Graph**: updates live as connections happen, with active links animated (see [Live graph](#live-graph-and-connection-history)). Routine services (Google, Apple, CDNs...) are hidden by default, see [Hide common services](#hide-common-services). Two layouts. **Path** arranges nodes in columns by hop distance from a root, like traceroute (this computer → programs → IPs → domains, plus traced router paths). **Force** is a physics layout. Click a node to see what points at it (orange) and what it points at (blue). **Find path to…** shows the shortest chain linking two nodes, e.g. *Work-Laptop → queried → cdn-update.example ← hosted_on ← the dropper URL*, without going through hubs like shared tags or the gateway. Hide techniques, tags, malware or reports when they clutter the view. Drag, zoom, pan, double-click to expand, filter by verdict, and pick any node as the root.
-* **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export.
+* **ATT&CK**: the MITRE ATT&CK matrix of techniques seen, by tactic, with the indicators and basis behind each one, and a Navigator layer export. By default it counts techniques tied to flagged indicators, devices, IDS observations and your reports; **Include unflagged indicators** adds the technique tags feeds put on harmless ones.
 * **Indicators**: a searchable, sortable list with STIX export.
 * **Analyst**: chat with the optional AI analyst (see below).
 * **Details panel**: why an indicator got its score, its incoming and outgoing connections, attributes, the cases it is in, and buttons to investigate again, block or quarantine, add it to a case, or find a path to another node.
@@ -877,7 +878,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 198 offline tests, ~10 s
+.venv/bin/pytest            # 203 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

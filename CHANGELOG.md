@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.5
+
+From a week of real traffic on the hotspot gateway:
+
+- **Popular services aren't suspicious on one feed's word.** Community feeds
+  (OTX pulses) list `gmail.com`, `claude.ai`, `dns.google` and Google or
+  Microsoft addresses; 61 indicators were "suspicious", none malicious. Feed
+  reputation of a domain or IP that is a common service now counts at half
+  weight, with a reason in "why this score". URLs and behaviour evidence keep
+  full weight. `serve` re-judges flagged indicators at start; `iglite rescore`
+  does it by hand.
+- **ATT&CK counts what matters by default**: techniques of flagged indicators,
+  devices, IDS observations and your reports. "Include unflagged indicators"
+  brings back feeds' tags on harmless ones.
+- **Every device you've had shows under All devices**: devices seen before the
+  inventory existed are filled in from the graph (schema 10), and the graph's
+  "Active devices" now agrees with the Network tab.
+- A device's connections to common services are folded like its lookups, and
+  the DNS feed says when every recent lookup was a common service.
+
 ## 0.2.4
 
 - **Google's own addresses count as common.** `iglite common update` also

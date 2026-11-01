@@ -214,3 +214,31 @@ def test_graph_leaves_out_addresses_that_are_not_devices(home):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_devices_seen_before_the_inventory_are_filled_in_on_upgrade(tmp_path):
+    path = tmp_path / "old.db"
+    store = Store(path)
+    store.upsert_node(Indicator(Kind.HOST, "10.42.0.170"), {"name": "iPhone"})
+    store.upsert_node(Indicator(Kind.HOST, "gateway"))
+    store.close()
+    db = sqlite3.connect(path)
+    db.execute("DELETE FROM inventory")
+    db.execute("UPDATE meta SET v='9' WHERE k='schema_version'")
+    db.commit()
+    db.close()
+    store = Store(path)
+    assert [(r["who"], r["name"]) for r in store.inventory()] == [("host:10.42.0.170", "iPhone")]
+    store.close()
+
+
+def test_device_details_mark_common_connections(home):
+    engine, watch, network = home
+    srv, get = _serve(engine)
+    try:
+        d = get("/api/device?ip=10.42.0.11")[1]  # the phone: everyday sites only
+        conns = [r for r in d["connections"] if r["proto"] != "dns"]
+        assert conns and all(r["common"] == "Everyday services (demo)" for r in conns)
+    finally:
+        srv.shutdown()
+        srv.server_close()

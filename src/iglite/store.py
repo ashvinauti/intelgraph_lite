@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -271,6 +271,12 @@ class Store:
                         " SELECT who, MIN(f), MAX(l), SUM(c), SUM(d) FROM ("
                         "  SELECT who, first_seen AS f, last_seen AS l, hits AS c, 0 AS d FROM conn_log"
                         "  UNION ALL SELECT who, first_seen, last_seen, 0, hits FROM dns_log) GROUP BY who"
+                    )
+                if int(row["v"]) < 10:  # devices seen before the inventory existed: from their graph nodes
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO inventory (who, first_seen, last_seen, flows, lookups)"
+                        " SELECT key, first_seen, last_seen, 0, 0 FROM nodes WHERE kind = 'host'"
+                        " AND key NOT IN ('host:gateway', 'host:this-computer')"
                     )
                 self._db.execute("UPDATE meta SET v=? WHERE k='schema_version'", (str(SCHEMA_VERSION),))
 

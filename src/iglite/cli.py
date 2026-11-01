@@ -287,6 +287,17 @@ def cmd_connections(engine: Engine, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rescore(engine: Engine, args: argparse.Namespace) -> int:
+    before = {v: len(engine.store.search(verdict=v, limit=100_000)) for v in ("malicious", "suspicious")}
+    changed = engine.rescore_flagged()
+    after = {v: len(engine.store.search(verdict=v, limit=100_000)) for v in ("malicious", "suspicious")}
+    print(
+        f"{changed} indicator(s) changed verdict. Malicious {before['malicious']} -> {after['malicious']}, "
+        f"suspicious {before['suspicious']} -> {after['suspicious']}."
+    )
+    return 0
+
+
 def cmd_devices(engine: Engine, args: argparse.Namespace) -> int:
     now = time.time()
     active_secs = float(engine.config.device_active_secs)
@@ -800,6 +811,15 @@ def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
     from .api import serve
 
     _apply_gateway(engine, args)
+
+    def rescore() -> None:  # scoring rules can change between versions: re-judge what is flagged
+        changed = engine.rescore_flagged()
+        if changed:
+            print(f"Rescored flagged indicators: {changed} changed verdict")
+
+    import threading
+
+    threading.Thread(target=rescore, name="iglite-rescore", daemon=True).start()
     if args.watch or engine.config.gateway:
         engine.watcher(args.interval).start()
         print(f"Watching live connections every {engine.watcher().interval:.0f}s")
@@ -1127,6 +1147,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--csv", metavar="FILE", help="write every matching row to a CSV file")
     sp.add_argument("--stats", action="store_true", help="how much is stored")
     sp.set_defaults(func=cmd_connections)
+
+    sub.add_parser(
+        "rescore", help="re-judge every flagged indicator with the current scoring rules"
+    ).set_defaults(func=cmd_rescore)
 
     sp = sub.add_parser("devices", help="devices on the network: active now, --today or --all ever seen")
     sp.add_argument("--today", action="store_true", help="every device with traffic in the last 24 hours")

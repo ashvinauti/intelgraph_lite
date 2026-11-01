@@ -17,7 +17,8 @@ Endpoints
     POST /api/behaviour/anomaly     {"id", "status": open|dismissed|normal}  (normal: never raise it again)
     GET  /api/common                the common-services catalogue in use; POST /api/common/check {"name"}
     GET  /api/export/{json,csv,stix}
-    GET  /api/attack?associated=0   MITRE ATT&CK matrix of techniques seen
+    GET  /api/attack?associated=0&all=0   MITRE ATT&CK matrix of techniques seen (all=1: also
+                                    techniques feeds tag on unflagged indicators)
     GET  /api/attack/technique?id=  one technique and its indicators
     GET  /api/attack/navigator      ATT&CK Navigator layer
     GET  /api/devices?state=active|today|all   gateway mode: one summary per LAN device, with its
@@ -333,7 +334,7 @@ def _flag(q: dict[str, str], name: str) -> bool:
 
 
 def _attack(engine: Engine, q: dict, body: dict) -> Any:
-    return attack.summary(engine.store, associated=_flag(q, "associated"))
+    return attack.summary(engine.store, associated=_flag(q, "associated"), unflagged=_flag(q, "all"))
 
 
 def _attack_technique(engine: Engine, q: dict, body: dict) -> Any:
@@ -345,7 +346,7 @@ def _attack_technique(engine: Engine, q: dict, body: dict) -> Any:
 
 def _attack_navigator(engine: Engine, q: dict, body: dict) -> Any:
     return json.dumps(
-        attack.navigator_layer(engine.store, associated=_flag(q, "associated"))
+        attack.navigator_layer(engine.store, associated=_flag(q, "associated"), unflagged=_flag(q, "all"))
     ), "application/json"
 
 
@@ -473,6 +474,16 @@ def _device(engine: Engine, q: dict, body: dict) -> Any:
     common = engine.common()
     for x in d["lookups"]:
         x["common"] = None if x["verdict"] in ("malicious", "suspicious") else common.domain(x["domain"])
+    keys = {r["key"] for r in d["connections"] if r["key"].startswith("ip:")}
+    labels = common.classify(engine.store, engine.store.nodes(keys))
+    for r in d["connections"]:
+        flagged = r["verdict"] in ("malicious", "suspicious")
+        r["common"] = (
+            None
+            if flagged
+            else labels.get(r["key"])
+            or next((label for n in r.get("names") or [] if (label := common.domain(n))), None)
+        )
     return d
 
 
