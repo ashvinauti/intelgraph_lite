@@ -19,6 +19,8 @@ From a week of real traffic on the hotspot gateway:
   "Active devices" now agrees with the Network tab.
 - A device's connections to common services are folded like its lookups, and
   the DNS feed says when every recent lookup was a common service.
+- The live graph's counter counts only what is drawn (it counted nodes that
+  were then hidden or dropped as inactive).
 
 ## 0.2.4
 
