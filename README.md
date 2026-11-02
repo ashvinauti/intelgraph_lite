@@ -12,7 +12,7 @@ limits, and a response cache, so repeat questions cost nothing. See
 ## Install
 
 Python 3.11+ is the only requirement. **Step-by-step guide for a fresh system
-(Ubuntu gateway, Windows, macOS), and where to get every API key:
+(Ubuntu gateway, Windows Mobile hotspot, macOS), and where to get every API key:
 [INSTALL.md](INSTALL.md).**
 
 ```bash
@@ -880,7 +880,7 @@ docker run -p 8765:8765 -p 5514:5514/udp -p 2055:2055/udp -e IGLITE_API_TOKEN=ch
 
 ```bash
 uv venv && uv pip install -e '.[dev]'
-.venv/bin/pytest            # 203 offline tests, ~10 s
+.venv/bin/pytest            # 208 offline tests, ~10 s
 .venv/bin/ruff check src tests
 ```
 

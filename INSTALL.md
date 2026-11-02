@@ -5,7 +5,8 @@ Three ways to run it:
 | Setup | What it watches | Section |
 |-------|-----------------|---------|
 | **Ubuntu gateway** (recommended) | Every device on your network: the Ubuntu machine shares its wired internet as a Wi-Fi hotspot and checks everything that goes through it | [1](#1-ubuntu-gateway-fresh-system) |
-| **Windows, macOS or Linux PC** | That one computer's own connections, or the demo | [2](#2-windows-macos-or-linux-one-computer) |
+| **Windows PC with Mobile hotspot** | Every device on the PC's Wi-Fi hotspot (only those) | [2](#2-windows-mobile-hotspot) |
+| **Windows, macOS or Linux PC** | That one computer's own connections, or the demo | [2b](#2b-windows-macos-or-linux-one-computer) |
 | **Your own router** (OpenWrt, ASUS, pfSense) | Every device, read from the router over SSH | README, "Connect over SSH" |
 
 Then [find and add your keys](#3-keys-and-tokens), and keep it [up to date](#4-updating).
@@ -102,7 +103,72 @@ beaconing and generated-looking domains are flagged from day one.
 
 ---
 
-## 2. Windows, macOS or Linux (one computer)
+## 2. Windows Mobile hotspot
+
+```
+internet ─ your router ─ ethernet ─► Windows PC (Mobile hotspot + IntelGraph Lite) ─ Wi-Fi ─► your devices
+```
+
+Windows' **Mobile hotspot** shares the PC's internet over Wi-Fi; its devices get
+`192.168.137.x` addresses. IntelGraph Lite watches **only those devices**: it captures the
+hotspot adapter alone (with Wireshark's `tshark`), keeps just the first packet of each new
+connection plus DNS and DHCP, and counts only `192.168.137.0/24` as devices. The PC's own
+browsing doesn't go through that adapter, so it isn't watched.
+
+### What you need
+
+- **Windows 10 or 11** with Wi-Fi, and the internet on **Ethernet** (or a second Wi-Fi adapter).
+- **Python 3.11+**: the installer gets Python 3.12 with `winget` if it's missing.
+- **Wireshark** with the **Npcap** driver: the installer gets Wireshark with `winget`;
+  Npcap must be installed by hand once from [npcap.com](https://npcap.com/#download) (default
+  options; leave *"Restrict Npcap driver's access to Administrators only"* unticked).
+
+### Install
+
+1. **Turn the hotspot on:** Settings › Network & internet › **Mobile hotspot** ›
+   *Share my internet connection from:* **Ethernet** › set a network name and password ›
+   **On**. (Optional: *Power saving* off, so it stays on when no device is connected.)
+2. **Get the code:** on GitHub **Code › Download ZIP** and unzip it, or
+   `git clone https://github.com/ashvinauti/intelgraph_lite.git`.
+3. **Run the installer** in **PowerShell as Administrator** (Start › type PowerShell ›
+   right-click › *Run as administrator*), inside that folder:
+   ```powershell
+   cd "C:\Users\you\Downloads\intelgraph_lite"
+   powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+   ```
+   It finds or installs Python and Wireshark, finds the hotspot adapter, installs
+   IntelGraph Lite in `%LOCALAPPDATA%\IntelGraphLite`, makes your **dashboard token**,
+   **asks for your API keys** (Enter skips one; see [section 3](#3-keys-and-tokens) for where
+   to get them), downloads the popular-site list, opens the dashboard port to local
+   networks in Windows Firewall, and starts IntelGraph Lite hidden, now and at every log-on.
+   At the end it prints the addresses and the token, and puts an **IntelGraph Lite**
+   shortcut on the desktop.
+
+### Use it
+
+| From | Address |
+|------|---------|
+| this PC | `http://127.0.0.1:8765` (desktop shortcut) |
+| a device on the hotspot | `http://192.168.137.1:8765` |
+| a computer on your home network | `http://<this PC's address>:8765` (printed at the end) |
+
+Connect phones and laptops to the hotspot's Wi-Fi; they appear under **Network** within a
+scan. Settings and keys live in `%USERPROFILE%\.iglite\.env`, the database and the log
+(`service.log`) next to it.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -Keys        # change API keys
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -SkipKeys    # install without asking
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -Uninstall   # remove (keeps your data)
+```
+
+**Differences from the Ubuntu gateway:** **Block** and **Quarantine** go into the
+blocklist feeds and case timelines but aren't enforced on the PC (Windows' hotspot has no
+firewall hook for shared traffic). Windows turns the hotspot off after a while with no
+devices unless *Power saving* is off; IntelGraph Lite picks the capture back up when it's on
+again. Wi-Fi hotspot devices only: Ethernet devices behind the PC aren't seen.
+
+## 2b. Windows, macOS or Linux (one computer)
 
 1. Install **Python 3.11 or newer** from [python.org](https://www.python.org/downloads/).
    On Windows, tick **"Add python.exe to PATH"** in the installer.
@@ -142,7 +208,8 @@ There are two different kinds.
 | Setup | Where it is |
 |-------|-------------|
 | Ubuntu gateway | `sudo grep IGLITE_API_TOKEN /etc/iglite/.env` (also printed at the end of setup) |
-| Windows / one computer | Only needed to open the dashboard from another machine (`iglite serve --host 0.0.0.0`): put `IGLITE_API_TOKEN=...` in your `.env` (below) |
+| Windows Mobile hotspot | Printed at the end of the installer; also `IGLITE_API_TOKEN=` in `%USERPROFILE%\.iglite\.env` (open it with `notepad $env:USERPROFILE\.iglite\.env`) |
+| One computer (any system) | Only needed to open the dashboard from another machine (`iglite serve --host 0.0.0.0`): put `IGLITE_API_TOKEN=...` in your `.env` (below) |
 
 To change it, make a new one with `openssl rand -hex 16` (or any long random text), put it
 in the file, and restart (`sudo systemctl restart iglite-gateway`). The browser asks for it
@@ -169,7 +236,7 @@ your account or profile settings.
 | Setup | File |
 |-------|------|
 | Ubuntu gateway | `/etc/iglite/.env`: `sudo nano /etc/iglite/.env`, add the lines, save (Ctrl+O, Enter, Ctrl+X), then `sudo systemctl restart iglite-gateway` |
-| Windows | `%USERPROFILE%\.iglite\.env` (e.g. `C:\Users\you\.iglite\.env`) or `.env` in the folder you run from; copy `.env.example` as a start |
+| Windows | `%USERPROFILE%\.iglite\.env` (e.g. `C:\Users\you\.iglite\.env`): the hotspot installer asks for the keys and writes this file (re-run it with `-Keys` to change them), or edit it with `notepad $env:USERPROFILE\.iglite\.env` and then restart it with `Stop-ScheduledTask "IntelGraph Lite"; Start-ScheduledTask "IntelGraph Lite"` |
 | macOS / Linux | `~/.iglite/.env` or `.env` in the folder you run from |
 
 Example:
@@ -210,6 +277,9 @@ The database upgrades itself on start; nothing is lost. Reload the dashboard wit
 **Ctrl+Shift+R**. Run `sudo /opt/iglite/venv/bin/iglite common update` again now and then
 (monthly) to refresh the popular-sites list and address ranges.
 
+Windows hotspot: get the new code (`git pull` or a new ZIP), then run the installer again
+(`-SkipKeys` keeps your keys); it updates IntelGraph Lite in place and restarts it.
+
 Windows / one computer: get the new code (`git pull` or a new ZIP), then `pip install .` again.
 
 ## 5. Uninstalling the gateway
@@ -231,5 +301,9 @@ those by hand if you want them gone.
 | Setup stops: "does not support access-point mode" | The Wi-Fi card can't be a hotspot; use a USB Wi-Fi adapter that supports AP mode |
 | Dashboard won't load | `systemctl status iglite-gateway` and `sudo journalctl -u iglite-gateway -n 40`; a setting typed twice in `/etc/iglite/iglite.toml` stops the service |
 | Devices don't appear | Are they on the hotspot Wi-Fi (address `10.42.0.x`)? Check `sudo tail -f /var/log/hotspot-dns.log` while one browses |
-| `iglite` not found on Windows | `python -m iglite ...`, or add the Scripts folder to PATH (section 2) |
+| `iglite` not found on Windows | `python -m iglite ...`, or add the Scripts folder to PATH (section 2b) |
+| Windows installer: "The Mobile hotspot is off" | Turn it on (section 2, step 1), then run the installer again |
+| Windows installer: "Npcap capture driver is missing" | Install Npcap from npcap.com with default options, then run the installer again |
+| Windows: no devices appear | Open `%USERPROFILE%\.iglite\service.log`: "capture ... ended" means the hotspot went off or Npcap is restricted to administrators |
+| Windows: "running scripts is disabled" | Start it as shown: `powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1` |
 | Sources show "no key" | Key line missing or misspelled in `.env`, or the service wasn't restarted |

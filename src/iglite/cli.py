@@ -781,6 +781,10 @@ def _apply_gateway(engine: Engine, args: argparse.Namespace) -> None:
         cfg.gateway_ssh_port = args.ssh_port
     if args.ssh_key:
         cfg.gateway_ssh_key = args.ssh_key
+    if getattr(args, "capture", None):
+        cfg.gateway_capture = args.capture
+    if getattr(args, "tshark", None):
+        cfg.gateway_tshark = args.tshark
     cfg.gateway_files = [*cfg.gateway_files, *(args.tail or [])]
     cfg.gateway_leases = [*cfg.gateway_leases, *(args.leases or [])]
     cfg.lan_networks = [*cfg.lan_networks, *(args.lan or [])]
@@ -1221,6 +1225,14 @@ def build_parser() -> argparse.ArgumentParser:
         )
         g.add_argument(
             "--tail", action="append", metavar="FILE", help="tail Zeek, Suricata eve.json or syslog files"
+        )
+        g.add_argument(
+            "--capture",
+            metavar="INTERFACE",
+            help='capture one interface with tshark, e.g. the Windows Mobile hotspot ("Local Area Connection* 10")',
+        )
+        g.add_argument(
+            "--tshark", metavar="PATH", help="tshark executable (default: PATH or Program Files\\Wireshark)"
         )
         g.add_argument("--leases", action="append", metavar="FILE", help="DHCP leases file for device names")
         g.add_argument(

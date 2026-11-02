@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0
+
+- **Windows Mobile hotspot.** A Windows PC sharing its internet as a Wi-Fi hotspot can now
+  watch the devices on it, and only those: `--capture "<hotspot adapter>"` runs a live
+  `tshark` capture of that adapter alone, keeping the first packet of each new connection
+  (TCP SYN, QUIC Initial), DNS on port 53 and DHCP (device names). With
+  `--lan 192.168.137.0/24` only hotspot clients count as devices; the PC itself is excluded.
+- `scripts/install-windows.ps1`: one command (PowerShell as Administrator) finds or installs
+  Python and Wireshark, checks Npcap, finds the hotspot adapter, installs IntelGraph Lite in
+  its own environment, makes the dashboard token, asks for API keys (`-Keys` to change them
+  later), downloads the common-service lists, opens the dashboard port to local networks,
+  and runs it hidden at every log-on. `-Uninstall` removes it and keeps your data.
+- The gateway's own addresses are found on Windows and macOS too (no `/proc`).
+- CI also runs on Windows: the test suite, the installer's syntax in Windows PowerShell 5.1
+  and PowerShell 7, and the dashboard starting.
+- INSTALL.md: Windows hotspot setup, and where every key and the token live on Windows.
+
 ## 0.2.5
 
 From a week of real traffic on the hotspot gateway:
