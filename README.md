@@ -11,7 +11,9 @@ limits, and a response cache, so repeat questions cost nothing. See
 
 ## Install
 
-Python 3.11+ is the only requirement.
+Python 3.11+ is the only requirement. **Step-by-step guide for a fresh system
+(Ubuntu gateway, Windows, macOS), and where to get every API key:
+[INSTALL.md](INSTALL.md).**
 
 ```bash
 pip install .            # or: uv pip install .
