@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import urllib.request
 from types import SimpleNamespace
 
@@ -327,3 +328,25 @@ def test_an_existing_database_is_upgraded_in_place(tmp_path):
     case_id = cases.create(store, "", alerts=[1])
     assert store.alert(1)["case_id"] == case_id
     store.close()
+
+
+def test_order_survives_a_coarse_clock(tmp_path, monkeypatch):
+    """Windows' clock moves in ~15 ms steps: things done 'at once' share a timestamp."""
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: int(real() / 0.0156) * 0.0156)
+    engine, watch, network = demo.build(str(tmp_path / "coarse.db"))
+    try:
+        store = engine.store
+        older = cases.create(store, "Older", indicators=[f"ip:{demo.C2_IP}"])
+        newer = cases.create(store, "Newer", indicators=[f"ip:{demo.C2_IP}"])  # same clock tick
+        network.incidents(60)
+        watch.scan()
+        assert [a["key"] for a in store.case_alerts(newer)] == [f"ip:{demo.C2_IP}"]
+        assert store.case_alerts(older) == []
+        assert [i["key"] for i in cases.detail(store, newer)["indicators"]][:2] == [
+            f"ip:{demo.C2_IP}",
+            "host:10.42.0.61",
+        ]
+    finally:
+        engine.store.close()
+        treat_as_public([])

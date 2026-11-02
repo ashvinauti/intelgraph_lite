@@ -97,8 +97,8 @@ def test_api_investigate_and_validation(server):
 def test_cli_end_to_end(tmp_path, lists, capsys, monkeypatch):
     cfg = tmp_path / "iglite.toml"
     cfg.write_text(
-        f'disabled = ["dns", "crtsh", "rdap", "internetdb"]\n[blocklists]\nbad = "{lists["bad"]}"\n'
-        f'other = "{lists["other"]}"\n'
+        f'disabled = ["dns", "crtsh", "rdap", "internetdb"]\n[blocklists]\nbad = \'{lists["bad"]}\'\n'
+        f"other = '{lists['other']}'\n"
     )
     db = str(tmp_path / "t.db")
     report = tmp_path / "report.txt"
