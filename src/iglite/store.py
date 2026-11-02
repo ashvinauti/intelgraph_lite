@@ -280,6 +280,13 @@ class Store:
                     )
                 self._db.execute("UPDATE meta SET v=? WHERE k='schema_version'", (str(SCHEMA_VERSION),))
 
+    def _tick(self) -> float:
+        """time.time(), but never the same twice: Windows' clock moves in ~15 ms steps, and
+        rows ordered by time (a case's indicators) must keep the order they were added in."""
+        with self._lock:
+            self._last_tick = max(time.time(), getattr(self, "_last_tick", 0.0) + 1e-6)
+            return self._last_tick
+
     def close(self) -> None:
         with self._lock:
             self._db.close()
@@ -736,7 +743,7 @@ class Store:
             return (
                 self._db.execute(
                     "INSERT OR IGNORE INTO case_indicators (case_id, key, at) VALUES (?,?,?)",
-                    (case_id, key, time.time()),
+                    (case_id, key, self._tick()),
                 ).rowcount
                 > 0
             )
