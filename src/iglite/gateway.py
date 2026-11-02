@@ -16,6 +16,8 @@ records, so every device behind it is covered (phones, TVs, servers):
   connection table (conntrack, or ``pfctl -ss`` on pfSense/OPNsense) and DHCP
   leases, and its system log is followed live (``logread -f`` / ``tail -F``).
   Read-only commands, key authentication only.
+* **packet capture** of one interface with ``tshark`` (Wireshark), for a Windows PC
+  sharing its internet as a Mobile hotspot: only connection starts, DNS and DHCP.
 * **log files** it tails: Zeek ``conn.log`` / ``dns.log`` (TSV or JSON),
   Suricata ``eve.json`` (flow, dns and alert events - alerts carry ATT&CK
   technique IDs), a Squid web proxy ``access.log``, or any file the syslog
@@ -138,6 +140,13 @@ def local_addresses(fib_trie: str = "/proc/net/fib_trie", if_inet6: str = "/proc
             out.add(str(ipaddress.ip_address(":".join(raw[i : i + 4] for i in range(0, 32, 4)))))
     except (OSError, ValueError, IndexError):
         pass
+    if not out:  # Windows / macOS: no /proc; ask the resolver for this machine's addresses
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None):
+                out.add(str(ipaddress.ip_address(info[4][0].split("%")[0])))
+        except (OSError, ValueError):
+            pass
+        out.add("127.0.0.1")
     return out
 
 
@@ -639,6 +648,168 @@ class SshSource:
             stop.wait(delay)
 
 
+# -- packet capture (tshark): the Windows Mobile hotspot ----------------------------------
+
+# Only what is needed: the first packet of each new connection (TCP SYN, QUIC Initial),
+# DNS and DHCP. Bulk traffic never reaches Python.
+CAPTURE_FILTER = (
+    "(tcp.flags.syn == 1 && tcp.flags.ack == 0) || (quic.long.packet_type == 0 && udp.dstport == 443)"
+    " || (dns && udp.port == 53) || dhcp"  # DNS on port 53 only: not mDNS/LLMNR announcements
+)
+CAPTURE_FIELDS = (
+    "frame.time_epoch",
+    "ip.src",
+    "ip.dst",
+    "ipv6.src",
+    "ipv6.dst",
+    "tcp.srcport",
+    "tcp.dstport",
+    "udp.srcport",
+    "udp.dstport",
+    "dns.flags.response",
+    "dns.qry.name",
+    "dns.a",
+    "dns.aaaa",
+    "dhcp.option.hostname",
+    "dhcp.option.requested_ip_address",
+    "dhcp.ip.your",
+)
+_TRUE = {"1", "true", "True", "TRUE"}
+
+
+def parse_capture_line(line: str) -> list[Event]:
+    """One line of ``tshark -T fields`` output (CAPTURE_FIELDS, tab separated) -> events."""
+    parts = line.rstrip("\r\n").split("\t")
+    if len(parts) < len(CAPTURE_FIELDS):
+        return []
+    f = dict(zip(CAPTURE_FIELDS, (p.split(",")[0].strip() for p in parts), strict=False))
+    every = dict(zip(CAPTURE_FIELDS, parts, strict=False))
+    src, dst = f["ip.src"] or f["ipv6.src"], f["ip.dst"] or f["ipv6.dst"]
+    out: list[Event] = []
+    if every["dhcp.option.hostname"]:  # a device joining: its name and address
+        ip = f["dhcp.ip.your"] or f["dhcp.option.requested_ip_address"]
+        if _ip(ip) and not ipaddress.ip_address(ip).is_unspecified:
+            out.append(Lease(ip, f["dhcp.option.hostname"]))
+        return out
+    if f["dns.qry.name"]:
+        name = f["dns.qry.name"].rstrip(".")
+        if f["dns.flags.response"] in _TRUE:
+            answers = tuple(a for v in (every["dns.a"], every["dns.aaaa"]) for a in v.split(",") if _ip(a))
+            if answers:
+                out.append(DnsEvent(None, name, answers))
+        elif _ip(src):
+            out.append(DnsEvent(src, name))
+        return out
+    if not (_ip(src) and _ip(dst)):
+        return out
+    if f["tcp.dstport"]:
+        out.append(Flow(src, dst, _port(f["tcp.srcport"]), _port(f["tcp.dstport"]), "tcp", "pass"))
+    elif f["udp.dstport"]:
+        out.append(Flow(src, dst, _port(f["udp.srcport"]), _port(f["udp.dstport"]), "udp", "pass"))
+    return out
+
+
+def find_tshark(configured: str | None = None) -> str | None:
+    """tshark on PATH, or where the Wireshark installer puts it."""
+    import shutil
+
+    for candidate in (
+        configured,
+        shutil.which("tshark"),
+        r"C:\Program Files\Wireshark\tshark.exe",
+        "/Applications/Wireshark.app/Contents/MacOS/tshark",
+    ):
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def resolve_interface(listing: str, wanted: str) -> str:
+    """``tshark -D`` lines like ``5. \\Device\\NPF_{...} (Local Area Connection* 10)``: the number
+    for a friendly name (or a number/device name given as is)."""
+    wanted = wanted.strip()
+    for line in listing.splitlines():
+        m = re.match(r"\s*(\d+)\.\s+(\S+)(?:\s+\((.*)\))?\s*$", line)
+        if m and wanted.lower() in {m.group(2).lower(), (m.group(3) or "").lower(), m.group(1)}:
+            return m.group(1)
+    return wanted
+
+
+class CaptureSource:
+    """Streams a live tshark capture of one network interface (the hotspot's) into the collector."""
+
+    def __init__(self, interface: str, tshark: str | None = None) -> None:
+        self.interface, self.configured, self.tshark = interface, tshark, find_tshark(tshark)
+
+    def argv(self, interface: str) -> list[str]:
+        argv = [
+            self.tshark or "tshark",
+            "-i",
+            interface,
+            "-l",
+            "-n",
+            "-Q",
+            "-Y",
+            CAPTURE_FILTER,
+            "-T",
+            "fields",
+            "-E",
+            "separator=/t",
+            "-E",
+            "occurrence=a",
+            "-E",
+            "aggregator=,",
+        ]
+        for name in CAPTURE_FIELDS:
+            argv += ["-e", name]
+        return argv
+
+    def follow(self, on_events: Any, stop: threading.Event, on_error: Any) -> None:
+        if not self.tshark:
+            where = f" at {self.configured}" if self.configured else ""
+            on_error(f"tshark was not found{where}: install Wireshark (with Npcap) or pass --tshark PATH")
+            return
+        current: list[subprocess.Popen[str]] = []
+
+        def end_on_stop() -> None:
+            stop.wait()
+            for proc in current:
+                proc.terminate()
+
+        threading.Thread(target=end_on_stop, name="iglite-capture-stop", daemon=True).start()
+        delay = 5.0
+        while not stop.is_set():
+            try:
+                listing = subprocess.run(  # noqa: S603 - fixed argument list
+                    [self.tshark, "-D"], capture_output=True, text=True, timeout=30, errors="replace"
+                ).stdout
+                proc = subprocess.Popen(  # noqa: S603 - fixed argument list, no shell
+                    self.argv(resolve_interface(listing, self.interface)),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    errors="replace",
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                on_error(f"tshark could not start: {exc}")
+                return
+            current[:] = [proc]
+            started = time.time()
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                on_events(parse_capture_line(line))
+            proc.wait()
+            if stop.is_set():
+                return
+            err = (proc.stderr.read() if proc.stderr else "").strip().splitlines()
+            on_error(
+                f"capture on {self.interface!r} ended: {err[-1] if err else 'tshark exited'}"
+                " (is the hotspot on and Npcap installed?)"
+            )
+            delay = 5.0 if time.time() - started > 60 else min(delay * 2, 300.0)
+            stop.wait(delay)
+
+
 # -- DHCP leases ------------------------------------------------------------------------
 
 
@@ -860,6 +1031,8 @@ class GatewayCollector:
             out.append("conntrack")
         if self.ssh is not None:
             out.append(f"ssh {self.ssh.target}")
+        if self.cfg.gateway_capture:
+            out.append(f"capture {self.cfg.gateway_capture}")
         out += [f"file {p}" for p in self.cfg.gateway_files]
         return out + self.extra_inputs
 
@@ -874,6 +1047,15 @@ class GatewayCollector:
             self._listen(_bind(self.cfg.gateway_netflow, 2055), self._on_netflow, "netflow")
         for path in self.cfg.gateway_files:
             self._spawn(self._tail, Path(path).expanduser(), name=f"iglite-tail-{Path(path).name}")
+        if self.cfg.gateway_capture:
+            capture = CaptureSource(self.cfg.gateway_capture, self.cfg.gateway_tshark)
+            self._spawn(
+                capture.follow,
+                lambda events: [self.add(e) for e in events],
+                self._stop,
+                self._error,
+                name="iglite-capture",
+            )
         if self.ssh is not None and self.cfg.gateway_ssh_logs:
             parser = LineParser()
             self._spawn(
@@ -1106,10 +1288,10 @@ class GatewayCollector:
         """
         if not self.started:
             self.start()
+        if (self.cfg.gateway_conntrack or self.cfg.gateway_capture) and time.time() - self._own_checked > 60:
+            self.lan.own = local_addresses()  # this machine is the gateway: it isn't a device
+            self._own_checked = time.time()
         if self.cfg.gateway_conntrack:
-            if time.time() - self._own_checked > 60:  # this machine is the gateway: it isn't a device
-                self.lan.own = local_addresses()
-                self._own_checked = time.time()
             for flow in parse_conntrack(read_conntrack(), closed=True):
                 self.add(flow)
         if self.ssh is not None:

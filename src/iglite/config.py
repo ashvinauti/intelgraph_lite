@@ -110,6 +110,8 @@ class Config:
     gateway_ssh_port: int = 22
     gateway_ssh_key: str | None = None  # private key file; default: your SSH agent / ~/.ssh keys
     gateway_ssh_logs: bool = True  # also follow the router's system log over the same SSH login
+    gateway_capture: str | None = None  # capture this interface with tshark (the Windows Mobile hotspot)
+    gateway_tshark: str | None = None  # tshark.exe if it isn't on PATH or in Program Files\Wireshark
     gateway_files: list[str] = field(default_factory=list)  # logs to tail: Zeek, Suricata eve.json, syslog
     gateway_leases: list[str] = field(default_factory=list)  # DHCP lease files, for device names
     gateway_senders: list[str] = field(default_factory=list)  # exporters allowed; default: private IPs
@@ -164,6 +166,7 @@ class Config:
             or self.gateway_netflow
             or self.gateway_conntrack
             or self.gateway_ssh
+            or self.gateway_capture
             or self.gateway_files
         )
 

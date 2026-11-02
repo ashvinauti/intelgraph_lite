@@ -280,8 +280,8 @@ def test_feedback_and_suppression_api(flagged):
 def test_cli_marking(tmp_path, lists, capsys, monkeypatch):
     cfg = tmp_path / "iglite.toml"
     cfg.write_text(
-        f'disabled = ["dns", "crtsh", "rdap", "internetdb"]\n[blocklists]\nbad = "{lists["bad"]}"\n'
-        f'other = "{lists["other"]}"\n'
+        f'disabled = ["dns", "crtsh", "rdap", "internetdb"]\n[blocklists]\nbad = \'{lists["bad"]}\'\n'
+        f"other = '{lists['other']}'\n"
     )
     monkeypatch.delenv("IGLITE_CONFIG", raising=False)
     base = ["-c", str(cfg), "--db", str(tmp_path / "t.db")]

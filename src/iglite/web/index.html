@@ -2585,6 +2585,7 @@ async function refreshView() {
     else if (view === "behaviour") await BehaviourView.refresh();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
     else if (view === "graph" && !Graph.nodes.size) {
+      if (!watch.mode) watch = await api("/api/watch");  // opened straight on #graph: learn the mode first
       await Graph.load(watch.mode === "gateway" ? "host:gateway" : "host:this-computer", true, 3);
       if (!Graph.nodes.size) {
         const top = await api("/api/indicators?limit=8&verdict=malicious");

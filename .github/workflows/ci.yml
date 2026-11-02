@@ -20,6 +20,44 @@ jobs:
       - run: ruff format --check src tests
       - run: pytest -q
 
+  # Windows: the test suite, the installer's syntax (Windows PowerShell 5.1 and PowerShell 7),
+  # and the dashboard actually starting.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,ai]"
+      - run: pytest -q
+      - name: Installer parses in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\install-windows.ps1", [ref]$null, [ref]$errs) | Out-Null
+          if ($errs) { $errs | Format-List; exit 1 }
+      - name: Installer parses in PowerShell 7
+        shell: pwsh
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/install-windows.ps1", [ref]$null, [ref]$errs) | Out-Null
+          if ($errs) { $errs | Format-List; exit 1 }
+      - name: Dashboard starts on Windows
+        shell: pwsh
+        run: |
+          python -m iglite --version
+          $p = Start-Process python -ArgumentList '-m', 'iglite', 'demo', '--no-browser', '--port', '8790' -PassThru -NoNewWindow
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep 1
+            try { $r = Invoke-RestMethod http://127.0.0.1:8790/api/health; if ($r.status -eq 'ok') { $ok = $true; break } } catch { }
+          }
+          $devices = Invoke-RestMethod http://127.0.0.1:8790/api/devices
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { Write-Error 'the dashboard did not start'; exit 1 }
+          "health ok, $($devices.devices.Count) active demo device(s)"
+
   # One-file build for demos: download "iglite-pyz" from the run and `python iglite.pyz demo`.
   pyz:
     needs: test
