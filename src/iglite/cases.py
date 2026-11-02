@@ -141,7 +141,9 @@ def auto_attach(store: Store, alert_id: int) -> int | None:
         keys.append(f"host:{device}")
     recent = time.time() - AUTO_ATTACH_WINDOW
     candidates = {cid for k in keys for cid in store.cases_with_indicator(k)}
-    for case in sorted(filter(None, map(store.case, candidates)), key=lambda c: -c["updated"]):
+    for case in sorted(
+        filter(None, map(store.case, candidates)), key=lambda c: (-c["updated"], -c["id"])
+    ):  # ties: the newest case
         if case["status"] != "closed" and case["updated"] >= recent:
             attach_alert(store, case["id"], alert_id, auto=True)
             return case["id"]

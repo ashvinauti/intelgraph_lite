@@ -305,5 +305,6 @@ those by hand if you want them gone.
 | Windows installer: "The Mobile hotspot is off" | Turn it on (section 2, step 1), then run the installer again |
 | Windows installer: "Npcap capture driver is missing" | Install Npcap from npcap.com with default options, then run the installer again |
 | Windows: no devices appear | Open `%USERPROFILE%\.iglite\service.log`: "capture ... ended" means the hotspot went off or Npcap is restricted to administrators |
+| Windows: "Invalid hex value" when IntelGraph Lite starts | A Windows path in `iglite.toml` in double quotes (`"C:\Users\..."` reads `\U` as an escape). Use single quotes: `bad = 'C:\Users\you\list.txt'` |
 | Windows: "running scripts is disabled" | Start it as shown: `powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1` |
 | Sources show "no key" | Key line missing or misspelled in `.env`, or the service wasn't restarted |
