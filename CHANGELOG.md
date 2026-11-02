@@ -16,6 +16,11 @@
 - CI also runs on Windows: the test suite, the installer's syntax in Windows PowerShell 5.1
   and PowerShell 7, and the dashboard starting.
 - INSTALL.md: Windows hotspot setup, and where every key and the token live on Windows.
+- Found by the first Windows CI run: Windows' clock moves in ~15 ms steps, so a case's
+  indicators could come back out of order and a new alert could be filed into the older of
+  two cases updated in the same tick. Timestamps that order rows are now strictly
+  increasing, and ties go to the newest case. Windows paths in `iglite.toml` need single
+  quotes (INSTALL.md, troubleshooting).
 
 ## 0.2.5
 
