@@ -11,6 +11,10 @@ limits, and a response cache, so repeat questions cost nothing. See
 
 ## Install
 
+**Windows:** follow the step-by-step [Windows setup guide](docs/WINDOWS_SETUP.md).
+In short: `git clone`, then `powershell -ExecutionPolicy Bypass -File .\setup.ps1`,
+then double-click `start.cmd`.
+
 Python 3.11+ is the only requirement.
 
 ```bash

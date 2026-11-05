@@ -105,3 +105,21 @@ def test_cli_end_to_end(tmp_path, lists, capsys, monkeypatch):
     assert main(["-c", str(cfg), "--db", db, "export", "stix", "-o", str(tmp_path / "b.json")]) == 0
     assert json.loads((tmp_path / "b.json").read_text())["type"] == "bundle"
     assert main(["-c", str(cfg), "--db", db, "prune", "--days", "0"]) == 0
+
+
+def test_serve_open_launches_the_browser(monkeypatch, tmp_path):
+    opened, served = [], []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    monkeypatch.setattr("iglite.api.serve", lambda engine, host, port: served.append((host, port)))
+
+    class ImmediateTimer:
+        def __init__(self, delay, fn, args):
+            self.fn, self.args = fn, args
+
+        def start(self):
+            self.fn(*self.args)
+
+    monkeypatch.setattr("threading.Timer", ImmediateTimer)
+    monkeypatch.delenv("IGLITE_CONFIG", raising=False)
+    assert main(["--db", str(tmp_path / "t.db"), "serve", "--open", "--port", "8799"]) == 0
+    assert served == [("127.0.0.1", 8799)] and opened == ["http://127.0.0.1:8799/"]

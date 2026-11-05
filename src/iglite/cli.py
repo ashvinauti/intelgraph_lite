@@ -294,6 +294,12 @@ def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
     if args.watch:
         engine.watcher(args.interval).start()
         print(f"Watching live connections every {engine.watcher().interval:.0f}s")
+    if args.open:
+        import threading
+        import webbrowser
+
+        host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host  # noqa: S104 - comparison only
+        threading.Timer(1.5, webbrowser.open, [f"http://{host}:{args.port}/"]).start()
     serve(engine, args.host, args.port)
     return 0
 
@@ -541,6 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8765)
     sp.add_argument("--watch", action="store_true", help="also monitor live network connections")
+    sp.add_argument("--open", action="store_true", help="open the dashboard in your browser")
     sp.add_argument("--interval", type=float, help="seconds between network snapshots (default 30)")
     sp.set_defaults(func=cmd_serve)
 
