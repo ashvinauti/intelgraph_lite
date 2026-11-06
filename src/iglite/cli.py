@@ -815,6 +815,8 @@ def cmd_serve(engine: Engine, args: argparse.Namespace) -> int:
     from .api import serve
 
     _apply_gateway(engine, args)
+    if getattr(args, "wifi_only", False):
+        engine.config.watch_scope = "wifi"
 
     def rescore() -> None:  # scoring rules can change between versions: re-judge what is flagged
         changed = engine.rescore_flagged()
@@ -875,11 +877,112 @@ def cfg_listens(engine: Engine) -> bool:
     return bool(cfg.gateway_syslog or cfg.gateway_netflow or cfg.gateway_files or cfg.gateway_ssh)
 
 
+_SEV = {"high": "malicious", "medium": "suspicious", "low": "unknown", "info": "benign"}
+
+
+def _print_findings(findings: list[dict[str, Any]]) -> None:
+    if not findings:
+        print(_paint("benign", "No problems found."))
+    for f in findings:
+        print(_paint(_SEV[f["severity"]], f"[{f['severity'].upper():<6}] {f['title']}"))
+        print(f"          {f['detail']}")
+        if f["fix"]:
+            print(f"          Fix: {f['fix']}")
+
+
+def cmd_wifi(engine: Engine, args: argparse.Namespace) -> int:
+    rep = engine.local_network(refresh=True)
+    if args.json:
+        print(json.dumps({k: rep[k] for k in ("wifi", "nearby", "devices", "findings", "errors")}, indent=2))
+        return 0
+    if not rep["wifi"]:
+        print("Not connected to Wi-Fi (or Wi-Fi details aren't available on this system).")
+    for w in rep["wifi"]:
+        sig = f", signal {w['signal']}%" if w["signal"] is not None else ""
+        print(
+            f"Wi-Fi: {w['ssid'] or '(none)'} on {w['interface']}  [{w['auth'] or '?'} / {w['cipher'] or '?'}{sig}]"
+        )
+    for a in rep["adapters"]:
+        if a["kind"] in ("wifi", "hotspot") and a["up"]:
+            what = "Mobile hotspot you share" if a["kind"] == "hotspot" else (a["network"] or a["name"])
+            print(
+                f"  {what}: {', '.join(a['addresses'])}  gateway {', '.join(a['gateways']) or '-'}  "
+                f"DNS {', '.join(a['dns']) or '-'}  profile {a['profile'] or '-'}"
+            )
+    print()
+    _print_findings(rep["findings"])
+    wifi_adapters = {a["name"] for a in rep["adapters"] if a["kind"] in ("wifi", "hotspot")}
+    devices = [d for d in rep["devices"] if d["adapter"] in wifi_adapters]
+    print(f"\nDevices on this Wi-Fi ({len(devices)}):")
+    for d in devices:
+        tags = [t for t, on in (("router", d["gateway"]), ("private MAC", d["randomized_mac"])) if on]
+        print(f"  {d['ip']:<16} {d['mac']}  {', '.join(tags)}")
+    if rep["nearby"]:
+        print(f"\nNearby networks ({len(rep['nearby'])}):")
+        for n in rep["nearby"][:20]:
+            best = max((b["signal"] or 0) for b in n["bssids"]) if n["bssids"] else 0
+            print(
+                f"  {n['ssid'] or '(hidden)':<32} {n['auth'] or 'Open':<16} {best:>3}%  {len(n['bssids'])} access point(s)"
+            )
+    for e in rep["errors"]:
+        print(f"\nNote: {e}")
+    return 0
+
+
+def cmd_exposure(engine: Engine, args: argparse.Namespace) -> int:
+    rep = engine.local_network(refresh=True)
+    exp = rep["exposure"]
+    if args.json:
+        print(json.dumps(exp, indent=2))
+        return 0
+    for a in exp["adapters"]:
+        title = {
+            "wifi": "Wi-Fi",
+            "hotspot": "Mobile hotspot (you share)",
+            "ethernet": "Ethernet",
+            "vpn": "VPN",
+            "virtual": "Virtual",
+        }.get(a["kind"], a["kind"])
+        fw = a["firewall"]
+        fw_text = (
+            "" if fw is None else f"  firewall {'on' if fw['enabled'] else 'OFF'}, inbound {fw['inbound']}"
+        )
+        print(
+            f"{title}: {a['network'] or a['name']} ({', '.join(a['addresses'])})  profile {a['profile'] or '-'}{fw_text}"
+        )
+        shown = [i for i in a["listeners"] if args.all or i["risk"] != "low"]
+        for i in shown:
+            who = i["process"] or "?"
+            if i["services"]:
+                who += f" [{'; '.join(i['services'][:2])}]"
+            print(
+                _paint(
+                    _SEV[i["risk"]],
+                    f"   {i['risk']:<6} {i['proto'].upper()} {i['port']:<6} {i['label']:<24} {who}",
+                )
+            )
+        hidden = len(a["listeners"]) - len(shown)
+        if not a["listeners"]:
+            print("   nothing reachable")
+        elif hidden:
+            print(f"   ... and {hidden} low-risk (--all to list)")
+        print()
+    if args.all and exp["local_only"]:
+        print(f"Only reachable from this computer ({len(exp['local_only'])}):")
+        for i in exp["local_only"]:
+            print(f"   {i['proto'].upper()} {i['port']:<6} {i['process'] or '?'}")
+    return 0
+
+
 def cmd_watch(engine: Engine, args: argparse.Namespace) -> int:
     import time
 
     _apply_gateway(engine, args)
+    if getattr(args, "wifi_only", False):
+        engine.config.watch_scope = "wifi"
     watch = engine.watcher(args.interval)
+    if watch.scope == "wifi" and watch.mode == "host" and not watch.scope_addresses():
+        print("Note: Wi-Fi only is on, but this computer isn't connected to Wi-Fi right now.")
     since = max((a["id"] for a in engine.store.alerts(limit=1)), default=0)
     if not args.once:
         print(f"Watching live connections every {watch.interval:.0f}s. Ctrl+C to stop.\n")
@@ -1252,8 +1355,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=8765)
     sp.add_argument("--watch", action="store_true", help="also monitor live network connections")
     sp.add_argument("--interval", type=float, help="seconds between network snapshots (default 30)")
+    sp.add_argument(
+        "--wifi-only",
+        action="store_true",
+        help="monitor only connections this computer makes over Wi-Fi (or its Mobile hotspot)",
+    )
     gateway(sp)
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser("wifi", help="is this Wi-Fi safe? security, look-alike networks, devices on it")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_wifi)
+
+    sp = sub.add_parser("exposure", help="which services on this computer are reachable on which network")
+    sp.add_argument("--all", action="store_true", help="also list low-risk services and localhost-only ones")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_exposure)
 
     sp = sub.add_parser(
         "blocklist", help="malicious IPs/domains/URLs as a feed for your firewall or DNS filter"
@@ -1290,6 +1407,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--interval", type=float, help="seconds between snapshots (default 30, min 5)")
     sp.add_argument("--once", action="store_true", help="take one snapshot, print it and exit")
     sp.add_argument("--all", action="store_true", help="with --once, include private/local peers")
+    sp.add_argument(
+        "--wifi-only",
+        action="store_true",
+        help="only connections this computer makes over Wi-Fi (or its Mobile hotspot)",
+    )
     gateway(sp)
     sp.set_defaults(func=cmd_watch)
 
