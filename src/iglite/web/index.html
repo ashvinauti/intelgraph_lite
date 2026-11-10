@@ -299,6 +299,12 @@
   .warn-text { color: color-mix(in srgb, var(--st-warning) 55%, var(--text-primary)); }
   .ok { border: 1px solid var(--st-good); border-left-width: 4px; border-radius: 6px; padding: 8px 10px; margin: 10px 0; }
   ul.feed li.resolved { opacity: .6; }
+  details.ln-adapter { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; background: var(--surface-0); }
+  details.ln-adapter summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+  details.ln-adapter .table-wrap { margin-top: 8px; }
+  .ln-ssid { font-size: 18px; display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+  ul.ln-findings { max-height: none; }
+  #view-wifi tbody tr { cursor: default; }
   .ai-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 1px 8px 1px 6px; border-radius: 999px;
              border: 1px dashed var(--line-strong); color: var(--text-secondary); }
   .ai-chip i { font-style: normal; font-size: 10px; width: 13px; height: 13px; border-radius: 50%; display: inline-grid; place-items: center;
@@ -399,6 +405,7 @@
     <a href="#overview" data-view="overview">Overview</a>
     <a href="#live" data-view="live">Live network<span class="count" id="flag-count" hidden></span></a>
     <a href="#network" data-view="network">Network</a>
+    <a href="#wifi" data-view="wifi">Wi-Fi &amp; exposure<span class="count" id="ln-count" hidden></span></a>
     <a href="#behaviour" data-view="behaviour">Behaviour<span class="count" id="beh-count" hidden></span></a>
     <a href="#cases" data-view="cases">Cases<span class="count" id="case-count" hidden></span></a>
     <a href="#routes" data-view="routes">Routes</a>
@@ -474,6 +481,7 @@
       <input type="search" class="grow" id="live-q" placeholder="Filter by process, IP or domain">
       <label class="check"><input type="checkbox" id="live-flagged"> Flagged only</label>
       <label class="check"><input type="checkbox" id="live-private"> Show local</label>
+      <label class="check" id="live-wifi-wrap" title="Only connections this computer makes over Wi-Fi (or the Mobile hotspot it shares)"><input type="checkbox" id="live-wifi-only"> Wi-Fi only</label>
     </div>
     <p class="muted" id="live-status" style="margin:0 0 10px"></p>
     <div class="table-wrap"><table id="live-table"></table></div>
@@ -537,6 +545,35 @@
             <button class="ghost small" id="nw-pause" aria-pressed="false">Pause</button></span></div>
           <ul class="feed lookups" id="nw-feed"></ul>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WI-FI & EXPOSURE -->
+  <section class="view" id="view-wifi">
+    <div class="toolbar">
+      <button class="primary" id="ln-scan">Scan now</button>
+      <label class="check" title="Live monitoring then only looks at connections this computer makes over Wi-Fi (or the Mobile hotspot it shares)">
+        <input type="checkbox" id="ln-wifi-only"> Monitor only Wi-Fi traffic</label>
+      <span class="muted" id="ln-status"></span>
+    </div>
+    <div class="grid two">
+      <div class="grid">
+        <div class="card"><h2>This Wi-Fi</h2><div id="ln-wifi"></div></div>
+        <div class="card"><div class="card-head"><h2>Problems found</h2><span class="muted" id="ln-fcount" style="font-size:12px"></span></div>
+          <ul class="feed ln-findings" id="ln-findings"></ul></div>
+        <div class="card">
+          <div class="card-head"><h2>Exposure map</h2>
+            <label class="check"><input type="checkbox" id="ln-low"> Show low risk</label></div>
+          <p class="muted" style="margin:0 0 8px;font-size:13px">What other devices on each network can connect to on this computer, riskiest first.</p>
+          <div id="ln-exposure"></div>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="card"><div class="card-head"><h2>Devices on this Wi-Fi</h2><span class="muted" id="ln-dcount" style="font-size:12px"></span></div>
+          <div class="table-wrap" style="max-height:360px"><table id="ln-devices"></table></div></div>
+        <div class="card"><div class="card-head"><h2>Nearby networks</h2><span class="muted" id="ln-ncount" style="font-size:12px"></span></div>
+          <div class="table-wrap" style="max-height:420px"><table id="ln-nearby"></table></div></div>
       </div>
     </div>
   </section>
@@ -784,7 +821,7 @@ applyTheme(store.get("iglite-theme"));
 $("theme").onclick = () => { const next = isDark() ? "light" : "dark"; applyTheme(next); store.set("iglite-theme", next); };
 
 /* ---------- routing & shortcuts ---------- */
-const VIEWS = ["overview", "live", "network", "behaviour", "cases", "routes", "graph", "attack", "indicators", "analyst"];
+const VIEWS = ["overview", "live", "network", "wifi", "behaviour", "cases", "routes", "graph", "attack", "indicators", "analyst"];
 let view = "overview";
 function route() {
   view = (location.hash || "#overview").slice(1);
@@ -1098,6 +1135,16 @@ function paintWatch() {
     (gw && gw.errors.length ? ` · input error: ${gw.errors[gw.errors.length - 1]}` : "") +
     (gw && gw.rejected_senders ? ` · ${gw.rejected_senders} packets from unlisted senders ignored` : "");
   $("live-q").placeholder = gw ? "Filter by device, IP or domain" : "Filter by process, IP or domain";
+  $("live-wifi-wrap").hidden = !!gw;
+  $("live-wifi-only").checked = $("ln-wifi-only").checked = watch.scope === "wifi";
+  if (!gw && watch.scope === "wifi") {
+    $("live-status").textContent += watch.scope_addresses && watch.scope_addresses.length
+      ? ` · Wi-Fi only (${watch.scope_addresses.join(", ")})` : " · Wi-Fi only: not connected to Wi-Fi right now";
+  }
+}
+async function setScope(on) {
+  try { watch = await api("/api/watch", { scope: on ? "wifi" : "all" }); paintWatch(); if (view === "live") Live.refresh(); }
+  catch (e) { alert(e.message); }
 }
 async function setWatch(action) {
   const btns = [$("live-toggle"), $("live-scan")]; btns.forEach(b => b.disabled = true);
@@ -1112,6 +1159,124 @@ $("watch-pill").onclick = () => setWatch(watch.running ? "stop" : "start");
 $("live-toggle").onclick = () => setWatch(watch.running ? "stop" : "start");
 $("live-scan").onclick = () => setWatch("scan");
 $("live-interval").onchange = () => { if (watch.running) setWatch("start"); };
+$("live-wifi-only").onchange = ev => setScope(ev.target.checked);
+$("ln-wifi-only").onchange = ev => setScope(ev.target.checked);
+
+/* ---------- Wi-Fi & exposure ---------- */
+const SEV = { high: ["malicious", "✕", "high"], medium: ["suspicious", "!", "medium"], low: ["unknown", "·", "low"], info: ["pending", "i", "info"] };
+const sevBadge = s => { const [v, icon, label] = SEV[s] || SEV.low; return el("span", { class: "badge v-" + v }, el("i", { "aria-hidden": "true" }, icon), label); };
+const KIND_LABEL = { wifi: "Wi-Fi", hotspot: "Mobile hotspot you share", ethernet: "Ethernet", vpn: "VPN", virtual: "Virtual adapter", bluetooth: "Bluetooth", other: "Network" };
+const authLabel = a => { const r = authRisk(a); const x = (a || "").toLowerCase(); return r === "high" ? (x.includes("wep") ? "broken (WEP)" : "no password") : r === "medium" ? "weak" : null; };
+const authBadge = a => { const r = authRisk(a); if (!r) return null; const [v, icon] = SEV[r]; return el("span", { class: "badge v-" + v }, el("i", { "aria-hidden": "true" }, icon), authLabel(a)); };
+const authRisk = a => { const x = (a || "").toLowerCase(); return !x || x === "open" || x === "none" ? "high" : x.includes("wep") ? "high" : (x.includes("wpa2") || x.includes("wpa3")) ? null : x.includes("wpa") ? "medium" : null; };
+const LocalNet = {
+  data: null,
+  async refresh(force) {
+    $("ln-status").replaceChildren(el("span", { class: "spinner" }), " Scanning…");
+    $("ln-scan").disabled = true;
+    try { this.data = await api("/api/localnet" + (force ? "?refresh=1" : "")); this.render(); }
+    catch (e) { $("ln-status").textContent = e.message; }
+    finally { $("ln-scan").disabled = false; }
+    try { if (!watch.mode) { watch = await api("/api/watch"); } paintWatch(); } catch (e) {}
+  },
+  render() {
+    const d = this.data;
+    $("ln-status").textContent = `Scanned ${timeAgo(d.collected_at)}` + (d.errors.length ? ` · ${d.errors.join(" ")}` : "");
+    const high = d.findings.filter(f => f.severity === "high").length;
+    $("ln-count").hidden = !high; $("ln-count").textContent = high || "";
+    // This Wi-Fi
+    const wifiAdapters = d.adapters.filter(a => (a.kind === "wifi" || a.kind === "hotspot") && a.up);
+    const blocks = [];
+    for (const w of d.wifi.filter(w => w.ssid)) {
+      const a = d.adapters.find(x => x.name === w.interface) || {};
+      const risk = authRisk(w.auth);
+      blocks.push(el("div", { class: "ln-net" },
+        el("div", { class: "ln-ssid" }, el("b", {}, w.ssid), " ", risk ? authBadge(w.auth) : el("span", { class: "badge v-benign" }, el("i", {}, "✓"), "secured")),
+        el("dl", { class: "kv" },
+          el("dt", {}, "Security"), el("dd", {}, `${w.auth || "?"} / ${w.cipher || "?"}`),
+          el("dt", {}, "Signal"), el("dd", {}, w.signal != null ? `${w.signal}%` : "?", w.channel ? ` · channel ${w.channel}` : "", w.radio ? ` · ${w.radio}` : ""),
+          el("dt", {}, "Access point"), el("dd", { class: "mono" }, w.bssid || "?"),
+          el("dt", {}, "This computer"), el("dd", { class: "mono" }, (a.addresses || []).join(", ") || "?"),
+          el("dt", {}, "Router"), el("dd", { class: "mono" }, (a.gateways || []).join(", ") || "?"),
+          el("dt", {}, "DNS"), el("dd", { class: "mono" }, (a.dns || []).join(", ") || "?"),
+          el("dt", {}, "Windows profile"), el("dd", {}, a.profile || "?",
+            a.profile && d.firewall[a.profile === "DomainAuthenticated" ? "Domain" : a.profile]
+              ? ` · firewall ${d.firewall[a.profile === "DomainAuthenticated" ? "Domain" : a.profile].enabled ? "on" : "OFF"}` : ""))));
+    }
+    for (const a of wifiAdapters.filter(a => a.kind === "hotspot")) {
+      const n = d.devices.filter(x => x.adapter === a.name).length;
+      blocks.push(el("p", { style: "margin:10px 0 0" }, el("b", {}, "You're sharing a Mobile hotspot"), ` on ${a.addresses.join(", ")}: ${n} device(s) connected.`));
+    }
+    if (!blocks.length) blocks.push(el("p", { class: "muted", style: "margin:0" }, wifiAdapters.length ? "Wi-Fi details aren't available on this system." : "This computer isn't connected to Wi-Fi."));
+    fill($("ln-wifi"), blocks);
+    // Findings
+    $("ln-fcount").textContent = d.findings.length ? `${d.findings.length} found` : "";
+    fill($("ln-findings"), d.findings.length ? d.findings.map(f => el("li", { style: "cursor:default;display:block" },
+      el("div", { style: "display:flex;gap:8px;align-items:center" }, sevBadge(f.severity), el("b", {}, f.title)),
+      el("div", { class: "secondary", style: "font-size:13px;margin:4px 0 0" }, f.detail),
+      f.fix ? el("div", { class: "muted", style: "font-size:12.5px;margin-top:2px" }, "Fix: ", f.fix) : null))
+      : [el("li", { class: "muted", style: "cursor:default;display:block" }, "No problems found.")]);
+    this.renderExposure();
+    // Devices
+    const wifiNames = new Set(wifiAdapters.map(a => a.name));
+    const devices = d.devices.filter(x => wifiNames.has(x.adapter));
+    $("ln-dcount").textContent = `${devices.length} device(s)`;
+    $("ln-devices").dataset.empty = wifiAdapters.length ? "No other devices seen yet. Devices appear once this computer has talked to them." : "Not on Wi-Fi.";
+    renderTable($("ln-devices"), [
+      { key: "ip", label: "Address", render: r => el("span", { class: "mono" }, r.ip) },
+      { key: "mac", label: "Hardware address", render: r => el("span", { class: "mono" }, r.mac) },
+      { key: "tags", label: "", static: true, render: r => el("span", { class: "nowrap" },
+          r.gateway ? el("span", { class: "badge v-pending" }, "router") : null, " ",
+          r.randomized_mac ? el("span", { class: "muted", title: "Phones and laptops use random 'private' addresses on Wi-Fi" }, "private MAC") : null,
+          (wifiAdapters.find(a => a.name === r.adapter) || {}).kind === "hotspot" ? el("span", { class: "muted" }, " on your hotspot") : null) },
+    ], devices.map(x => ({ ...x, key: "dev:" + x.ip })), { key: "ip", dir: "asc" }, () => {}, () => {}, "-");
+    // Nearby networks
+    const myBssids = new Set(d.wifi.map(w => w.bssid).filter(Boolean));
+    const isMine = n => n.bssids.some(b => myBssids.has(b.bssid));
+    $("ln-ncount").textContent = d.nearby.length ? `${d.nearby.length} visible` : "";
+    $("ln-nearby").dataset.empty = d.errors.find(e => e.includes("Location")) || "No nearby networks listed on this system.";
+    renderTable($("ln-nearby"), [
+      { key: "ssid", label: "Network", render: r => el("span", {}, r.ssid || el("span", { class: "muted" }, "(hidden)"),
+          isMine(r) ? el("span", { class: "muted" }, " (connected)") : null,
+          d.nearby.filter(n => n.ssid && n.ssid === r.ssid).length > 1 ? el("span", { class: "warn-text", title: "Same name, different security: possible evil twin" }, " ⚠ look-alike") : null) },
+      { key: "auth", label: "Security", render: r => el("span", { class: "nowrap" }, authBadge(r.auth), " ", r.auth || "Open") },
+      { key: "signal", label: "Signal", num: true, sortValue: r => Math.max(0, ...r.bssids.map(b => b.signal || 0)), render: r => `${Math.max(0, ...r.bssids.map(b => b.signal || 0))}%` },
+      { key: "aps", label: "APs", num: true, sortValue: r => r.bssids.length, render: r => r.bssids.length },
+    ], d.nearby.map((x, i) => ({ ...x, key: "net:" + i })), { key: "signal", dir: "desc" }, () => {}, () => {}, "-");
+  },
+  renderExposure() {
+    const d = this.data, showLow = $("ln-low").checked;
+    const blocks = d.exposure.adapters.map(a => {
+      const rows = a.listeners.filter(i => showLow || i.risk !== "low");
+      const hidden = a.listeners.length - rows.length;
+      const fw = a.firewall;
+      const head = el("summary", {}, el("b", {}, KIND_LABEL[a.kind] || a.kind), " ", el("span", { class: "mono" }, a.network || a.name),
+        el("span", { class: "muted" }, ` · ${a.addresses.join(", ")}`, a.profile ? ` · ${a.profile}` : "", fw ? ` · firewall ${fw.enabled ? "on" : "OFF"}` : ""),
+        " ", ...["high", "medium"].filter(s => a.counts[s]).map(s => el("span", { class: "nowrap" }, sevBadge(s), el("b", {}, ` ${a.counts[s]} `))));
+      const table = el("table", {});
+      table.dataset.empty = hidden ? `${hidden} low-risk service(s) hidden.` : "Nothing on this computer is reachable from this network.";
+      renderTable(table, [
+        { key: "risk", label: "Risk", render: r => sevBadge(r.risk), sortValue: r => ({ high: 0, medium: 1, low: 2 })[r.risk] },
+        { key: "port", label: "Port", num: true, render: r => el("span", { class: "nowrap" }, `${r.proto.toUpperCase()} ${r.port}`) },
+        { key: "label", label: "What", render: r => el("span", { title: r.why }, r.label, el("div", { class: "muted", style: "font-size:12px" }, r.why)) },
+        { key: "process", label: "Program / service", render: r => el("span", {}, el("span", { class: "mono" }, r.process || "?"),
+            r.services.length ? el("div", { class: "muted", style: "font-size:12px" }, r.services.slice(0, 3).join("; ")) : null) },
+      ], rows.map((x, i) => ({ ...x, key: "l:" + i })), { key: "risk", dir: "asc" }, () => {}, () => {}, "-");
+      const det = el("details", { class: "ln-adapter" }, head,
+        a.firewall_shields ? el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0" }, "Public network with Windows Firewall blocking inbound: risks are shown one level lower, since only services with an allow rule are reachable.") : null,
+        el("div", { class: "table-wrap", style: "max-height:none" }, table),
+        hidden && rows.length ? el("p", { class: "muted", style: "font-size:12px;margin:6px 0 0" }, `${hidden} low-risk service(s) hidden.`) : null);
+      if (a.kind === "wifi" || a.kind === "hotspot" || a.counts.high) det.open = true;
+      return det;
+    });
+    if (!blocks.length) blocks.push(el("p", { class: "muted" }, "No connected networks."));
+    const lo = d.exposure.local_only.length;
+    if (lo) blocks.push(el("p", { class: "muted", style: "font-size:12.5px;margin:10px 0 0" }, `${lo} more service(s) listen on this computer only (127.0.0.1) and can't be reached from any network.`));
+    fill($("ln-exposure"), blocks);
+  },
+};
+$("ln-scan").onclick = () => LocalNet.refresh(true);
+$("ln-low").onchange = () => LocalNet.data && LocalNet.renderExposure();
 
 /* ---------- live network ---------- */
 const Live = {
@@ -2581,6 +2746,7 @@ async function refreshView() {
     else if (view === "analyst") await Analyst.init();
     else if (view === "attack") await AttackView.refresh();
     else if (view === "network") await Network.refresh();
+    else if (view === "wifi") await LocalNet.refresh(false);
     else if (view === "cases") await Cases.refresh();
     else if (view === "behaviour") await BehaviourView.refresh();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();

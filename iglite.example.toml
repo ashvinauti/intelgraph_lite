@@ -15,6 +15,9 @@ evidence_half_life_days = 180   # bad evidence halves in weight this often (0 = 
 alert_min_score = 60            # live alerts need at least this score (70 = malicious only)
 # shared_infra = ["cloudflare", "akamai", "fastly", "google", "microsoft"]  # CDN/cloud owners
 
+# Live monitoring scope: "all" or "wifi" (only connections this computer makes over Wi-Fi)
+# watch_scope = "wifi"
+
 # Seconds between live network snapshots (`iglite watch`, `serve --watch`).
 watch_interval = 30
 watch_max_new = 25    # new IPs/domains looked up per snapshot

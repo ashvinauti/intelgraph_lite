@@ -517,6 +517,14 @@ def _watch_control(engine: Engine, q: dict, body: dict) -> Any:
     except (TypeError, ValueError):
         raise ApiError(HTTPStatus.BAD_REQUEST, "interval must be a number")
     watch = engine.watcher(interval)
+    if body.get("scope") is not None:
+        try:
+            watch.set_scope(str(body["scope"]))
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+        engine.config.watch_scope = watch.scope
+        if action in (None, "scope"):
+            return watch.status()
     if action == "start":
         watch.start()
     elif action == "stop":
@@ -526,6 +534,10 @@ def _watch_control(engine: Engine, q: dict, body: dict) -> Any:
     else:
         raise ApiError(HTTPStatus.BAD_REQUEST, "action must be start, stop or scan")
     return watch.status()
+
+
+def _localnet(engine: Engine, q: dict, body: dict) -> Any:
+    return engine.local_network(refresh=q.get("refresh") in ("1", "true"))
 
 
 def _connections(engine: Engine, q: dict, body: dict) -> Any:
@@ -1082,6 +1094,7 @@ ROUTES = {
     ("POST", "/api/extract"): _extract,
     ("POST", "/api/investigate"): _investigate,
     ("GET", "/api/watch"): _watch_status,
+    ("GET", "/api/localnet"): _localnet,
     ("POST", "/api/watch"): _watch_control,
     ("GET", "/api/connections"): _connections,
     ("GET", "/api/devices"): _devices,

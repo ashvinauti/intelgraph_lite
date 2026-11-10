@@ -143,6 +143,57 @@ fires when one comes back suspicious or malicious.
 Run it as a normal user. On Linux, root is needed to see other users'
 processes. Only monitor machines and networks you're responsible for.
 
+### Wi-Fi only
+
+On a hotspot or café Wi-Fi you may care only about what goes over the Wi-Fi:
+
+```bash
+iglite serve --watch --wifi-only     # or tick "Wi-Fi only" on the Live network tab
+```
+
+Connections this computer makes through Ethernet, a VPN or virtual adapters are
+then left out. Connections through Wi-Fi are kept, and so are connections
+through the Mobile hotspot this computer shares. The setting can also be
+`watch_scope = "wifi"` in `iglite.toml` or `IGLITE_WATCH_SCOPE=wifi` in `.env`.
+
+## Wi-Fi safety and the exposure map
+
+```bash
+iglite wifi        # is this Wi-Fi safe? security, look-alike networks, devices on it, changes
+iglite exposure    # which services on this computer can others on each network reach?
+```
+
+Both are on the dashboard's **Wi-Fi & exposure** tab, which has a **Scan now**
+button. They read only what Windows (or Linux) already knows, need no admin
+rights, and send nothing on the network.
+
+* **This Wi-Fi:** its security, signal, router, DNS, and Windows' network
+  profile and firewall. An **open** (no password), **WEP** or **WPA/TKIP**
+  network is flagged.
+* **Look-alikes:** a nearby network with the same name but different security
+  is a possible **evil twin**, a fake hotspot copying a trusted name.
+* **Devices on this Wi-Fi:** from this computer's neighbour table. That includes
+  the router and the devices on the Mobile hotspot you share. Phones' random
+  "private" addresses are marked.
+* **Changes since the last scan:**
+  * The router's hardware address changing can mean another device is
+    impersonating it (ARP spoofing).
+  * New DNS servers can redirect websites.
+  * New devices joining are listed.
+* **Exposure map:** for every network adapter, the services and programs it can
+  reach on this computer, riskiest first, with the Windows service behind each:
+  * **high:** file sharing (SMB 445), Remote Desktop (3389), WinRM, databases,
+    an Ollama server, the Docker API
+  * **medium:** discovery protocols that announce or leak names (LLMNR,
+    NetBIOS, SSDP), and dev servers
+  * Risks are lowered one level on a **Public** network with Windows Firewall
+    blocking inbound, because only services with an allow rule get through.
+
+On Windows 11, listing nearby networks needs Location turned on (Settings >
+Privacy & security > Location > let desktop apps access your location). The
+tab says so if it's off. Wi-Fi details read `netsh` labels in English; on
+other Windows languages, the adapters, devices and exposure map still work.
+
 ## Gateway mode: the whole network from your router or firewall
 
 Instead of watching one computer, IntelGraph Lite can watch every device behind
