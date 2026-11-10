@@ -71,6 +71,17 @@ def anomaly_message(a: dict[str, Any], dashboard: str | None = None) -> dict[str
     }
 
 
+def netevent_message(ev: dict[str, Any], dashboard: str | None = None) -> dict[str, Any]:
+    return {
+        "title": f"Wi-Fi & exposure: {ev['title']} ({ev['severity']})",
+        "lines": [ev["detail"]] if ev.get("detail") else [],
+        "link": f"{dashboard.rstrip('/')}/#wifi" if dashboard else None,
+        "alert": None,
+        "netevent": ev,
+        "case_id": None,
+    }
+
+
 def _post(url: str, payload: dict[str, Any], timeout: float = 10.0) -> None:
     req = urllib.request.Request(  # noqa: S310 - the person's own configured destination
         url,
@@ -182,6 +193,16 @@ class Notifier:
         if {"low": 0, "medium": 1, "high": 2}.get(anomaly["severity"], 0) < floor:
             return False
         return self._queue(anomaly_message(anomaly, self.cfg.dashboard_url), f"anomaly {anomaly['id']}")
+
+    def on_netevent(self, ev: dict[str, Any]) -> bool:
+        """Queue a Wi-Fi & exposure event at or above ``localnet_notify`` severity."""
+        order = {"info": 0, "low": 0, "medium": 1, "high": 2}
+        floor = order.get(str(self.cfg.localnet_notify).lower())
+        if floor is None or not self.channels or self.cfg.offline:
+            return False
+        if order.get(ev["severity"], 0) < floor:
+            return False
+        return self._queue(netevent_message(ev, self.cfg.dashboard_url), f"netevent {ev['id']}")
 
     def on_alert(self, alert_id: int) -> bool:
         """Queue an alert if it should go out. Returns whether it was queued."""

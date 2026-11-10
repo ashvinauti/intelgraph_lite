@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.5.0
+
+- **Real firewall rules.** On Windows the exposure map now reads the inbound
+  rules (`Get-NetFirewallRule` with its port, program and service filters) and
+  says, for each listening service, whether it is **ALLOWED** (and by which
+  rule), **blocked** (by a block rule, or because no rule allows it) or exposed
+  because the firewall is **off**. Block rules win over allow rules, as in
+  Windows. Blocked services drop to low risk and are counted separately; the
+  "risky service reachable" problem names the rules letting them through. When
+  rules can't be read the old estimate is used.
+- **One-click fixes.** Problems and exposed services get buttons such as *Set
+  this network to Public*, *Block inbound TCP 445 on Private networks*, *Stop
+  and disable Remote Desktop*, *Turn off LLMNR* and *Turn the firewall back on*.
+  The dashboard shows the exact PowerShell command first, Windows asks for
+  administrator approval (UAC), and the network is re-scanned afterwards. Every
+  fix but turning the firewall on has an **Undo** under *Fixes you applied*.
+  Only a fixed list of fixes, with validated arguments, can run, only services
+  on a safe list can be stopped, and only rules IntelGraph Lite created can be
+  removed. Also `iglite fix` (list) and `iglite fix ID` (asks, then applies).
+- **Alerts on changes.** While monitoring, the Wi-Fi & exposure check re-runs
+  every `localnet_interval` seconds (default 300), and on every other scan.
+  Each problem becomes an event that stays open until it goes away, and is raised
+  again if it comes back. New events pop up on the dashboard, appear under
+  *Changes noticed* (with *Dismiss*), and go to your notification channels at or
+  above `localnet_notify` (default `high`). `iglite wifi --events` lists them.
+- **Better device names.** Devices on the Wi-Fi now show their manufacturer
+  (from the MAC address), a host name (reverse DNS, which most routers answer for
+  their DHCP clients) and a guessed type (router, phone, printer, TV...). Name
+  devices and mark the ones you know as **trusted**; trusted devices no longer
+  count as "new". The manufacturer list is Wireshark's `manuf` file, or the IEEE
+  registry: `iglite oui update` or the *Download the list* button saves it to
+  `~/.iglite/manuf.txt` (an installed Wireshark's copy is used automatically).
+  Also `iglite wifi --trust MAC --name NAME` / `--untrust MAC`.
+- Dashboard POST requests from another website are refused (cross-site request
+  protection), so a page you visit can't trigger a fix.
+
 ## 0.4.0
 
 - **Wi-Fi only monitoring.** `--wifi-only` on `serve` / `watch`, `watch_scope = "wifi"`

@@ -22,7 +22,7 @@ from typing import Any
 
 from .model import Evidence, Indicator, Relation, Verdict
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -84,6 +84,23 @@ CREATE TABLE IF NOT EXISTS feedback (
     sources     TEXT NOT NULL DEFAULT '[]',
     at          REAL NOT NULL
 );
+
+-- Wi-Fi & exposure changes worth an alert. One row per problem (fingerprint = the finding's id);
+-- it is resolved when the problem goes away, reopened if it comes back, and never re-raised once dismissed.
+CREATE TABLE IF NOT EXISTS netevents (
+    id          INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    kind        TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    detail      TEXT NOT NULL DEFAULT '',
+    adapter     TEXT,
+    status      TEXT NOT NULL DEFAULT 'open',   -- open | resolved | dismissed
+    first_seen  REAL NOT NULL,
+    last_seen   REAL NOT NULL,
+    raised_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS netevents_status ON netevents(status, raised_at);
 
 -- AI false-positive triage results (one row per run; the newest per alert wins).
 CREATE TABLE IF NOT EXISTS triage (
@@ -286,6 +303,70 @@ class Store:
         with self._lock:
             self._last_tick = max(time.time(), getattr(self, "_last_tick", 0.0) + 1e-6)
             return self._last_tick
+
+    # -- Wi-Fi & exposure events -----------------------------------------------
+
+    def record_netevent(self, f: dict[str, Any], now: float | None = None) -> dict[str, Any] | None:
+        """Note a current finding. Returns the event if it is new or came back (alert-worthy), else None."""
+        now = time.time() if now is None else now
+        with self._lock:
+            row = self._db.execute("SELECT * FROM netevents WHERE fingerprint=?", (f["id"],)).fetchone()
+            if row is None:
+                cur = self._db.execute(
+                    "INSERT INTO netevents (fingerprint, kind, severity, title, detail, adapter, status, first_seen,"
+                    " last_seen, raised_at) VALUES (?,?,?,?,?,?, 'open', ?, ?, ?)",
+                    (
+                        f["id"],
+                        f["kind"],
+                        f["severity"],
+                        f["title"],
+                        f["detail"],
+                        f.get("adapter"),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                return dict(
+                    self._db.execute("SELECT * FROM netevents WHERE id=?", (cur.lastrowid,)).fetchone()
+                )
+            if row["status"] == "resolved":  # it came back
+                self._db.execute(
+                    "UPDATE netevents SET status='open', last_seen=?, raised_at=?, title=?, detail=?"
+                    " WHERE id=?",
+                    (now, now, f["title"], f["detail"], row["id"]),
+                )
+                return dict(self._db.execute("SELECT * FROM netevents WHERE id=?", (row["id"],)).fetchone())
+            self._db.execute(
+                "UPDATE netevents SET last_seen=?, title=?, detail=? WHERE id=?",
+                (now, f["title"], f["detail"], row["id"]),
+            )
+            return None
+
+    def resolve_netevents(self, current: set[str]) -> int:
+        """Open events whose problem is no longer found are resolved."""
+        with self._lock:
+            rows = self._db.execute("SELECT id, fingerprint FROM netevents WHERE status='open'").fetchall()
+            gone = [r["id"] for r in rows if r["fingerprint"] not in current]
+            self._db.executemany("UPDATE netevents SET status='resolved' WHERE id=?", [(i,) for i in gone])
+            return len(gone)
+
+    def netevents(
+        self, status: str | None = None, since_id: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM netevents WHERE id > ?", [since_id]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        rows = self._query(sql + " ORDER BY raised_at DESC LIMIT ?", [*args, limit])
+        return [dict(r) for r in rows]
+
+    def dismiss_netevent(self, event_id: int) -> bool:
+        with self._lock:
+            return (
+                self._db.execute("UPDATE netevents SET status='dismissed' WHERE id=?", (event_id,)).rowcount
+                > 0
+            )
 
     def get_meta_json(self, key: str) -> Any:
         """A small JSON value kept in the meta table (state that isn't worth its own table)."""

@@ -880,7 +880,7 @@ def cfg_listens(engine: Engine) -> bool:
 _SEV = {"high": "malicious", "medium": "suspicious", "low": "unknown", "info": "benign"}
 
 
-def _print_findings(findings: list[dict[str, Any]]) -> None:
+def _print_findings(findings: list[dict[str, Any]], show_fixes: bool = False) -> None:
     if not findings:
         print(_paint("benign", "No problems found."))
     for f in findings:
@@ -888,9 +888,35 @@ def _print_findings(findings: list[dict[str, Any]]) -> None:
         print(f"          {f['detail']}")
         if f["fix"]:
             print(f"          Fix: {f['fix']}")
+        if show_fixes and f.get("fix_ids"):
+            print(f"          One-click: {', '.join(f['fix_ids'])}   (iglite fix <id>)")
 
 
 def cmd_wifi(engine: Engine, args: argparse.Namespace) -> int:
+    from . import localnet
+
+    for mac, trusted in ((args.trust, True), (args.untrust, False)):
+        if mac:
+            rec = localnet.set_device(engine.store, mac, name=args.name, trusted=trusted)
+            print(
+                f"{rec['mac']}: {'trusted' if trusted else 'not trusted'}"
+                + (f", named {rec['name']}" if rec.get("name") else "")
+            )
+            return 0
+    if args.events:
+        events = engine.store.netevents(None if args.all_events else "open", limit=50)
+        if not events:
+            print("No open Wi-Fi & exposure events." if not args.all_events else "No events yet.")
+        for ev in events:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ev["raised_at"]))
+            print(
+                _paint(
+                    _SEV.get(ev["severity"], "unknown"),
+                    f"#{ev['id']:<4} {when}  [{ev['severity']}] {ev['title']}",
+                )
+                + ("" if ev["status"] == "open" else f"  ({ev['status']})")
+            )
+        return 0
     rep = engine.local_network(refresh=True)
     if args.json:
         print(json.dumps({k: rep[k] for k in ("wifi", "nearby", "devices", "findings", "errors")}, indent=2))
@@ -910,13 +936,24 @@ def cmd_wifi(engine: Engine, args: argparse.Namespace) -> int:
                 f"DNS {', '.join(a['dns']) or '-'}  profile {a['profile'] or '-'}"
             )
     print()
-    _print_findings(rep["findings"])
+    _print_findings(rep["findings"], show_fixes=True)
     wifi_adapters = {a["name"] for a in rep["adapters"] if a["kind"] in ("wifi", "hotspot")}
     devices = [d for d in rep["devices"] if d["adapter"] in wifi_adapters]
     print(f"\nDevices on this Wi-Fi ({len(devices)}):")
     for d in devices:
-        tags = [t for t, on in (("router", d["gateway"]), ("private MAC", d["randomized_mac"])) if on]
-        print(f"  {d['ip']:<16} {d['mac']}  {', '.join(tags)}")
+        label = d["name"] or d["hostname"] or d["vendor"] or ""
+        tags = [
+            t
+            for t, on in (
+                ("router", d["gateway"]),
+                ("trusted", d["trusted"]),
+                ("private MAC", d["randomized_mac"]),
+            )
+            if on
+        ]
+        print(f"  {d['ip']:<16} {d['mac']}  {label[:28]:<28} {d['type']:<22} {', '.join(tags)}")
+    if not rep.get("vendor_list") and devices:
+        print("  (manufacturers unknown: run `iglite oui update` once to download the vendor list)")
     if rep["nearby"]:
         print(f"\nNearby networks ({len(rep['nearby'])}):")
         for n in rep["nearby"][:20]:
@@ -924,9 +961,15 @@ def cmd_wifi(engine: Engine, args: argparse.Namespace) -> int:
             print(
                 f"  {n['ssid'] or '(hidden)':<32} {n['auth'] or 'Open':<16} {best:>3}%  {len(n['bssids'])} access point(s)"
             )
+    open_events = engine.store.netevents("open", limit=100)
+    if open_events:
+        print(f"\n{len(open_events)} open event(s): iglite wifi --events")
     for e in rep["errors"]:
         print(f"\nNote: {e}")
     return 0
+
+
+_FW = {"allowed": "ALLOWED", "blocked": "blocked", "off": "FIREWALL OFF", "unknown": "firewall ?"}
 
 
 def cmd_exposure(engine: Engine, args: argparse.Namespace) -> int:
@@ -950,27 +993,88 @@ def cmd_exposure(engine: Engine, args: argparse.Namespace) -> int:
         print(
             f"{title}: {a['network'] or a['name']} ({', '.join(a['addresses'])})  profile {a['profile'] or '-'}{fw_text}"
         )
-        shown = [i for i in a["listeners"] if args.all or i["risk"] != "low"]
+        shown = [i for i in a["listeners"] if args.all or (i["risk"] != "low" and i["reachable"])]
         for i in shown:
             who = i["process"] or "?"
             if i["services"]:
                 who += f" [{'; '.join(i['services'][:2])}]"
+            verdict = _FW[i["firewall"]] + (f" ({i['rule']})" if i["rule"] and i["firewall"] != "off" else "")
+            colour = _SEV[i["risk"]] if i["reachable"] else "benign"
             print(
                 _paint(
-                    _SEV[i["risk"]],
-                    f"   {i['risk']:<6} {i['proto'].upper()} {i['port']:<6} {i['label']:<24} {who}",
+                    colour, f"   {i['risk']:<6} {i['proto'].upper()} {i['port']:<6} {i['label']:<24} {who}"
                 )
+            )
+            print(
+                f"          {verdict}" + (f"   fixes: {', '.join(i['fix_ids'])}" if i.get("fix_ids") else "")
             )
         hidden = len(a["listeners"]) - len(shown)
         if not a["listeners"]:
             print("   nothing reachable")
         elif hidden:
-            print(f"   ... and {hidden} low-risk (--all to list)")
+            print(f"   ... and {hidden} low-risk or firewall-blocked (--all to list)")
         print()
+    if not rep.get("rules_known") and rep["platform"] == "windows":
+        print("Note: Windows Firewall rules couldn't be read, so reachability is estimated.")
     if args.all and exp["local_only"]:
         print(f"Only reachable from this computer ({len(exp['local_only'])}):")
         for i in exp["local_only"]:
             print(f"   {i['proto'].upper()} {i['port']:<6} {i['process'] or '?'}")
+    return 0
+
+
+def cmd_fix(engine: Engine, args: argparse.Namespace) -> int:
+    from . import fixes
+
+    if not args.fix:
+        rep = engine.local_network(refresh=True)
+        if rep["platform"] != "windows":
+            print("One-click fixes are available on Windows.")
+            return 0
+        if not rep["fixes"]:
+            print("No fixes to offer: nothing risky was found.")
+        for f in rep["fixes"].values():
+            print(f"{f['id']}\n    {f['title']}\n    runs: {f['command']}")
+        applied = [h for h in rep.get("applied_fixes", []) if not h.get("undone")]
+        if applied:
+            print("\nApplied (undo with `iglite fix <undo id>`):")
+            for h in applied:
+                print(f"  {h['title']}" + (f"   undo: {h['undo']}" if h.get("undo") else ""))
+        return 0
+    try:
+        fix = fixes.build(args.fix)
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}")
+    print(f"{fix['title']}\n  {fix['why']}\n  runs (as administrator): {fix['command']}")
+    if (
+        not args.yes
+        and input("Apply? Windows will ask for administrator approval. [y/N] ").strip().lower() != "y"
+    ):
+        print("Nothing changed.")
+        return 1
+    try:
+        result = engine.apply_fix(args.fix)
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}")
+    print(
+        _paint(
+            "benign" if result["ok"] else "malicious",
+            "Done." if result["ok"] else f"Failed: {result['output']}",
+        )
+    )
+    if result["ok"] and fix.get("undo"):
+        print(f"Undo with: iglite fix {fix['undo']}")
+    return 0 if result["ok"] else 1
+
+
+def cmd_oui(engine: Engine, args: argparse.Namespace) -> int:
+    from . import oui
+
+    try:
+        result = oui.update()
+    except RuntimeError as exc:
+        raise SystemExit(f"error: {exc}")
+    print(f"Saved {result['entries']:,} manufacturer prefixes from {result['source']} to {result['path']}")
     return 0
 
 
@@ -1365,7 +1469,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("wifi", help="is this Wi-Fi safe? security, look-alike networks, devices on it")
     sp.add_argument("--json", action="store_true")
+    sp.add_argument("--events", action="store_true", help="list open Wi-Fi & exposure events")
+    sp.add_argument("--all-events", action="store_true", help="with --events: resolved and dismissed too")
+    sp.add_argument("--trust", metavar="MAC", help="mark a device as trusted (no 'new device' events)")
+    sp.add_argument("--untrust", metavar="MAC", help="stop trusting a device")
+    sp.add_argument("--name", help="with --trust/--untrust: give the device a name")
     sp.set_defaults(func=cmd_wifi)
+
+    sp = sub.add_parser("fix", help="one-click fixes for Wi-Fi & exposure findings (Windows; asks for admin)")
+    sp.add_argument("fix", nargs="?", help="fix id from `iglite fix` or `iglite exposure`; none = list them")
+    sp.add_argument("--yes", action="store_true", help="don't ask for confirmation here (Windows still asks)")
+    sp.set_defaults(func=cmd_fix)
+
+    sp = sub.add_parser("oui", help="device manufacturer list (for naming devices on the Wi-Fi)")
+    sp.add_argument("action", choices=["update"])
+    sp.set_defaults(func=cmd_oui)
 
     sp = sub.add_parser("exposure", help="which services on this computer are reachable on which network")
     sp.add_argument("--all", action="store_true", help="also list low-risk services and localhost-only ones")

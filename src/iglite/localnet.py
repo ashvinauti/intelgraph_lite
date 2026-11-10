@@ -115,6 +115,21 @@ class Listener:
     pid: int | None = None
     process: str | None = None
     services: list[str] = field(default_factory=list)  # Windows service display names
+    service_names: list[str] = field(default_factory=list)  # their short names (TermService, LanmanServer)
+
+
+@dataclass
+class FirewallRule:
+    """An enabled inbound Windows Firewall rule, reduced to what decides reachability."""
+
+    name: str
+    action: str  # Allow | Block
+    profiles: set[str]  # {"Any"} or a subset of {"Domain", "Private", "Public"}
+    protocol: str = "Any"  # TCP | UDP | Any | a protocol number
+    ports: list[str] = field(default_factory=lambda: ["Any"])  # "Any", "445", "135-139", "RPC", "RPCEPMap"
+    program: str = "Any"  # full path, "System" or "Any"
+    service: str = "Any"  # service short name or "Any"
+    group: str = ""
 
 
 @dataclass
@@ -126,6 +141,7 @@ class LocalNetwork:
     devices: list[Device] = field(default_factory=list)
     listeners: list[Listener] = field(default_factory=list)
     firewall: dict[str, dict[str, Any]] = field(default_factory=dict)  # profile -> {enabled, inbound}
+    rules: list[FirewallRule] | None = None  # None: the rules couldn't be read (non-Windows, failure)
     errors: list[str] = field(default_factory=list)
     collected_at: float = field(default_factory=time.time)
 
@@ -407,9 +423,11 @@ def parse_windows(data: dict[str, Any], interfaces: str = "", networks: str = ""
         if p.get("Id") is not None
     }
     services: dict[int, list[str]] = {}
+    service_names: dict[int, list[str]] = {}
     for s in _as_list(data.get("services")):
         if s.get("ProcessId"):
             services.setdefault(int(s["ProcessId"]), []).append(str(s.get("DisplayName") or s.get("Name")))
+            service_names.setdefault(int(s["ProcessId"]), []).append(str(s.get("Name") or ""))
     for proto in ("tcp", "udp"):
         for row in _as_list(data.get(proto)):
             ip, port, pid = _ip(row.get("LocalAddress")), row.get("LocalPort"), row.get("OwningProcess")
@@ -420,7 +438,15 @@ def parse_windows(data: dict[str, Any], interfaces: str = "", networks: str = ""
             if process and not process.lower().endswith(".exe") and process.lower() not in ("system", "idle"):
                 process += ".exe"
             net.listeners.append(
-                Listener(proto, ip, int(port), pid, process, services.get(pid or -1, [])[:6])
+                Listener(
+                    proto,
+                    ip,
+                    int(port),
+                    pid,
+                    process,
+                    services.get(pid or -1, [])[:6],
+                    service_names.get(pid or -1, [])[:6],
+                )
             )
 
     net.wifi = parse_netsh_interfaces(interfaces)
@@ -439,6 +465,44 @@ def parse_windows(data: dict[str, Any], interfaces: str = "", networks: str = ""
     return net
 
 
+# Enabled inbound rules with their port / program / service filters, joined in PowerShell.
+PS_RULES = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$rules = @(Get-NetFirewallRule -Direction Inbound -Enabled True)
+$ports = @{}; foreach ($f in @($rules | Get-NetFirewallPortFilter)) { $ports[$f.InstanceID] = $f }
+$apps = @{}; foreach ($f in @($rules | Get-NetFirewallApplicationFilter)) { $apps[$f.InstanceID] = $f }
+$svcs = @{}; foreach ($f in @($rules | Get-NetFirewallServiceFilter)) { $svcs[$f.InstanceID] = $f }
+$out = foreach ($r in $rules) {
+  $p = $ports[$r.InstanceID]
+  [ordered]@{ name = "$($r.DisplayName)"; group = "$($r.Group)"; action = "$($r.Action)"; profile = "$($r.Profile)";
+    protocol = "$($p.Protocol)"; ports = @($p.LocalPort | ForEach-Object { "$_" });
+    program = "$($apps[$r.InstanceID].Program)"; service = "$($svcs[$r.InstanceID].Service)" }
+}
+ConvertTo-Json -InputObject @($out) -Depth 3 -Compress
+"""
+
+
+def parse_rules(data: Any) -> list[FirewallRule]:
+    rules = []
+    for r in _as_list(data):
+        if not isinstance(r, dict) or not r.get("action"):
+            continue
+        profiles = {p.strip() for p in str(r.get("profile") or "Any").split(",") if p.strip()} or {"Any"}
+        rules.append(
+            FirewallRule(
+                name=str(r.get("name") or "?"),
+                action=str(r["action"]),
+                profiles=profiles,
+                protocol=str(r.get("protocol") or "Any") or "Any",
+                ports=[str(x) for x in _as_list(r.get("ports"))] or ["Any"],
+                program=str(r.get("program") or "Any") or "Any",
+                service=str(r.get("service") or "Any") or "Any",
+                group=str(r.get("group") or ""),
+            )
+        )
+    return rules
+
+
 def collect_windows() -> LocalNetwork:
     encoded = base64.b64encode(PS_SCRIPT.encode("utf-16-le")).decode()
     raw = _run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], timeout=60)
@@ -449,6 +513,24 @@ def collect_windows() -> LocalNetwork:
     interfaces = _run(["netsh", "wlan", "show", "interfaces"])
     networks = _run(["netsh", "wlan", "show", "networks", "mode=bssid"])
     net = parse_windows(data, interfaces, networks)
+    rules_raw = _run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode(PS_RULES.encode("utf-16-le")).decode(),
+        ],
+        timeout=120,
+    )
+    try:
+        net.rules = parse_rules(json.loads(rules_raw)) if rules_raw.strip() else None
+    except ValueError:
+        net.rules = None
+    if net.rules is None and data:
+        net.errors.append(
+            "Windows Firewall rules couldn't be read: reachability through the firewall is estimated."
+        )
     if not data:
         net.errors.insert(
             0, "PowerShell returned nothing: adapter, service and exposure details are missing."
@@ -741,6 +823,66 @@ def _firewall_for(net: LocalNetwork, adapter: Adapter) -> dict[str, Any] | None:
     return net.firewall.get(name)
 
 
+def _port_matches(spec: str, port: int, proto: str) -> bool:
+    spec = spec.strip()
+    if spec.lower() == "any":
+        return True
+    if spec == "RPCEPMap":
+        return port == 135
+    if spec == "RPC":  # Windows' dynamic RPC endpoints
+        return proto == "tcp" and port >= 49152
+    if "-" in spec:
+        lo, _, hi = spec.partition("-")
+        return lo.isdigit() and hi.isdigit() and int(lo) <= port <= int(hi)
+    return spec.isdigit() and int(spec) == port
+
+
+def _rule_matches(rule: FirewallRule, listener: Listener, profile: str) -> bool:
+    if "Any" not in rule.profiles and profile not in rule.profiles:
+        return False
+    proto = rule.protocol.upper()
+    if (
+        proto not in ("ANY", "")
+        and proto != listener.proto.upper()
+        and proto != {"tcp": "6", "udp": "17"}[listener.proto]
+    ):
+        return False
+    if not any(_port_matches(p, listener.port, listener.proto) for p in rule.ports):
+        return False
+    if rule.service.lower() not in ("any", "", "*"):
+        if listener.service_names and rule.service.lower() not in {n.lower() for n in listener.service_names}:
+            return False
+    if rule.program.lower() not in ("any", ""):
+        if listener.process:  # compare file names; paths aren't readable for every process
+            name = rule.program.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+            proc = listener.process.lower()
+            if name != proc and not (name == "system" and proc == "system"):
+                return False
+    return True
+
+
+def firewall_verdict(net: LocalNetwork, adapter: Adapter, listener: Listener) -> tuple[str, str | None]:
+    """("allowed" | "blocked" | "off" | "unknown", the deciding rule or reason)."""
+    fw = _firewall_for(net, adapter)
+    if fw is None:
+        return "unknown", None
+    if not fw["enabled"]:
+        return "off", f"Windows Firewall is off for the {adapter.profile} profile"
+    if fw["inbound"] == "Allow":
+        return "allowed", "the profile allows all inbound connections"
+    if net.rules is None:
+        return "unknown", None
+    profile = {"DomainAuthenticated": "Domain"}.get(adapter.profile or "", adapter.profile or "")
+    matching = [r for r in net.rules if _rule_matches(r, listener, profile)]
+    block = next((r for r in matching if r.action.lower() == "block"), None)
+    if block:  # block rules win over allow rules
+        return "blocked", block.name
+    allow = next((r for r in matching if r.action.lower() == "allow"), None)
+    if allow:
+        return "allowed", allow.name
+    return "blocked", "no rule allows it (inbound is blocked by default)"
+
+
 def exposure(net: LocalNetwork) -> dict[str, Any]:
     """For each adapter: the services and programs reachable on it, riskiest first."""
     # One entry per (proto, port, process): IPv4 and IPv6 sockets of the same service fold together.
@@ -761,6 +903,12 @@ def exposure(net: LocalNetwork) -> dict[str, Any]:
             if not any(reachable_on(listener, adapter) for listener in group):
                 continue
             sev, label, why = _risk(group[0])
+            verdicts = [firewall_verdict(net, adapter, listener) for listener in group]
+            state, rule = next((v for v in verdicts if v[0] in ("allowed", "off")), verdicts[0])
+            if state == "unknown":  # no rule data: the old estimate
+                risk = _LOWER[sev] if shielded else sev
+            else:
+                risk = sev if state in ("allowed", "off") else "low"
             items.append(
                 {
                     "proto": proto,
@@ -771,8 +919,12 @@ def exposure(net: LocalNetwork) -> dict[str, Any]:
                     "bound": sorted({listener.address for listener in group}),
                     "label": label,
                     "why": why,
-                    "risk": _LOWER[sev] if shielded else sev,
+                    "risk": risk,
                     "raw_risk": sev,
+                    "service_names": group[0].service_names,
+                    "firewall": state,  # allowed | blocked | off | unknown
+                    "rule": rule,
+                    "reachable": state != "blocked",
                 }
             )
         items.sort(key=lambda i: (_SEVERITY_ORDER[i["risk"]], i["port"]))
@@ -785,9 +937,14 @@ def exposure(net: LocalNetwork) -> dict[str, Any]:
                 "addresses": adapter.addresses,
                 "profile": adapter.profile,
                 "firewall": fw,
-                "firewall_shields": shielded,
+                "firewall_shields": shielded and net.rules is None,
+                "rules_known": net.rules is not None,
                 "listeners": items,
-                "counts": {s: sum(i["risk"] == s for i in items) for s in ("high", "medium", "low")},
+                "counts": {
+                    s: sum(i["risk"] == s and i["reachable"] for i in items)
+                    for s in ("high", "medium", "low")
+                }
+                | {"blocked": sum(not i["reachable"] for i in items)},
             }
         )
     for (proto, port, _pid), group in merged.items():
@@ -825,13 +982,41 @@ def network_key(adapter: Adapter) -> str:
     return f"{adapter.network or adapter.name}|{','.join(adapter.gateways)}"
 
 
-def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Problems worth knowing about, worst first. ``previous`` is the remembered state per network."""
-    previous = previous or {}
+def findings(
+    net: LocalNetwork, previous: dict[str, Any] | None = None, trusted: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """Problems worth knowing about, worst first.
+
+    ``previous`` is the remembered state per network; ``trusted`` the hardware
+    addresses of devices the user trusts. Each finding has a stable ``id`` (the
+    same problem keeps the same id between scans: change alerts use it) and a
+    ``kind`` with ``params`` (fixes use them).
+    """
+    previous, trusted = previous or {}, trusted or set()
     out: list[dict[str, Any]] = []
 
-    def add(severity: str, title: str, detail: str, fix: str = "", adapter: str | None = None) -> None:
-        out.append({"severity": severity, "title": title, "detail": detail, "fix": fix, "adapter": adapter})
+    def add(
+        fid: str,
+        kind: str,
+        severity: str,
+        title: str,
+        detail: str,
+        fix: str = "",
+        adapter: str | None = None,
+        **params: Any,
+    ) -> None:
+        out.append(
+            {
+                "id": fid,
+                "kind": kind,
+                "severity": severity,
+                "title": title,
+                "detail": detail,
+                "fix": fix,
+                "adapter": adapter,
+                "params": params,
+            }
+        )
 
     current_ssids = set()
     for link in net.wifi:
@@ -841,6 +1026,8 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
         auth = _norm_auth(link.auth)
         if auth == "open":
             add(
+                f"open:{link.ssid}",
+                "open_wifi",
                 "high",
                 f'"{link.ssid}" has no password',
                 "Anyone nearby can read traffic that isn't encrypted by the website or app itself, "
@@ -850,6 +1037,8 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
             )
         elif auth == "wep":
             add(
+                f"wep:{link.ssid}",
+                "weak_wifi",
                 "high",
                 f'"{link.ssid}" uses WEP',
                 "WEP can be broken in minutes; treat it as open.",
@@ -858,6 +1047,8 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
             )
         elif "tkip" in (link.cipher or "").lower() or auth == "wpa":
             add(
+                f"weak:{link.ssid}",
+                "weak_wifi",
                 "medium",
                 f'"{link.ssid}" uses outdated Wi-Fi security ({link.auth}, {link.cipher})',
                 "WPA/TKIP has known weaknesses.",
@@ -867,7 +1058,10 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
         twins = [n for n in net.nearby if n.ssid == link.ssid and _norm_auth(n.auth) != auth]
         if twins:
             kinds = ", ".join(sorted({n.auth or "Open" for n in twins}))
+            bssids = sorted(b["bssid"] or "?" for n in twins for b in n.bssids)
             add(
+                f"twin:{link.ssid}:{','.join(bssids)}",
+                "evil_twin",
                 "high",
                 f'Possible evil twin of "{link.ssid}"',
                 f"Another network with the same name uses different security ({kinds}, yours: {link.auth}). "
@@ -881,9 +1075,11 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
             if (
                 "open" in variants
                 and len(variants) > 1
-                and not any(f["title"].endswith(f'"{n.ssid}"') for f in out)
+                and not any(f["id"] == f"opencopy:{n.ssid}" for f in out)
             ):
                 add(
+                    f"opencopy:{n.ssid}",
+                    "open_copy",
                     "medium",
                     f'Open copy of "{n.ssid}" nearby',
                     "A network with that name exists both with and without a password nearby.",
@@ -894,27 +1090,37 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
         if not adapter.up or adapter.kind not in ("wifi", "hotspot", "ethernet"):
             continue
         label = f'"{adapter.network}"' if adapter.network else adapter.name
+        net_id = adapter.network or adapter.name
         fw = _firewall_for(net, adapter)
         if fw is not None and not fw["enabled"]:
+            profile = {"DomainAuthenticated": "Domain"}.get(adapter.profile or "", adapter.profile or "")
             add(
+                f"fwoff:{profile}",
+                "firewall_off",
                 "high",
                 f"Windows Firewall is off for the {adapter.profile} profile ({label})",
                 "Every listening service on this computer is reachable from that network.",
                 "Turn it on: Windows Security > Firewall & network protection.",
                 adapter.name,
+                profile=profile,
             )
         if adapter.kind == "wifi" and adapter.profile == "Private":
             add(
+                f"private:{net_id}",
+                "private_profile",
                 "medium",
                 f"Windows trusts {label} as a Private network",
                 "On Private networks Windows allows network discovery and file sharing. "
                 "Fine at home; not on a hotspot or café Wi-Fi.",
                 "If it isn't your own network: Settings > Network & internet > Wi-Fi > this network > Public.",
                 adapter.name,
+                index=adapter.index,
             )
         if adapter.kind == "hotspot":
             count = sum(d.adapter == adapter.name for d in net.devices)
             add(
+                f"hotspot:{adapter.name}",
+                "hotspot",
                 "info",
                 f"You are sharing a Mobile hotspot ({count} device(s) connected)",
                 "Devices on your hotspot can reach services listening on all networks (see the exposure map).",
@@ -928,6 +1134,8 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
             before = (state.get("gateway_macs") or {}).get(ip)
             if before and before != mac:
                 add(
+                    f"gwmac:{net_id}:{ip}:{mac}",
+                    "router_changed",
                     "high",
                     f"The router's hardware address changed on {label}",
                     f"{ip} was {before}, now {mac}. This happens with a replaced router or a different access "
@@ -937,6 +1145,8 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
                 )
         if state.get("dns") and adapter.dns and sorted(state["dns"]) != sorted(adapter.dns):
             add(
+                f"dns:{net_id}:{','.join(sorted(adapter.dns))}",
+                "dns_changed",
                 "medium",
                 f"DNS servers changed on {label}",
                 f"Was {', '.join(state['dns'])}, now {', '.join(adapter.dns)}. Changed DNS can redirect websites.",
@@ -944,28 +1154,50 @@ def findings(net: LocalNetwork, previous: dict[str, Any] | None = None) -> list[
                 adapter.name,
             )
         known = set(state.get("devices") or [])
-        new = sorted(d.mac for d in net.devices if d.adapter == adapter.name and d.mac not in known)
+        new = sorted(
+            d.mac
+            for d in net.devices
+            if d.adapter == adapter.name and d.mac not in known and d.mac not in trusted
+        )
         if known and new:
-            add("info", f"{len(new)} new device(s) on {label}", ", ".join(new[:8]), "", adapter.name)
+            add(
+                f"newdev:{net_id}:{','.join(new)}",
+                "new_devices",
+                "info",
+                f"{len(new)} new device(s) on {label}",
+                ", ".join(new[:8]),
+                "Mark the ones you recognise as trusted.",
+                adapter.name,
+                macs=new,
+            )
 
     for item in exposure(net)["adapters"]:
         if item["kind"] not in ("wifi", "hotspot"):
             continue
-        risky = [i for i in item["listeners"] if i["raw_risk"] == "high"]
+        risky = [i for i in item["listeners"] if i["raw_risk"] == "high" and i["reachable"]]
         where = "your Mobile hotspot" if item["kind"] == "hotspot" else (item["network"] or item["name"])
         if risky:
             names = ", ".join(f"{i['label']} ({i['proto'].upper()} {i['port']})" for i in risky[:5])
-            shield = (
-                " Windows Firewall (Public, inbound blocked) probably stops them unless an allow rule exists."
-                if item["firewall_shields"]
-                else ""
-            )
+            if item["firewall_shields"]:
+                why = " Windows Firewall (Public, inbound blocked) probably stops them unless an allow rule exists."
+            elif item["rules_known"]:
+                rules = sorted({i["rule"] for i in risky if i["rule"]})
+                why = f" Allowed through the firewall by: {'; '.join(rules[:3])}." if rules else ""
+            else:
+                why = ""
+            ports_key = ",".join(f"{i['proto']}/{i['port']}" for i in risky)
             add(
+                f"exposed:{item['network'] or item['name']}:{ports_key}",
+                "exposed",
                 "medium" if item["firewall_shields"] else "high",
                 f"{len(risky)} risky service(s) reachable on {where}",
-                f"{names}.{shield}",
-                "Stop the services you don't use, or restrict them to this computer.",
+                f"{names}.{why}",
+                "Stop the services you don't use, block the ports, or restrict them to this computer.",
                 item["name"],
+                services=[
+                    {"proto": i["proto"], "port": i["port"], "service_names": i["service_names"]}
+                    for i in risky
+                ],
             )
     out.sort(key=lambda f: _SEVERITY_ORDER[f["severity"]])
     return out
@@ -987,9 +1219,55 @@ def remember(net: LocalNetwork) -> dict[str, Any]:
     return state
 
 
-def report(net: LocalNetwork, store: Store | None = None) -> dict[str, Any]:
-    """Everything for the dashboard / CLI: inventory, Wi-Fi, devices, exposure and findings."""
+def report(
+    net: LocalNetwork,
+    store: Store | None = None,
+    *,
+    vendors: Any = None,
+    resolver: Any = None,
+    identify: bool = True,
+) -> dict[str, Any]:
+    """Everything for the dashboard / CLI: inventory, Wi-Fi, devices, exposure and findings.
+
+    With a store, devices are remembered across scans (``localnet.devices``: your
+    names, trusted flag, first/last seen, host name) and the per-network state
+    used to spot changes (``localnet.state``) is updated.
+    """
+    from . import oui
+
     previous = store.get_meta_json("localnet.state") if store is not None else None
+    registry: dict[str, dict[str, Any]] = (
+        store.get_meta_json("localnet.devices") if store is not None else None
+    ) or {}
+    now = time.time()
+    if identify:
+        vendors = vendors if vendors is not None else oui.Vendors()
+        stale = [d.ip for d in net.devices if now - (registry.get(d.mac) or {}).get("resolved_at", 0) > 86400]
+        names = oui.hostnames(stale, resolver=resolver) if stale else {}
+    devices = []
+    for d in net.devices:
+        rec = registry.setdefault(d.mac, {"first_seen": now, "trusted": False, "name": None})
+        rec["last_seen"], rec["ip"] = now, d.ip
+        if identify:
+            if d.ip in stale:
+                rec["hostname"], rec["resolved_at"] = names.get(d.ip) or rec.get("hostname"), now
+            rec["vendor"] = vendors.lookup(d.mac) or rec.get("vendor")
+        router = any(d.ip in a.gateways for a in net.adapters if a.name == d.adapter)
+        randomized = randomized_mac(d.mac) if d.mac else False
+        devices.append(
+            asdict(d)
+            | {
+                "randomized_mac": randomized,
+                "gateway": router,
+                "vendor": rec.get("vendor"),
+                "hostname": rec.get("hostname"),
+                "type": oui.guess_type(rec.get("vendor"), rec.get("hostname"), randomized, router),
+                "name": rec.get("name"),
+                "trusted": bool(rec.get("trusted")),
+                "first_seen": rec.get("first_seen"),
+            }
+        )
+    trusted = {mac for mac, rec in registry.items() if rec.get("trusted")}
     result = {
         "platform": net.platform,
         "collected_at": net.collected_at,
@@ -1001,18 +1279,13 @@ def report(net: LocalNetwork, store: Store | None = None) -> dict[str, Any]:
                 net.nearby, key=lambda n: -max((b["signal"] or 0) for b in n.bssids or [{"signal": 0}])
             )
         ],
-        "devices": [
-            asdict(d)
-            | {
-                "randomized_mac": randomized_mac(d.mac) if d.mac else False,
-                "gateway": any(d.ip in a.gateways for a in net.adapters if a.name == d.adapter),
-            }
-            for d in net.devices
-        ],
+        "devices": devices,
         "firewall": net.firewall,
+        "rules_known": net.rules is not None,
         "exposure": exposure(net),
-        "findings": findings(net, previous),
+        "findings": findings(net, previous, trusted),
         "wifi_addresses": sorted(wifi_addresses(net)),
+        "vendor_list": getattr(vendors, "source", None) if identify else None,
         "errors": net.errors,
     }
     if store is not None:
@@ -1022,4 +1295,22 @@ def report(net: LocalNetwork, store: Store | None = None) -> dict[str, Any]:
             state["devices"] = sorted(set(state["devices"]) | set(old.get("devices") or []))
             merged[key] = state
         store.set_meta_json("localnet.state", merged)
+        store.set_meta_json("localnet.devices", registry)
     return result
+
+
+def set_device(
+    store: Store, mac: str, *, name: str | None = None, trusted: bool | None = None
+) -> dict[str, Any]:
+    """Name a device and/or mark it trusted (its arrival then never raises a 'new device' event)."""
+    mac = _mac(mac) or ""
+    if not mac:
+        raise ValueError("not a hardware address")
+    registry = store.get_meta_json("localnet.devices") or {}
+    rec = registry.setdefault(mac, {"first_seen": time.time(), "trusted": False, "name": None})
+    if name is not None:
+        rec["name"] = name.strip()[:60] or None
+    if trusted is not None:
+        rec["trusted"] = bool(trusted)
+    store.set_meta_json("localnet.devices", registry)
+    return {"mac": mac, **rec}
