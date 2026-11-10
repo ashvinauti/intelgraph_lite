@@ -121,6 +121,13 @@ def make_handler(engine: Engine) -> type[BaseHTTPRequestHandler]:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "expected a JSON object")
             return data
 
+        def _same_origin(self) -> bool:
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True  # not a browser cross-site request (curl, scripts, the CLI)
+            host = self.headers.get("Host", "")
+            return urlsplit(origin).netloc.lower() == host.lower()
+
         def _dispatch(self, method: str) -> None:
             url = urlsplit(self.path)
             q = {k: v[-1] for k, v in parse_qs(url.query).items()}
@@ -135,6 +142,10 @@ def make_handler(engine: Engine) -> type[BaseHTTPRequestHandler]:
                 return
             if not self._authorised(q, url.path):
                 self._json({"error": "unauthorised"}, 401)
+                return
+            if method == "POST" and not self._same_origin():
+                # A page on another site can make the browser POST here; refuse it (CSRF).
+                self._json({"error": "cross-site request refused"}, 403)
                 return
             route = ROUTES.get((method, url.path))
             if route is None and method == "GET" and url.path.startswith("/api/export/"):
@@ -538,6 +549,64 @@ def _watch_control(engine: Engine, q: dict, body: dict) -> Any:
 
 def _localnet(engine: Engine, q: dict, body: dict) -> Any:
     return engine.local_network(refresh=q.get("refresh") in ("1", "true"))
+
+
+def _localnet_fix(engine: Engine, q: dict, body: dict) -> Any:
+    fix_id = str(body.get("fix") or "")
+    try:
+        result = engine.apply_fix(fix_id)
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+    return result
+
+
+def _localnet_events(engine: Engine, q: dict, body: dict) -> Any:
+    status = q.get("status") or None
+    if status not in (None, "open", "resolved", "dismissed"):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "status must be open, resolved or dismissed")
+    return engine.store.netevents(status, _int(q, "since", 0, 2**62), _int(q, "limit", 100, 500))
+
+
+def _localnet_dismiss(engine: Engine, q: dict, body: dict) -> Any:
+    try:
+        ok = engine.store.dismiss_netevent(int(body.get("id")))
+    except (TypeError, ValueError):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "id must be an integer")
+    if not ok:
+        raise ApiError(HTTPStatus.NOT_FOUND, "no such event")
+    return {"ok": True}
+
+
+def _localnet_device(engine: Engine, q: dict, body: dict) -> Any:
+    from . import localnet
+
+    trusted = body.get("trusted")
+    if trusted is not None and not isinstance(trusted, bool):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "trusted must be true or false")
+    name = body.get("name")
+    try:
+        rec = localnet.set_device(
+            engine.store,
+            str(body.get("mac") or ""),
+            name=None if name is None else str(name),
+            trusted=trusted,
+        )
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+    engine._localnet = None  # the next read shows the change
+    return rec
+
+
+def _localnet_vendors(engine: Engine, q: dict, body: dict) -> Any:
+    from . import oui
+
+    try:
+        result = oui.update()
+    except RuntimeError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, str(exc))
+    engine.vendors().reload()
+    engine._localnet = None
+    return result
 
 
 def _connections(engine: Engine, q: dict, body: dict) -> Any:
@@ -1095,6 +1164,11 @@ ROUTES = {
     ("POST", "/api/investigate"): _investigate,
     ("GET", "/api/watch"): _watch_status,
     ("GET", "/api/localnet"): _localnet,
+    ("POST", "/api/localnet/fix"): _localnet_fix,
+    ("GET", "/api/localnet/events"): _localnet_events,
+    ("POST", "/api/localnet/events/dismiss"): _localnet_dismiss,
+    ("POST", "/api/localnet/device"): _localnet_device,
+    ("POST", "/api/localnet/vendors"): _localnet_vendors,
     ("POST", "/api/watch"): _watch_control,
     ("GET", "/api/connections"): _connections,
     ("GET", "/api/devices"): _devices,

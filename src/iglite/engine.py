@@ -173,14 +173,59 @@ class Engine:
         return self._tracer
 
     def local_network(self, refresh: bool = False, max_age: float = 30.0) -> dict[str, Any]:
-        """Wi-Fi safety, devices sharing the network and the exposure map (cached briefly)."""
-        from . import localnet
+        """Wi-Fi safety, devices sharing the network and the exposure map (cached briefly), with fixes."""
+        from . import fixes, localnet
 
         cached = getattr(self, "_localnet", None)
         if refresh or cached is None or time.time() - cached["collected_at"] > max_age:
             collector = getattr(self, "localnet_collector", None) or localnet.collect
-            self._localnet = cached = localnet.report(collector(), self.store)
+            rep = localnet.report(
+                collector(),
+                self.store,
+                vendors=self.vendors(),
+                resolver=getattr(self, "localnet_resolver", None),
+            )
+            self._localnet = cached = fixes.attach(rep, self.store.get_meta_json("localnet.fixes") or [])
+            self._localnet_new = self._record_netevents(rep)
         return cached
+
+    def vendors(self) -> Any:
+        """Device manufacturer list (read once; ``iglite oui update`` refreshes it)."""
+        if getattr(self, "localnet_vendors", None) is None:
+            from .oui import Vendors
+
+            self.localnet_vendors = Vendors()
+        return self.localnet_vendors
+
+    def _record_netevents(self, rep: dict[str, Any]) -> list[dict[str, Any]]:
+        """Turn a fresh scan's problems into events: new ones are notified, gone ones resolved."""
+        new = []
+        for f in rep["findings"]:
+            ev = self.store.record_netevent(f)
+            if ev is not None:
+                new.append(ev)
+                self.notifier().on_netevent(ev)
+        self.store.resolve_netevents({f["id"] for f in rep["findings"]})
+        return new
+
+    def localnet_check(self) -> list[dict[str, Any]]:
+        """Rescan Wi-Fi & exposure now. Returns the events this scan raised (new or back again)."""
+        self.local_network(refresh=True)
+        return self._localnet_new
+
+    def apply_fix(self, fix_id: str, runner: Any = None) -> dict[str, Any]:
+        """Run a fix the latest scan offered (or an undo of one applied earlier), then rescan."""
+        from . import fixes
+
+        rep = self.local_network()
+        undos = {
+            h.get("undo") for h in self.store.get_meta_json("localnet.fixes") or [] if not h.get("undone")
+        }
+        if fix_id not in rep.get("fixes", {}) and fix_id not in undos:
+            raise ValueError("that fix isn't offered by the latest scan; scan again first")
+        result = fixes.apply(fix_id, self.store, runner)
+        result["report"] = self.local_network(refresh=True)
+        return result
 
     def watcher(self, interval: float | None = None) -> NetWatch:
         """The live network watcher, created on first use (gateway mode if configured)."""

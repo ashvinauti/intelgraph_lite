@@ -102,6 +102,8 @@ class Config:
     allowlists: dict[str, str] = field(default_factory=dict)
     watch_interval: float = 30.0  # seconds between live network snapshots
     watch_max_new: int = 25  # new IPs/domains looked up per snapshot (bounds API use)
+    localnet_interval: float = 300.0  # while monitoring: re-check Wi-Fi & exposure this often (0 = never)
+    localnet_notify: str = "high"  # notify Wi-Fi & exposure events at: high | medium | info | off
     watch_scope: str = "all"  # host mode: all | wifi (only connections this computer makes over Wi-Fi)
     # Gateway mode: watch a whole network from its router/firewall (see gateway.py).
     gateway_syslog: str | None = None  # "[host:]port" to receive syslog on, e.g. "0.0.0.0:5514"
@@ -209,6 +211,13 @@ def load(path: str | Path | None = None, env: dict[str, str] | None = None) -> C
         cfg.ai_base_url = base
     if scope := (env.get("IGLITE_WATCH_SCOPE") or "").strip().lower():
         cfg.watch_scope = scope
+    if every := (env.get("IGLITE_LOCALNET_INTERVAL") or "").strip():
+        try:
+            cfg.localnet_interval = float(every)
+        except ValueError:
+            pass
+    if level := (env.get("IGLITE_LOCALNET_NOTIFY") or "").strip().lower():
+        cfg.localnet_notify = level
     if model := (env.get("IGLITE_AI_MODEL") or "").strip():
         cfg.ai_model = model
     if provider := (env.get("IGLITE_AI_PROVIDER") or "").strip().lower():
