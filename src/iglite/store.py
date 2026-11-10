@@ -287,6 +287,18 @@ class Store:
             self._last_tick = max(time.time(), getattr(self, "_last_tick", 0.0) + 1e-6)
             return self._last_tick
 
+    def get_meta_json(self, key: str) -> Any:
+        """A small JSON value kept in the meta table (state that isn't worth its own table)."""
+        rows = self._query("SELECT v FROM meta WHERE k=?", (key,))
+        try:
+            return json.loads(rows[0]["v"]) if rows else None
+        except ValueError:
+            return None
+
+    def set_meta_json(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", (key, json.dumps(value)))
+
     def close(self) -> None:
         with self._lock:
             self._db.close()

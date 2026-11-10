@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.0
+
+- **Wi-Fi only monitoring.** `--wifi-only` on `serve` / `watch`, `watch_scope = "wifi"`
+  (or `IGLITE_WATCH_SCOPE=wifi`), or the *Wi-Fi only* box on the Live network tab:
+  live monitoring then keeps only connections this computer makes over Wi-Fi, as a
+  hotspot client or through the Mobile hotspot it shares. Ethernet, VPN and virtual
+  adapters are left out. The Wi-Fi addresses are re-read every minute.
+- **Is this Wi-Fi safe?** `iglite wifi` and the new **Wi-Fi & exposure** tab:
+  - the network's security (open, WEP, WPA/TKIP are flagged)
+  - nearby networks, and look-alikes with the same name but different security (possible evil twins)
+  - the devices sharing the network, including your own hotspot's clients
+  - Windows' network profile and firewall
+  - changes since the last scan: the router's hardware address (ARP spoofing), DNS servers, new devices
+- **Exposure map.** `iglite exposure` and the same tab list, for every network
+  adapter (Wi-Fi, the Mobile hotspot you share, Ethernet, VPN, virtual switches),
+  which services and programs on this computer are reachable on it. Each one is
+  shown with its Windows service name and a risk level: file sharing, Remote
+  Desktop, databases, Ollama and dev servers are high; discovery protocols such as
+  LLMNR and NetBIOS are medium. Risks are lowered one level on a Public network
+  with Windows Firewall blocking inbound. Services bound to this computer only are
+  counted separately.
+- Windows data comes from one PowerShell call (`Get-NetAdapter`, `Get-NetIPAddress`,
+  `Get-NetConnectionProfile`, `Get-NetFirewallProfile`, `Get-NetNeighbor`,
+  `Get-NetTCPConnection`, `Win32_Service`...), which returns language-independent
+  JSON, plus `netsh wlan`. No admin rights; nothing is sent on the network. Linux
+  reads `/sys` and `/proc` and uses `nmcli` when present.
+- The AI analyst has a `local_network` tool: ask it "is this hotspot safe?".
+
 ## 0.3.0
 
 - **Windows Mobile hotspot.** A Windows PC sharing its internet as a Wi-Fi hotspot can now

@@ -102,6 +102,7 @@ class Config:
     allowlists: dict[str, str] = field(default_factory=dict)
     watch_interval: float = 30.0  # seconds between live network snapshots
     watch_max_new: int = 25  # new IPs/domains looked up per snapshot (bounds API use)
+    watch_scope: str = "all"  # host mode: all | wifi (only connections this computer makes over Wi-Fi)
     # Gateway mode: watch a whole network from its router/firewall (see gateway.py).
     gateway_syslog: str | None = None  # "[host:]port" to receive syslog on, e.g. "0.0.0.0:5514"
     gateway_netflow: str | None = None  # "[host:]port" for NetFlow v5/v9/IPFIX, e.g. "0.0.0.0:2055"
@@ -206,6 +207,8 @@ def load(path: str | Path | None = None, env: dict[str, str] | None = None) -> C
     cfg.api_token = (env.get("IGLITE_API_TOKEN") or "").strip() or None
     if base := (env.get("ANTHROPIC_BASE_URL") or "").strip():
         cfg.ai_base_url = base
+    if scope := (env.get("IGLITE_WATCH_SCOPE") or "").strip().lower():
+        cfg.watch_scope = scope
     if model := (env.get("IGLITE_AI_MODEL") or "").strip():
         cfg.ai_model = model
     if provider := (env.get("IGLITE_AI_PROVIDER") or "").strip().lower():

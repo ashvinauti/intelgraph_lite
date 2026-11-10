@@ -199,6 +199,21 @@ TOOLS: list[dict[str, Any]] = [
         ),
     },
     {
+        "name": "local_network",
+        "description": "This computer's networks: the Wi-Fi it is on (security, signal), nearby networks and "
+        "possible evil twins, devices sharing the network, Windows Firewall and network profile, problems found, "
+        "and the exposure map (which services and programs are reachable on which adapter, with risk).",
+        "input_schema": _schema(
+            {
+                "refresh": {
+                    "type": "boolean",
+                    "description": "Rescan now instead of using a result up to 30 seconds old.",
+                }
+            },
+            ["refresh"],
+        ),
+    },
+    {
         "name": "database_stats",
         "description": "Counts of stored indicators by verdict and kind, links, alerts, and which intel sources are enabled.",
         "input_schema": _schema({}, []),
@@ -484,6 +499,30 @@ class Toolbox(TriageTools):
                 for t in s["tactics"]
                 if t["techniques"]
             ],
+        }
+
+    def t_local_network(self, refresh: bool = False) -> Any:
+        rep = self.engine.local_network(refresh=bool(refresh))
+        exposure = [
+            {
+                **a,
+                "listeners": [i for i in a["listeners"] if i["risk"] != "low"][:25],
+                "low_risk_count": sum(i["risk"] == "low" for i in a["listeners"]),
+            }
+            for a in rep["exposure"]["adapters"]
+        ]
+        return {k: rep[k] for k in ("wifi", "findings", "firewall", "errors")} | {
+            "adapters": [
+                {
+                    k: a[k]
+                    for k in ("name", "kind", "up", "network", "addresses", "gateways", "dns", "profile")
+                }
+                for a in rep["adapters"]
+                if a["up"]
+            ],
+            "nearby": rep["nearby"][:20],
+            "devices": rep["devices"][:50],
+            "exposure": exposure,
         }
 
     def t_database_stats(self) -> Any:

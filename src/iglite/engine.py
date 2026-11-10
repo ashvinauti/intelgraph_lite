@@ -172,6 +172,16 @@ class Engine:
             self._tracer = Tracer(self)
         return self._tracer
 
+    def local_network(self, refresh: bool = False, max_age: float = 30.0) -> dict[str, Any]:
+        """Wi-Fi safety, devices sharing the network and the exposure map (cached briefly)."""
+        from . import localnet
+
+        cached = getattr(self, "_localnet", None)
+        if refresh or cached is None or time.time() - cached["collected_at"] > max_age:
+            collector = getattr(self, "localnet_collector", None) or localnet.collect
+            self._localnet = cached = localnet.report(collector(), self.store)
+        return cached
+
     def watcher(self, interval: float | None = None) -> NetWatch:
         """The live network watcher, created on first use (gateway mode if configured)."""
         if self._netwatch is None:

@@ -319,8 +319,33 @@ class NetWatch:
         self.rows: list[dict[str, Any]] = []
         # (time, connections, public IPs, flagged) per scan, for the activity chart.
         self.history: deque[tuple[float, int, int, int]] = deque(maxlen=720)
+        self.scope = (engine.config.watch_scope or "all").lower()  # all | wifi (host mode)
+        self._scope_cache: tuple[float, set[str]] = (0.0, set())
+        self.adapter_collector: Callable[[], Any] | None = None  # tests inject; default localnet
         self._logged_lookups = 0.0  # newest DNS lookup already written to the log
         self._log_pruned = 0.0
+
+    SCOPE_REFRESH = 60.0  # seconds between re-reading which addresses are on Wi-Fi
+
+    def scope_addresses(self) -> set[str]:
+        """This computer's Wi-Fi addresses (client and Mobile hotspot), refreshed every minute."""
+        at, addrs = self._scope_cache
+        if time.monotonic() - at > self.SCOPE_REFRESH or not at:
+            from . import localnet
+
+            try:
+                net = (self.adapter_collector or localnet.collect_adapters)()
+                addrs = localnet.wifi_addresses(net)
+            except Exception as exc:  # keep the previous answer; say why in the status
+                self.last_error = f"Wi-Fi scope: {type(exc).__name__}: {exc}"
+            self._scope_cache = (time.monotonic(), addrs)
+        return addrs
+
+    def set_scope(self, scope: str) -> None:
+        if scope not in ("all", "wifi"):
+            raise ValueError("scope must be all or wifi")
+        self.scope = scope
+        self._scope_cache = (0.0, set())
 
     @property
     def mode(self) -> str:
@@ -364,6 +389,10 @@ class NetWatch:
         if self.gateway is not None:
             out["gateway"] = self.gateway.status()
             out["devices"] = len({r["device"] for r in self.rows if r.get("device")})
+        else:
+            out["scope"] = self.scope
+            if self.scope == "wifi":
+                out["scope_addresses"] = sorted(self.scope_addresses())  # cached; refreshed each minute
         return out
 
     @staticmethod
@@ -407,6 +436,9 @@ class NetWatch:
         now = time.time()
 
         live = [c for c in snap.connections if c.state not in _IGNORED_STATES]
+        if self.scope == "wifi" and self.mode == "host":  # only what this computer sends over Wi-Fi
+            allowed = self.scope_addresses()
+            live = [c for c in live if (ep := _split_endpoint(c.local)) is not None and ep[0] in allowed]
         public: dict[str, Indicator] = {}
         for c in live:
             ind = Indicator(Kind.IP, c.remote_ip)
