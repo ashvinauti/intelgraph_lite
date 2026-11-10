@@ -180,14 +180,49 @@ rights, and send nothing on the network.
     impersonating it (ARP spoofing).
   * New DNS servers can redirect websites.
   * New devices joining are listed.
+* **Device names:** each device's manufacturer, host name and likely type
+  (router, phone, printer, TV...). Rename devices and mark yours as **trusted**
+  so they don't show up as new. The manufacturer list is downloaded once with
+  `iglite oui update` (or the tab's *Download the list* button); an installed
+  Wireshark's copy is used automatically.
 * **Exposure map:** for every network adapter, the services and programs it can
   reach on this computer, riskiest first, with the Windows service behind each:
   * **high:** file sharing (SMB 445), Remote Desktop (3389), WinRM, databases,
     an Ollama server, the Docker API
   * **medium:** discovery protocols that announce or leak names (LLMNR,
     NetBIOS, SSDP), and dev servers
-  * Risks are lowered one level on a **Public** network with Windows Firewall
-    blocking inbound, because only services with an allow rule get through.
+  * On Windows, each service shows the **firewall's verdict**: **ALLOWED** by a
+    named rule, **blocked** (by a block rule or because no rule allows it), or
+    exposed because the firewall is **off**. Blocked services count as low risk.
+    If the rules can't be read, risks are lowered one level on a **Public**
+    network with the firewall blocking inbound.
+
+### Fixing what it finds (Windows)
+
+Problems and exposed services have fix buttons, for example *Set this network
+to Public*, *Block inbound TCP 445*, *Stop and disable Remote Desktop* or *Turn
+off LLMNR*. Each shows the exact PowerShell command before it runs, and Windows
+asks for administrator approval. Applied fixes are listed with an **Undo**
+button. From the command line:
+
+```bash
+iglite fix                          # fixes the latest scan offers, and those applied
+iglite fix block-port:tcp:445:Public   # shows the command, asks, then runs it
+```
+
+Only a fixed set of fixes can run, with checked arguments; only well-known
+network services can be stopped, and only rules IntelGraph Lite created can be
+removed.
+
+### Alerts when something changes
+
+While monitoring runs (`iglite serve --watch`), the check repeats every
+`localnet_interval` seconds (default 300); every scan from the tab or `iglite wifi` counts too. A new
+problem, such as joining an open network, the router's hardware address
+changing, a new device, or a service becoming reachable, pops up on the
+dashboard and goes to your notification channels if it is at least
+`localnet_notify` (default `high`). It stays under *Changes noticed* until it
+goes away or you dismiss it. `iglite wifi --events` lists them too.
 
 On Windows 11, listing nearby networks needs Location turned on (Settings >
 Privacy & security > Location > let desktop apps access your location). The

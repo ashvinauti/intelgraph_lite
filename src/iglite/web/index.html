@@ -304,6 +304,12 @@
   details.ln-adapter .table-wrap { margin-top: 8px; }
   .ln-ssid { font-size: 18px; display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
   ul.ln-findings { max-height: none; }
+  .ln-fixes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .fw-allowed { color: var(--st-critical); font-weight: 600; }
+  .fw-blocked { color: var(--st-good); }
+  dialog.modal pre.cmd { background: var(--surface-0); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
+  dialog.modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
   #view-wifi tbody tr { cursor: default; }
   .ai-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 1px 8px 1px 6px; border-radius: 999px;
              border: 1px dashed var(--line-strong); color: var(--text-secondary); }
@@ -570,7 +576,13 @@
         </div>
       </div>
       <div class="grid">
+        <div class="card"><div class="card-head"><h2>Changes noticed</h2><span class="muted" id="ln-ecount" style="font-size:12px"></span></div>
+          <p class="muted" style="margin:0 0 8px;font-size:13px">Re-checked whenever this tab scans, and every few minutes while monitoring is on. New problems also go to your notification channels.</p>
+          <ul class="feed ln-findings" id="ln-events"></ul></div>
+        <div class="card" id="ln-applied-card" hidden><h2>Fixes you applied</h2><ul class="feed ln-findings" id="ln-applied"></ul></div>
         <div class="card"><div class="card-head"><h2>Devices on this Wi-Fi</h2><span class="muted" id="ln-dcount" style="font-size:12px"></span></div>
+          <p class="muted" id="ln-vendors" style="margin:0 0 8px;font-size:13px" hidden>No manufacturer list yet, so devices show only their addresses.
+            <button class="ghost small" id="ln-vendors-get">Download the list</button></p>
           <div class="table-wrap" style="max-height:360px"><table id="ln-devices"></table></div></div>
         <div class="card"><div class="card-head"><h2>Nearby networks</h2><span class="muted" id="ln-ncount" style="font-size:12px"></span></div>
           <div class="table-wrap" style="max-height:420px"><table id="ln-nearby"></table></div></div>
@@ -711,6 +723,7 @@
 </main>
 <aside id="drawer" aria-label="Indicator details"></aside>
 <dialog class="modal" id="case-picker" aria-labelledby="cp-title"></dialog>
+<dialog class="modal" id="fix-dialog" aria-labelledby="fx-title"></dialog>
 </div>
 <div id="toasts" aria-live="polite"></div>
 <div id="tooltip" role="tooltip"></div>
@@ -1182,8 +1195,7 @@ const LocalNet = {
   render() {
     const d = this.data;
     $("ln-status").textContent = `Scanned ${timeAgo(d.collected_at)}` + (d.errors.length ? ` · ${d.errors.join(" ")}` : "");
-    const high = d.findings.filter(f => f.severity === "high").length;
-    $("ln-count").hidden = !high; $("ln-count").textContent = high || "";
+    NetEvents.render();
     // This Wi-Fi
     const wifiAdapters = d.adapters.filter(a => (a.kind === "wifi" || a.kind === "hotspot") && a.up);
     const blocks = [];
@@ -1214,7 +1226,8 @@ const LocalNet = {
     fill($("ln-findings"), d.findings.length ? d.findings.map(f => el("li", { style: "cursor:default;display:block" },
       el("div", { style: "display:flex;gap:8px;align-items:center" }, sevBadge(f.severity), el("b", {}, f.title)),
       el("div", { class: "secondary", style: "font-size:13px;margin:4px 0 0" }, f.detail),
-      f.fix ? el("div", { class: "muted", style: "font-size:12.5px;margin-top:2px" }, "Fix: ", f.fix) : null))
+      f.fix ? el("div", { class: "muted", style: "font-size:12.5px;margin-top:2px" }, "Fix: ", f.fix) : null,
+      Fixes.buttons(f.fix_ids, d)))
       : [el("li", { class: "muted", style: "cursor:default;display:block" }, "No problems found.")]);
     this.renderExposure();
     // Devices
@@ -1222,14 +1235,22 @@ const LocalNet = {
     const devices = d.devices.filter(x => wifiNames.has(x.adapter));
     $("ln-dcount").textContent = `${devices.length} device(s)`;
     $("ln-devices").dataset.empty = wifiAdapters.length ? "No other devices seen yet. Devices appear once this computer has talked to them." : "Not on Wi-Fi.";
+    $("ln-vendors").hidden = !!d.vendor_list || !devices.length;
     renderTable($("ln-devices"), [
-      { key: "ip", label: "Address", render: r => el("span", { class: "mono" }, r.ip) },
-      { key: "mac", label: "Hardware address", render: r => el("span", { class: "mono" }, r.mac) },
+      { key: "name", label: "Device", sortValue: r => (r.name || r.hostname || r.vendor || "~").toLowerCase(),
+        render: r => el("span", {}, r.name ? el("b", {}, r.name) : r.hostname ? el("span", {}, r.hostname) : el("span", { class: "muted" }, r.type || "unknown"),
+          el("div", { class: "muted", style: "font-size:12px" }, [r.vendor, r.name || r.hostname ? r.type : null].filter(x => x && x !== "unknown").join(" · "))) },
+      { key: "ip", label: "Address", render: r => el("span", { class: "mono nowrap" }, r.ip, el("div", { class: "muted", style: "font-size:11.5px" }, r.mac)) },
       { key: "tags", label: "", static: true, render: r => el("span", { class: "nowrap" },
           r.gateway ? el("span", { class: "badge v-pending" }, "router") : null, " ",
           r.randomized_mac ? el("span", { class: "muted", title: "Phones and laptops use random 'private' addresses on Wi-Fi" }, "private MAC") : null,
-          (wifiAdapters.find(a => a.name === r.adapter) || {}).kind === "hotspot" ? el("span", { class: "muted" }, " on your hotspot") : null) },
-    ], devices.map(x => ({ ...x, key: "dev:" + x.ip })), { key: "ip", dir: "asc" }, () => {}, () => {}, "-");
+          (wifiAdapters.find(a => a.name === r.adapter) || {}).kind === "hotspot" ? el("span", { class: "muted" }, " on your hotspot") : null,
+          r.trusted ? el("span", { class: "badge v-benign", title: "You marked this device as yours" }, el("i", {}, "✓"), "trusted") : null) },
+      { key: "act", label: "", static: true, render: r => el("span", { class: "nowrap" },
+          el("button", { class: "ghost small", onclick: () => LocalNet.device(r.mac, { trusted: !r.trusted }) }, r.trusted ? "Untrust" : "Trust"), " ",
+          el("button", { class: "ghost small", onclick: () => { const n = prompt(`Name for ${r.ip} (${r.mac})`, r.name || r.hostname || ""); if (n != null) LocalNet.device(r.mac, { name: n.trim() }); } }, "Rename")) },
+    ], devices.map(x => ({ ...x, key: "dev:" + x.ip })), { key: "name", dir: "asc" }, () => {}, () => {}, "-");
+    this.renderApplied();
     // Nearby networks
     const myBssids = new Set(d.wifi.map(w => w.bssid).filter(Boolean));
     const isMine = n => n.bssids.some(b => myBssids.has(b.bssid));
@@ -1244,6 +1265,19 @@ const LocalNet = {
       { key: "aps", label: "APs", num: true, sortValue: r => r.bssids.length, render: r => r.bssids.length },
     ], d.nearby.map((x, i) => ({ ...x, key: "net:" + i })), { key: "signal", dir: "desc" }, () => {}, () => {}, "-");
   },
+  async device(mac, change) {
+    try { await api("/api/localnet/device", { mac, ...change }); await this.refresh(false); }
+    catch (e) { alert(e.message); }
+  },
+  renderApplied() {
+    const applied = (this.data.applied_fixes || []).slice().reverse();
+    $("ln-applied-card").hidden = !applied.length;
+    fill($("ln-applied"), applied.map(h => el("li", { style: "cursor:default;display:block" },
+      el("div", { style: "display:flex;gap:8px;align-items:center;justify-content:space-between" },
+        el("span", {}, h.undone ? el("s", { class: "muted" }, h.title) : el("b", {}, h.title)),
+        h.undo && !h.undone ? el("button", { class: "ghost small", onclick: () => Fixes.confirm(h.undo) }, "Undo") : el("span", { class: "muted", style: "font-size:12px" }, h.undone ? "undone" : "")),
+      el("div", { class: "muted", style: "font-size:12px" }, timeAgo(h.at)))));
+  },
   renderExposure() {
     const d = this.data, showLow = $("ln-low").checked;
     const blocks = d.exposure.adapters.map(a => {
@@ -1252,7 +1286,8 @@ const LocalNet = {
       const fw = a.firewall;
       const head = el("summary", {}, el("b", {}, KIND_LABEL[a.kind] || a.kind), " ", el("span", { class: "mono" }, a.network || a.name),
         el("span", { class: "muted" }, ` · ${a.addresses.join(", ")}`, a.profile ? ` · ${a.profile}` : "", fw ? ` · firewall ${fw.enabled ? "on" : "OFF"}` : ""),
-        " ", ...["high", "medium"].filter(s => a.counts[s]).map(s => el("span", { class: "nowrap" }, sevBadge(s), el("b", {}, ` ${a.counts[s]} `))));
+        " ", ...["high", "medium"].filter(s => a.counts[s]).map(s => el("span", { class: "nowrap" }, sevBadge(s), el("b", {}, ` ${a.counts[s]} `))),
+        a.counts.blocked ? el("span", { class: "muted nowrap" }, ` · ${a.counts.blocked} blocked by the firewall`) : null);
       const table = el("table", {});
       table.dataset.empty = hidden ? `${hidden} low-risk service(s) hidden.` : "Nothing on this computer is reachable from this network.";
       renderTable(table, [
@@ -1261,8 +1296,11 @@ const LocalNet = {
         { key: "label", label: "What", render: r => el("span", { title: r.why }, r.label, el("div", { class: "muted", style: "font-size:12px" }, r.why)) },
         { key: "process", label: "Program / service", render: r => el("span", {}, el("span", { class: "mono" }, r.process || "?"),
             r.services.length ? el("div", { class: "muted", style: "font-size:12px" }, r.services.slice(0, 3).join("; ")) : null) },
+        { key: "firewall", label: "Firewall", sortValue: r => ({ allowed: 0, off: 0, unknown: 1, blocked: 2 })[r.firewall] ?? 1, render: r => fwVerdict(r) },
+        { key: "fix", label: "", static: true, render: r => Fixes.buttons(r.fix_ids, d) },
       ], rows.map((x, i) => ({ ...x, key: "l:" + i })), { key: "risk", dir: "asc" }, () => {}, () => {}, "-");
       const det = el("details", { class: "ln-adapter" }, head,
+        a.rules_known === false && a.kind !== "virtual" && d.platform === "windows" ? el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0" }, "Firewall rules couldn't be read, so the risk is estimated from the network profile.") : null,
         a.firewall_shields ? el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0" }, "Public network with Windows Firewall blocking inbound: risks are shown one level lower, since only services with an allow rule are reachable.") : null,
         el("div", { class: "table-wrap", style: "max-height:none" }, table),
         hidden && rows.length ? el("p", { class: "muted", style: "font-size:12px;margin:6px 0 0" }, `${hidden} low-risk service(s) hidden.`) : null);
@@ -1274,6 +1312,72 @@ const LocalNet = {
     if (lo) blocks.push(el("p", { class: "muted", style: "font-size:12.5px;margin:10px 0 0" }, `${lo} more service(s) listen on this computer only (127.0.0.1) and can't be reached from any network.`));
     fill($("ln-exposure"), blocks);
   },
+};
+const fwVerdict = r => {
+  const label = { allowed: "ALLOWED", blocked: "blocked", off: "firewall OFF", unknown: "?" }[r.firewall] || "?";
+  return el("span", { title: r.rule || "" }, el("span", { class: r.firewall === "blocked" ? "fw-blocked" : r.firewall === "unknown" ? "muted" : "fw-allowed" }, label),
+    r.rule && r.firewall !== "off" ? el("div", { class: "muted", style: "font-size:12px" }, r.rule) : null);
+};
+/* One-click fixes: always show the exact command and ask first; Windows asks for administrator approval too. */
+const Fixes = {
+  buttons(ids, d) {
+    const list = (ids || []).map(id => d.fixes[id]).filter(Boolean);
+    return list.length ? el("div", { class: "ln-fixes" }, list.map(f => el("button", { class: "ghost small", title: f.why, onclick: ev => { ev.stopPropagation(); this.confirm(f.id); } }, f.title))) : null;
+  },
+  confirm(id) {
+    const d = LocalNet.data, f = d.fixes[id] || (d.applied_fixes || []).some(h => h.undo === id) && { id, title: "Undo: " + ((d.applied_fixes || []).find(h => h.undo === id) || {}).title, command: null, why: "Reverses a fix you applied earlier." };
+    if (!f) return;
+    const dlg = $("fix-dialog"), msg = el("p", { class: "muted", style: "font-size:13px;margin:8px 0 0" });
+    const go = el("button", { class: "primary" }, "Apply");
+    go.onclick = async () => {
+      go.disabled = true; fill(msg, el("span", { class: "spinner" }), " Waiting for Windows (approve the administrator prompt)…");
+      try {
+        const r = await api("/api/localnet/fix", { fix: id });
+        if (r.report) { LocalNet.data = r.report; LocalNet.render(); }
+        if (r.ok) { dlg.close(); Respond.say(r.fix.title, { ok: true, detail: r.fix.undo ? "Done. You can undo it under “Fixes you applied”." : "Done." }); }
+        else { msg.textContent = "Not applied: " + (r.output || "unknown error"); go.disabled = false; }
+      } catch (e) { msg.textContent = e.message; go.disabled = false; }
+    };
+    fill(dlg, el("h2", { id: "fx-title" }, f.title),
+      el("p", { style: "margin:0 0 8px;font-size:13px" }, f.why),
+      f.command ? [el("div", { class: "muted", style: "font-size:12px" }, "This runs, as administrator:"), el("pre", { class: "cmd" }, f.command)] : null,
+      f.undo ? el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0 0" }, "You can undo this later from this tab.") : f.command ? el("p", { class: "muted", style: "font-size:12.5px;margin:6px 0 0" }, "There's no one-click undo for this one.") : null,
+      msg, el("div", { class: "actions" }, el("button", { class: "ghost", onclick: () => dlg.close() }, "Cancel"), go));
+    dlg.showModal();
+  },
+};
+/* Change alerts: the server re-checks the network in the background; show what's open and pop new ones. */
+const NetEvents = {
+  open: [], seen: Date.now() / 1000,  // only events raised after the page opened pop up
+  async poll() {
+    try { this.open = await api("/api/localnet/events?status=open&limit=50"); } catch (e) { return; }
+    const fresh = this.open.filter(e => e.raised_at > this.seen);
+    if (this.open.length) this.seen = Math.max(this.seen, ...this.open.map(e => e.raised_at));
+    fresh.filter(e => e.severity === "high" || e.severity === "medium").slice(0, 3).forEach(e => this.toast(e));
+    const c = $("ln-count"), hi = this.open.filter(e => e.severity === "high").length;
+    c.hidden = !hi; c.textContent = hi || "";
+    if (view === "wifi") this.render();
+  },
+  toast(e) {
+    const t = el("div", { class: "toast", role: "status", style: `--c:var(${e.severity === "high" ? "--st-critical" : "--st-warning"})`, onclick: () => { location.hash = "#wifi"; t.remove(); } },
+      el("div", { class: "t" }, sevBadge(e.severity), e.title), el("div", { class: "secondary", style: "font-size:12px;margin-top:4px" }, e.detail));
+    $("toasts").append(t); setTimeout(() => t.remove(), 15000);
+  },
+  render() {
+    $("ln-ecount").textContent = this.open.length ? `${this.open.length} open` : "";
+    fill($("ln-events"), this.open.length ? this.open.map(e => el("li", { style: "cursor:default;display:block" },
+      el("div", { style: "display:flex;gap:8px;align-items:center" }, sevBadge(e.severity), el("b", { style: "flex:1" }, e.title),
+        el("button", { class: "ghost small", title: "Stop showing this one; it won't be raised again", onclick: async () => { try { await api("/api/localnet/events/dismiss", { id: e.id }); await this.poll(); this.render(); } catch (x) { alert(x.message); } } }, "Dismiss")),
+      el("div", { class: "secondary", style: "font-size:13px;margin:4px 0 0" }, e.detail),
+      el("div", { class: "muted", style: "font-size:12px;margin-top:2px" }, `first seen ${timeAgo(e.first_seen)}`, e.last_seen - e.first_seen > 60 ? ` · still there ${timeAgo(e.last_seen)}` : "")))
+      : [el("li", { class: "muted", style: "cursor:default;display:block" }, "Nothing has changed since the last checks.")]);
+  },
+};
+$("ln-vendors-get").onclick = async () => {
+  const b = $("ln-vendors-get"); b.disabled = true; b.textContent = "Downloading…";
+  try { const r = await api("/api/localnet/vendors", {}); Respond.say(`Manufacturer list saved (${r.entries} makers)`, { ok: true }); await LocalNet.refresh(false); }
+  catch (e) { alert(e.message); }
+  finally { b.disabled = false; b.textContent = "Download the list"; }
 };
 $("ln-scan").onclick = () => LocalNet.refresh(true);
 $("ln-low").onchange = () => LocalNet.data && LocalNet.renderExposure();
@@ -2746,7 +2850,7 @@ async function refreshView() {
     else if (view === "analyst") await Analyst.init();
     else if (view === "attack") await AttackView.refresh();
     else if (view === "network") await Network.refresh();
-    else if (view === "wifi") await LocalNet.refresh(false);
+    else if (view === "wifi") { await LocalNet.refresh(false); await NetEvents.poll(); }
     else if (view === "cases") await Cases.refresh();
     else if (view === "behaviour") await BehaviourView.refresh();
     else if (view === "indicators" && !Indicators.rows.length) await Indicators.reset();
@@ -2767,6 +2871,7 @@ async function poll() {
     try {
       watch = await api("/api/watch"); paintWatch();
       await pollAlerts();
+      if (pollTick % 6 === 0 || view === "wifi") await NetEvents.poll();
       if (view === "live" && watch.running && !History.on) await Live.refresh();
       if (view === "graph" && Graph.live) await Graph.pollLive();
       if (view === "network") await Network.refresh();

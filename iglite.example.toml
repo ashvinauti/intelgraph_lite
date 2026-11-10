@@ -18,6 +18,11 @@ alert_min_score = 60            # live alerts need at least this score (70 = mal
 # Live monitoring scope: "all" or "wifi" (only connections this computer makes over Wi-Fi)
 # watch_scope = "wifi"
 
+# Wi-Fi & exposure: re-check every N seconds while monitoring (0 = never), and
+# notify new problems at or above this level (high | medium | info | off)
+# localnet_interval = 300
+# localnet_notify = "high"
+
 # Seconds between live network snapshots (`iglite watch`, `serve --watch`).
 watch_interval = 30
 watch_max_new = 25    # new IPs/domains looked up per snapshot
