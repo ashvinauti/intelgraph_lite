@@ -368,11 +368,19 @@ class NetWatch:
         self._stop.set()
 
     def _loop(self) -> None:
+        next_localnet = time.monotonic() + 5  # first Wi-Fi & exposure check shortly after starting
         while not self._stop.is_set():
             try:
                 self.scan()
             except Exception as exc:  # keep watching; report on the status endpoint
                 self.last_error = f"{type(exc).__name__}: {exc}"
+            every = self.engine.config.localnet_interval
+            if self.mode == "host" and every and time.monotonic() >= next_localnet:
+                next_localnet = time.monotonic() + max(60.0, every)
+                try:
+                    self.engine.localnet_check()
+                except Exception as exc:  # the extra check must never stop monitoring
+                    self.last_error = f"Wi-Fi & exposure check: {type(exc).__name__}: {exc}"
             self._stop.wait(self.interval)
 
     def status(self) -> dict[str, Any]:
