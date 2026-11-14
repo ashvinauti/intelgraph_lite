@@ -1,5 +1,10 @@
 # IntelGraph Lite
 
+> **About this project**  
+> A threat intelligence and OSINT correlation tool. It correlates indicators in a knowledge graph and produces explained risk scores.  
+> Stack: Python, SQLite, STIX 2.1, Docker.  
+> I designed this project and built it with AI coding assistance. I am happy to walk through any part of the code.
+
 A lightweight **threat intelligence and OSINT** correlation tool. It looks up
 IPs, domains, URLs, hashes and CVEs across free OSINT services and threat
 feeds, links them into a knowledge graph, and gives every indicator a score
